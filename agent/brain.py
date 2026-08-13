@@ -199,18 +199,22 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
-def build_system_prompt(user_input=""):
+def build_system_prompt(user_input="", request_id=None, state=None):
     """user_input is the current request, used to relevance-filter which
     patterns get included (see agent/context.py) instead of dumping every
     inferred pattern into every single prompt. Safe to call with no
     argument -- an empty user_input just means no patterns match, not an
     error; the prompt is otherwise unaffected. Standing rules (lessons)
     are NOT relevance-filtered -- they're hard requirements, always
-    included in full regardless of user_input."""
+    included in full regardless of user_input.
+
+    request_id/state are optional and passed straight through to
+    build_context() for retrieval observability (which memory got used,
+    and why) -- see agent/context.py."""
 
     prompt = BASE_SYSTEM_PROMPT
 
-    patterns = build_context(user_input).prompt_text
+    patterns = build_context(user_input, request_id=request_id, state=state).prompt_text
     if patterns:
         prompt += (
             "\n\nPATTERNS YOU'VE NOTICED — your own informal observations "

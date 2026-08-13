@@ -93,13 +93,20 @@ class Settings:
     max_agent_steps: int = 8
 
     # --- Autonomy / permissions ---
-    # NOT YET WIRED to anything -- the six permission levels and the
-    # confirmation/unattended-execution gates in tools/registry.py are
-    # entirely unaffected by this value today. It exists as typed,
-    # available configuration surface for a future phase to enforce
-    # without another config migration; changing it right now has zero
-    # effect on what Jarvis will or won't do.
-    autonomy_level: int = 2
+    # IS wired (agent/autonomy.py): controls which tools run instantly vs.
+    # require an extra "yes, go ahead" confirmation before they run --
+    # never which tools are allowed at all (permission levels) or which
+    # ones have a hard, unconditional confirmation gate (confirm_login,
+    # send_email, computer_confirm_action, and unattended-execution
+    # restrictions) -- those are completely unaffected by this value at
+    # every level. Defaults to 4 (the highest defined level) deliberately:
+    # at level 4, only permission_level 5 (computer_confirm_action, which
+    # was already hard-gated separately anyway) ever asks for extra
+    # confirmation, so nothing that currently runs instantly changes
+    # behavior with no explicit opt-in. Lower this (0-3) for progressively
+    # more confirmation on lower-risk tools too -- see agent/autonomy.py's
+    # module docstring for the exact level-by-level breakdown.
+    autonomy_level: int = 4
 
     # --- Memory ---
     # NOT YET WIRED -- nothing currently checks this before reading/

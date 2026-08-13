@@ -7,7 +7,7 @@ Scoped deliberately narrow: PATTERN-type memories (inferred communication
 habits) are the one thing that was previously always-injected-in-full
 into every prompt via agent.patterns.patterns_as_prompt_text() -- this
 replaces that specific behavior with relevance filtering, which is the
-actual "stop dumping everything" change Phase 3 asks for.
+actual "stop dumping everything" change Phase 3 asked for.
 
 Two things this deliberately does NOT touch, because they were never
 "dump everything" problems to begin with:
@@ -23,11 +23,18 @@ the model API (the correct way to give a model conversation history), not
 duplicated into a text block here. Available tools are handled by the
 API's own `tools` parameter, for the same reason -- this module only
 produces the one piece that was actually being over-injected.
+
+Phase 4 addition: every retrieval is logged (agent/observability.py,
+correlated by request_id) and, if an ExecutionState is provided, recorded
+onto it as a MemoryReference -- id/type/reason/score, never the memory's
+own content -- so a later "why did Jarvis use this" view has something
+real to show without duplicating memory content into execution state.
 """
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
-from agent.memory import Memory, MemoryType, search
+from agent.memory import Memory, MemoryType, search_scored
+from agent.observability import log_event
 from config.settings import settings
 
 
@@ -35,6 +42,7 @@ from config.settings import settings
 class RetrievedMemory:
     memory: Memory
     reason: str
+    score: float = 0.0
 
 
 @dataclass
@@ -48,21 +56,42 @@ class Context:
         return "\n".join(f"- {r.memory.content}" for r in self.retrieved)
 
 
-def build_context(user_input: str, max_memories: int = None) -> Context:
+def build_context(
+    user_input: str,
+    max_memories: Optional[int] = None,
+    request_id: Optional[str] = None,
+    state=None,
+) -> Context:
     """Relevance-filtered, budget-limited pattern retrieval for the given
     request. Returns an empty Context (empty prompt_text) if there's no
     input to match against or the budget is zero -- callers should treat
-    that the same as "nothing relevant," not an error."""
+    that the same as "nothing relevant," not an error.
+
+    request_id/state are optional -- when given, each retrieved memory is
+    logged (component="context") and recorded onto `state` for later
+    inspection (e.g. the dashboard)."""
 
     budget = settings.context_memory_budget if max_memories is None else max_memories
 
     if budget <= 0 or not user_input or not user_input.strip():
         return Context()
 
-    matches = search(query=user_input, type=MemoryType.PATTERN, limit=budget)
+    scored_matches = search_scored(query=user_input, type=MemoryType.PATTERN, limit=budget)
 
-    retrieved = [
-        RetrievedMemory(memory=m, reason=f"relevant to the current request (matched: {user_input[:60]!r})")
-        for m in matches
-    ]
+    retrieved = []
+    for memory, score in scored_matches:
+        reason = f"relevant to the current request (matched: {user_input[:60]!r})"
+        retrieved.append(RetrievedMemory(memory=memory, reason=reason, score=score))
+
+        log_event(
+            "memory_retrieved", request_id=request_id, component="context",
+            memory_id=memory.id, memory_type=memory.type.value, score=round(score, 2),
+            reason=reason, included=True,
+        )
+        if state is not None:
+            state.record_memory_retrieval(
+                memory_id=memory.id, memory_type=memory.type.value,
+                reason=reason, score=score, included=True,
+            )
+
     return Context(retrieved=retrieved)

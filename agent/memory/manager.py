@@ -18,7 +18,7 @@ disk round trips).
 """
 import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agent.memory import store
 from agent.memory.models import Confidence, Importance, Memory, MemoryType
@@ -144,17 +144,19 @@ def _relevance_score(memory: Memory, query: str) -> float:
     return score
 
 
-def search(
+def search_scored(
     query: str = "",
     type: Optional[MemoryType] = None,
     tags: Optional[List[str]] = None,
     limit: int = 10,
     include_inactive: bool = False,
-) -> List[Memory]:
-    """Deterministic relevance search: keyword overlap with `query`
-    (empty query = no keyword filtering), weighted by importance and
-    recency. No embeddings/vector search. Updates last_accessed on every
-    returned memory."""
+) -> List[Tuple[Memory, float]]:
+    """Same deterministic relevance search as search() (keyword overlap
+    with `query`, weighted by importance and recency; empty query = no
+    keyword filtering; no embeddings/vector search), but also returns
+    each result's score -- for callers that need to explain *why* a
+    memory was retrieved (agent/context.py's retrieval observability),
+    not just which ones. Updates last_accessed on every returned memory."""
 
     memories = store.load_all()
 
@@ -171,9 +173,9 @@ def search(
         scored = [(m, s) for m, s in scored if s > 0]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
-    results = [m for m, _ in scored[:limit]]
+    results = scored[:limit]
 
-    touched_ids = {m.id for m in results}
+    touched_ids = {m.id for m, _ in results}
     if touched_ids:
         now = time.time()
         for m in memories:
@@ -182,6 +184,21 @@ def search(
         store.save_all(memories)
 
     return results
+
+
+def search(
+    query: str = "",
+    type: Optional[MemoryType] = None,
+    tags: Optional[List[str]] = None,
+    limit: int = 10,
+    include_inactive: bool = False,
+) -> List[Memory]:
+    """Deterministic relevance search: keyword overlap with `query`
+    (empty query = no keyword filtering), weighted by importance and
+    recency. No embeddings/vector search. Updates last_accessed on every
+    returned memory."""
+
+    return [m for m, _ in search_scored(query, type, tags, limit, include_inactive)]
 
 
 def update(memory_id: str, new_content: str, **field_updates):

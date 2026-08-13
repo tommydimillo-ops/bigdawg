@@ -4,12 +4,16 @@ import time
 
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent.audit import log_action
+from agent.autonomy import Decision, ExecutionContext as AutonomyContext, is_confirmed, request_confirmation, should_request_confirmation
 from agent.brain import build_system_prompt, TOOLS, client as claude_client
 from agent.chat import openai_client
-from agent.execution_state import ExecutionState
+from agent.execution_state import ExecutionState, register_active, unregister_active
 from agent.model_router import select as select_model
 from agent.observability import log_event, preview
+from agent.planner import create_plan, is_complex
 from agent.request_context import RequestContext
+from agent.retry_policy import retry_delay_seconds, should_retry
+from agent.verification import verify
 from config.settings import settings
 from tools import registry
 
@@ -19,14 +23,23 @@ MAX_TOOL_ITERATIONS = settings.max_agent_steps
 class PartialToolExecution(Exception):
     """Raised when a provider fails after already committing a side effect."""
 
+
 OPENAI_TOOLS = registry.openai_schemas()
 
 
 def _run_tool(name, tool_input, source="chat", context=None, state=None):
     """Every tool call funnels through here, so this is the one place that
-    needs to log — individual tool functions don't need to know about it."""
+    needs to log — individual tool functions don't need to know about it.
+
+    Order matters: the pre-existing hard gates (scheduled + requires_live_
+    confirmation, scheduled + not unattended_allowed) are checked first and
+    are completely unaffected by autonomy_level -- they're not something
+    autonomy can loosen. The autonomy check only ever runs for tools that
+    already cleared those, and can only ever ADD a soft confirmation step,
+    never remove one."""
 
     request_id = context.request_id if context else None
+    autonomy_level = context.autonomy_level if context else settings.autonomy_level
 
     if source == "scheduled" and registry.requires_live_confirmation(name):
         result = (
@@ -43,26 +56,74 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
         log_event("tool_skipped", request_id=request_id, component="executor", tool=name, reason="unattended_not_allowed")
         return result
 
+    autonomy_ctx = AutonomyContext(source=source)
+    decision = should_request_confirmation(name, autonomy_level, autonomy_ctx)
+
+    if decision == Decision.DENY:
+        result = f"Skipped: {name} needs confirmation at the current autonomy level, which isn't possible unattended."
+        log_action(name, tool_input, result)
+        log_event("tool_skipped", request_id=request_id, component="executor", tool=name, reason="autonomy_denied_unattended")
+        return result
+
+    if decision == Decision.CONFIRM and not is_confirmed(name, tool_input):
+        request_confirmation(name, tool_input)
+        if state:
+            state.request_confirmation(name)
+        result = (
+            f"Before I run {name}, I want your OK first (current autonomy "
+            "level requires confirmation for this kind of action) — "
+            "please confirm and I'll go ahead."
+        )
+        log_action(name, tool_input, result)
+        log_event("tool_confirmation_requested", request_id=request_id, component="executor", tool=name)
+        return result
+
+    if state:
+        state.clear_confirmation()
+
     log_event("tool_started", request_id=request_id, component="executor", tool=name)
     start = time.time()
 
-    try:
-        result = registry.dispatch(name, tool_input)
-    except Exception as error:
-        log_action(name, tool_input, f"ERROR: {error}")
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            result = registry.dispatch(name, tool_input)
+            break
+        except Exception as error:
+            log_action(name, tool_input, f"ERROR: {error}")
+            log_event(
+                "tool_failed", request_id=request_id, component="executor", level="error",
+                tool=name, duration=time.time() - start, error_type=type(error).__name__, attempt=attempt,
+            )
+            if should_retry(name, error, attempt):
+                log_event("tool_retry", request_id=request_id, component="executor", tool=name, attempt=attempt)
+                time.sleep(retry_delay_seconds(attempt))
+                continue
+            if state:
+                state.record_tool(name, result_preview=f"ERROR: {error}", ok=False, duration_seconds=time.time() - start)
+            raise
+
+    duration = time.time() - start
+
+    verification_note = None
+    if name in registry.side_effect_tools():
+        verification = verify(name, tool_input, result)
         log_event(
-            "tool_failed", request_id=request_id, component="executor", level="error",
-            tool=name, duration=time.time() - start, error_type=type(error).__name__,
+            "tool_verified", request_id=request_id, component="executor",
+            tool=name, ok=verification.ok, note=verification.note,
         )
-        raise
+        if not verification.ok:
+            verification_note = verification.note
+            result = f"{result}\n\n(Verification note: {verification.note} — double-check this actually happened.)"
 
     log_action(name, tool_input, result)
     log_event(
         "tool_completed", request_id=request_id, component="executor",
-        tool=name, duration=time.time() - start, result_preview=preview(result),
+        tool=name, duration=duration, result_preview=preview(result),
     )
     if state:
-        state.record_tool(name)
+        state.record_tool(name, result_preview=result, ok=verification_note is None, duration_seconds=duration)
     return result
 
 
@@ -124,12 +185,17 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
     system_prompt = [
         {
             "type": "text",
-            "text": build_system_prompt(context.user_input if context else ""),
+            "text": build_system_prompt(context.user_input if context else "", request_id=request_id, state=state),
             "cache_control": {"type": "ephemeral"},
         }
     ]
 
     for _ in range(MAX_TOOL_ITERATIONS):
+
+        if state and state.cancelled:
+            log_event("request_cancelled", request_id=request_id, component="executor")
+            yield "Stopped, as requested."
+            return
 
         if state:
             state.record_iteration()
@@ -210,10 +276,14 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
         provider=model_choice.provider, model=model_choice.model,
     )
 
-    messages = [{"role": "system", "content": build_system_prompt(context.user_input if context else "")}] + list(messages)
+    messages = [{"role": "system", "content": build_system_prompt(context.user_input if context else "", request_id=request_id, state=state)}] + list(messages)
     committed = False
 
     for _ in range(MAX_TOOL_ITERATIONS):
+
+        if state and state.cancelled:
+            log_event("request_cancelled", request_id=request_id, component="executor")
+            return "Stopped, as requested."
 
         if state:
             state.record_iteration()
@@ -286,6 +356,19 @@ def execute_task_stream(request, history=None, source="chat"):
     state = ExecutionState(max_iterations=MAX_TOOL_ITERATIONS)
     request_start = time.time()
 
+    # Only genuinely multi-part requests pay for the extra planning model
+    # call -- ordinary conversation stays on the fast path with no plan
+    # attached at all (state.plan stays None, exactly like before this
+    # phase existed).
+    if is_complex(request):
+        state.plan = create_plan(request)
+        log_event(
+            "plan_created", request_id=context.request_id, component="planner",
+            total_steps=state.plan.total, request_preview=preview(request),
+        )
+
+    register_active(context.request_id, state)
+
     log_event(
         "request_started", request_id=context.request_id, component="executor",
         source=source, input_preview=preview(request),
@@ -295,60 +378,63 @@ def execute_task_stream(request, history=None, source="chat"):
     started = False
 
     try:
-        for chunk in _run_claude_loop_stream(messages, source=source, context=context, state=state):
-            started = True
-            yield chunk
-        state.finish(result="ok")
-        log_event(
-            "request_completed", request_id=context.request_id, component="executor",
-            duration=time.time() - request_start, provider="anthropic",
-        )
-        return
-    except PartialToolExecution:
-        state.finish(failed=True, error="partial_tool_execution")
-        log_event(
-            "request_failed", request_id=context.request_id, component="executor", level="error",
-            duration=time.time() - request_start, reason="partial_tool_execution",
-        )
-        yield PARTIAL_EXECUTION_MESSAGE
-        return
-    except Exception as error:
-        if started:
-            # Can't retract text already shown, so don't risk splicing a
-            # second, unrelated fallback response onto it.
-            state.finish(failed=True, error="connection_dropped")
+        try:
+            for chunk in _run_claude_loop_stream(messages, source=source, context=context, state=state):
+                started = True
+                yield chunk
+            state.finish(result="ok")
+            log_event(
+                "request_completed", request_id=context.request_id, component="executor",
+                duration=time.time() - request_start, provider="anthropic",
+            )
+            return
+        except PartialToolExecution:
+            state.finish(failed=True, error="partial_tool_execution")
             log_event(
                 "request_failed", request_id=context.request_id, component="executor", level="error",
-                duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
+                duration=time.time() - request_start, reason="partial_tool_execution",
             )
-            yield "\n\n[Connection dropped before finishing — please try again.]"
+            yield PARTIAL_EXECUTION_MESSAGE
             return
-        log_event(
-            "primary_provider_failed", request_id=context.request_id, component="executor",
-            level="warning", error_type=type(error).__name__,
-        )
+        except Exception as error:
+            if started:
+                # Can't retract text already shown, so don't risk splicing a
+                # second, unrelated fallback response onto it.
+                state.finish(failed=True, error="connection_dropped")
+                log_event(
+                    "request_failed", request_id=context.request_id, component="executor", level="error",
+                    duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
+                )
+                yield "\n\n[Connection dropped before finishing — please try again.]"
+                return
+            log_event(
+                "primary_provider_failed", request_id=context.request_id, component="executor",
+                level="warning", error_type=type(error).__name__,
+            )
 
-    try:
-        yield from _run_openai_loop_stream(messages, source=source, context=context, state=state)
-        state.finish(result="ok")
-        log_event(
-            "request_completed", request_id=context.request_id, component="executor",
-            duration=time.time() - request_start, provider="openai",
-        )
-    except PartialToolExecution:
-        state.finish(failed=True, error="partial_tool_execution")
-        log_event(
-            "request_failed", request_id=context.request_id, component="executor", level="error",
-            duration=time.time() - request_start, reason="partial_tool_execution",
-        )
-        yield PARTIAL_EXECUTION_MESSAGE
-    except Exception as error:
-        state.finish(failed=True, error=type(error).__name__)
-        log_event(
-            "request_failed", request_id=context.request_id, component="executor", level="error",
-            duration=time.time() - request_start, error_type=type(error).__name__,
-        )
-        yield f"Agent error: {error}"
+        try:
+            yield from _run_openai_loop_stream(messages, source=source, context=context, state=state)
+            state.finish(result="ok")
+            log_event(
+                "request_completed", request_id=context.request_id, component="executor",
+                duration=time.time() - request_start, provider="openai",
+            )
+        except PartialToolExecution:
+            state.finish(failed=True, error="partial_tool_execution")
+            log_event(
+                "request_failed", request_id=context.request_id, component="executor", level="error",
+                duration=time.time() - request_start, reason="partial_tool_execution",
+            )
+            yield PARTIAL_EXECUTION_MESSAGE
+        except Exception as error:
+            state.finish(failed=True, error=type(error).__name__)
+            log_event(
+                "request_failed", request_id=context.request_id, component="executor", level="error",
+                duration=time.time() - request_start, error_type=type(error).__name__,
+            )
+            yield f"Agent error: {error}"
+    finally:
+        unregister_active(context.request_id)
 
 
 def execute_task(request, history=None, source="chat"):
