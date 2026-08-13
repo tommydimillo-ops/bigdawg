@@ -43,7 +43,12 @@ def _speak_fallback(text):
     )
 
 
-def speak(text):
+def speak_natural(text):
+    """Higher-quality AI voice for the native menu-bar app's spoken
+    conversation. For the Streamlit multi-device chat's speak-replies
+    checkbox, see agent.tts_control.speak_interruptible instead -- that
+    one is instant/free/interruptible via system `say`, which matters more
+    there than voice quality does."""
 
     try:
         _speak_openai(text)

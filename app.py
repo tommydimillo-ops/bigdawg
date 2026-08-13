@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from agent.conversation_store import load_conversation, save_conversation
 from agent.executor import execute_task_stream
-from agent.tts_control import speak, stop_speaking
+from agent.tts_control import speak_interruptible, stop_speaking
 
 
 st.set_page_config(
@@ -314,7 +314,7 @@ if prompt:
         response = st.write_stream(execute_task_stream(prompt, st.session_state.messages))
 
         if speak_replies:
-            speak(response)
+            speak_interruptible(response)
 
 
     # Save assistant response

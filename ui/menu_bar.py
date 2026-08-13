@@ -24,7 +24,7 @@ from agent.executor import execute_task
 from agent.memory_agent import recall
 from agent.scheduled_tasks import list_tasks, mark_run
 from voice.listen import is_exit_phrase, listen_for_followup, wait_for_command
-from voice.speak import speak
+from voice.speak import speak_natural
 
 USER_NAME = "Tommy"
 
@@ -111,11 +111,11 @@ class CampusPilotApp(rumps.App):
 
         # Speak from here (subprocess call, safe on any thread) rather than
         # in _drain_events. This runs on the same thread that's about to go
-        # listen for the next wake word, so speak() blocking until playback
-        # actually finishes guarantees the mic isn't recalibrating its
-        # ambient-noise threshold while the assistant is still talking --
-        # that was making it deaf to real speech after every response.
-        speak(result)
+        # listen for the next wake word, so speak_natural() blocking until
+        # playback actually finishes guarantees the mic isn't recalibrating
+        # its ambient-noise threshold while the assistant is still talking
+        # -- that was making it deaf to real speech after every response.
+        speak_natural(result)
         time.sleep(0.3)
 
 
@@ -152,7 +152,7 @@ class CampusPilotApp(rumps.App):
             mark_run(task["id"], today)
 
             self.events.put(("response", task["prompt"], result))
-            speak(result)
+            speak_natural(result)
 
 
     @rumps.clicked("Ask CampusPilot")

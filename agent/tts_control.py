@@ -32,7 +32,13 @@ def stop_speaking():
     os.remove(TTS_PID_FILE)
 
 
-def speak(text):
+def speak_interruptible(text):
+    """System `say` TTS, tracked by PID so a later reply (from any device
+    sharing this conversation) can cut it off mid-sentence via
+    stop_speaking(). Used by the Streamlit multi-device chat flow. For the
+    native menu-bar app's higher-quality voice responses, see
+    voice.speak.speak_natural instead -- different trade-off (instant and
+    free vs. higher quality), not a duplicate."""
     stop_speaking()
     process = subprocess.Popen(["say", text])
     os.makedirs(os.path.dirname(TTS_PID_FILE), exist_ok=True)

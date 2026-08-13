@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 screenshot_*.png
 screenshot_*.jpg
+.DS_Store
+CampusPilotAgent.app/
+logs/
