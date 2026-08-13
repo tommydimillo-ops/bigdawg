@@ -31,6 +31,7 @@ import pyautogui
 
 from agent.chat import anthropic_client
 from agent.computer_use_status import set_active
+from config.settings import settings
 from tools.screen import MAX_DIMENSION
 from tools.vision import analyze_image
 
@@ -96,7 +97,7 @@ def computer_locate(description):
         encoded = base64.b64encode(f.read()).decode("utf-8")
 
     response = anthropic_client.messages.create(
-        model="claude-sonnet-5",
+        model=settings.default_model,
         # 200 was tight enough that adaptive extended thinking could
         # consume the whole budget and leave zero tokens for the actual
         # "x,y" answer -- same failure mode already documented in

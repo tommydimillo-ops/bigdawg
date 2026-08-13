@@ -2,6 +2,7 @@ import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent.chat import anthropic_client as client
 from agent.lessons import lessons_as_prompt_text
 from agent.patterns import patterns_as_prompt_text
+from config.settings import settings
 from tools.registry import anthropic_schemas, check_full_coverage
 
 
@@ -243,7 +244,7 @@ if __name__ == "__main__":
     test = input("What do you need help with? ")
 
     response = client.messages.create(
-        model="claude-sonnet-5",
+        model=settings.default_model,
         max_tokens=4096,
         system=build_system_prompt(),
         tools=TOOLS,

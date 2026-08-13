@@ -1,9 +1,8 @@
 import base64
-import logging
 
 from agent.chat import anthropic_client, openai_client
-
-logger = logging.getLogger(__name__)
+from agent.observability import log_event
+from config.settings import settings
 
 VISION_PROMPT = "Describe what is on this screen."
 
@@ -11,7 +10,7 @@ VISION_PROMPT = "Describe what is on this screen."
 def _analyze_with_openai(encoded_image):
 
     response = openai_client.chat.completions.create(
-        model="gpt-5",
+        model=settings.vision_model,
         messages=[
             {
                 "role": "user",
@@ -37,7 +36,7 @@ def _analyze_with_openai(encoded_image):
 def _analyze_with_claude(encoded_image):
 
     response = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=settings.vision_fallback_model,
         max_tokens=1024,
         messages=[
             {
@@ -70,8 +69,11 @@ def analyze_image(image_path):
 
     try:
         return _analyze_with_openai(encoded_image)
-    except Exception:
-        logger.warning("OpenAI vision request failed, falling back to Claude", exc_info=True)
+    except Exception as error:
+        log_event(
+            "vision_provider_failed", component="vision", level="warning",
+            provider="openai", error_type=type(error).__name__,
+        )
         return _analyze_with_claude(encoded_image)
 
 

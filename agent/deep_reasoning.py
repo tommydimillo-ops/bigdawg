@@ -7,6 +7,7 @@ answer (correctly worked past the "17 sheep" red herring rather than
 computing 17-9)."""
 
 from agent.chat import anthropic_client as client
+from config.settings import settings
 
 SYSTEM_PROMPT = (
     "Think through this as carefully and thoroughly as the problem "
@@ -19,7 +20,7 @@ SYSTEM_PROMPT = (
 
 def deep_reason(question):
     response = client.messages.create(
-        model="claude-sonnet-5",
+        model=settings.default_model,
         # "max" effort thinking can use substantially more tokens than
         # the coordinator's automatic thinking does — this needs the most
         # headroom of any call site, since running out mid-thought here

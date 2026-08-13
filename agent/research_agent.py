@@ -10,6 +10,7 @@ touch this module.
 
 from agent.audit import log_action
 from agent.chat import anthropic_client as client
+from config.settings import settings
 from documents.reader import read_document
 from tools.browser import open_and_read
 
@@ -78,7 +79,7 @@ def research(question):
 
     for _ in range(MAX_ITERATIONS):
         response = client.messages.create(
-            model="claude-sonnet-5",
+            model=settings.default_model,
             # Same headroom fix as agent/executor.py — adaptive thinking
             # tokens count against this budget, and a low ceiling can get
             # entirely consumed by thinking alone on a hard question.

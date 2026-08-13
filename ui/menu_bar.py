@@ -23,12 +23,13 @@ from agent.computer_use_status import is_active as computer_use_active
 from agent.executor import execute_task
 from agent.memory_agent import recall
 from agent.scheduled_tasks import list_tasks, mark_run
+from config.settings import settings
 from voice.listen import is_exit_phrase, listen_for_followup, wait_for_command
 from voice.speak import speak_natural
 
-USER_NAME = "Tommy"
+USER_NAME = settings.user_name
 
-SCHEDULER_POLL_SECONDS = 30
+SCHEDULER_POLL_SECONDS = settings.scheduler_poll_seconds
 
 
 class CampusPilotApp(rumps.App):
@@ -73,6 +74,9 @@ class CampusPilotApp(rumps.App):
         # just a silent notification banner from a separate script the
         # user would have to remember to start (agent/scheduler_daemon.py
         # still exists standalone, but this makes that a non-requirement).
+        # Don't run scheduler_daemon.py at the same time as this app --
+        # see the lifecycle note at the top of that file for why (each
+        # scheduled task would fire twice).
         self.scheduler_thread = threading.Thread(
             target=self._scheduler_loop,
             daemon=True

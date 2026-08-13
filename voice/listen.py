@@ -15,8 +15,9 @@ import numpy as np
 import sounddevice as sd
 
 from agent.chat import openai_client
+from config.settings import settings
 
-WAKE_WORD = "jarvis"
+WAKE_WORD = settings.wake_word.lower()
 
 # Mirrors app.py's browser EXIT_WORDS/isExitPhrase -- ending an active
 # conversation always requires addressing Jarvis by name ("Jarvis, that's
@@ -30,7 +31,7 @@ def is_exit_phrase(text):
 
 
 def listen_for_utterance(
-    samplerate=16000,
+    samplerate=settings.voice_sample_rate,
     max_seconds=15,
     silence_seconds=1.2,
     calibration_seconds=1.0,
@@ -141,7 +142,7 @@ def transcribe(audio, samplerate):
             # hearing "Jarvis" correctly and not over-formalizing casual
             # American slang into stiffer phrasing.
             response = openai_client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
+                model=settings.transcription_model,
                 file=f,
                 prompt=(
                     "Casual spoken request to a personal assistant named "
@@ -179,7 +180,10 @@ def wait_for_command(stop_flag=None):
         if not text or WAKE_WORD not in text.lower():
             continue
 
-        command = re.sub(r"\b" + WAKE_WORD + r"\b", " ", text, flags=re.IGNORECASE)
+        # re.escape -- WAKE_WORD is now configurable (settings.wake_word),
+        # unlike the hardcoded "jarvis" this replaced, so it's no longer
+        # guaranteed regex-safe.
+        command = re.sub(r"\b" + re.escape(WAKE_WORD) + r"\b", " ", text, flags=re.IGNORECASE)
         command = re.sub(r"\s+", " ", command).strip(" ,.:")
 
         if command:

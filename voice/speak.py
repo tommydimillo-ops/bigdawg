@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 from agent.chat import openai_client
+from config.settings import settings
 
 OPENAI_VOICE = "onyx"
 FALLBACK_VOICE = "Daniel"
@@ -22,7 +23,7 @@ def _speak_openai(text):
     # responses (a real, reported OpenAI model quirk, not a bug in this
     # code); gpt-4o-mini-tts doesn't exhibit that.
     with openai_client.audio.speech.with_streaming_response.create(
-        model="gpt-4o-mini-tts",
+        model=settings.tts_model,
         voice=OPENAI_VOICE,
         input=text,
         timeout=20
