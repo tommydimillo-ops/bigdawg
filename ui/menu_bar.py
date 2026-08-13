@@ -18,8 +18,10 @@ from datetime import datetime
 
 import rumps
 
+from agent import jarvis_state
 from agent.audit import recent_actions_text
 from agent.computer_use_status import is_active as computer_use_active
+from agent.execution_state import ExecutionStatus
 from agent.executor import execute_task
 from agent.memory_agent import recall
 from agent.scheduled_tasks import list_tasks, mark_run
@@ -30,6 +32,20 @@ from voice.speak import speak_natural
 USER_NAME = settings.user_name
 
 SCHEDULER_POLL_SECONDS = settings.scheduler_poll_seconds
+
+# Cross-interface status (agent.jarvis_state) -> a small icon hint, shown
+# only when this process's own title is otherwise idle ("🤖") -- so a
+# request running from the Streamlit dashboard (a separate OS process)
+# still shows *something* here, without ever overriding a status this
+# process is itself actively displaying (listening, thinking, computer
+# use, etc.).
+_JARVIS_STATUS_EMOJI = {
+    ExecutionStatus.THINKING.value: "🤔",
+    ExecutionStatus.PLANNING.value: "🧭",
+    ExecutionStatus.EXECUTING.value: "⚙️",
+    ExecutionStatus.WAITING_FOR_CONFIRMATION.value: "⏳",
+    ExecutionStatus.VERIFYING.value: "🔍",
+}
 
 
 class CampusPilotApp(rumps.App):
@@ -257,6 +273,9 @@ class CampusPilotApp(rumps.App):
         # regardless of whatever other status was showing.
         if computer_use_active():
             self.title = "🖱️"
+        elif self.title == "🤖":
+            remote_status = jarvis_state.get_state().status
+            self.title = _JARVIS_STATUS_EMOJI.get(remote_status, "🤖")
 
 
     @rumps.clicked("Recent Notes")

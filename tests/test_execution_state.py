@@ -7,6 +7,7 @@ import unittest
 
 from agent.execution_state import (
     ExecutionState,
+    ExecutionStatus,
     cancel_active,
     get_active,
     register_active,
@@ -200,6 +201,16 @@ class TestActiveExecutionRegistry(unittest.TestCase):
         register_active("test-request-id", state)
         self.assertIs(get_active("test-request-id"), state)
 
+    def test_register_active_stamps_the_request_id_onto_the_state(self):
+        # So a caller that only has the ExecutionState (e.g. from
+        # list_active()) can still recover which request it belongs to --
+        # needed by the cancel_request tool and the dashboard's Cancel
+        # button, neither of which get the request_id any other way.
+        state = ExecutionState(max_iterations=8)
+        self.assertIsNone(state.request_id)
+        register_active("test-request-id", state)
+        self.assertEqual(state.request_id, "test-request-id")
+
     def test_unregister_removes_it(self):
         state = ExecutionState(max_iterations=8)
         register_active("test-request-id", state)
@@ -218,6 +229,70 @@ class TestActiveExecutionRegistry(unittest.TestCase):
 
     def test_cancel_active_unknown_id_returns_false(self):
         self.assertFalse(cancel_active("no-such-request-id"))
+
+
+class TestExecutionStatusTransitions(unittest.TestCase):
+
+    def test_starts_idle(self):
+        state = ExecutionState(max_iterations=8)
+        self.assertEqual(state.status, ExecutionStatus.IDLE)
+
+    def test_valid_transition_succeeds(self):
+        state = ExecutionState(max_iterations=8)
+        self.assertTrue(state.transition_to(ExecutionStatus.THINKING))
+        self.assertEqual(state.status, ExecutionStatus.THINKING)
+
+    def test_invalid_transition_is_rejected_and_leaves_status_unchanged(self):
+        state = ExecutionState(max_iterations=8)
+        # IDLE has no direct edge to COMPLETED -- a request has to pass
+        # through THINKING/EXECUTING/etc. first.
+        self.assertFalse(state.transition_to(ExecutionStatus.COMPLETED))
+        self.assertEqual(state.status, ExecutionStatus.IDLE)
+
+    def test_same_status_transition_is_a_no_op_success(self):
+        state = ExecutionState(max_iterations=8)
+        state.transition_to(ExecutionStatus.THINKING)
+        self.assertTrue(state.transition_to(ExecutionStatus.THINKING))
+        self.assertEqual(state.status, ExecutionStatus.THINKING)
+
+    def test_terminal_states_reject_every_further_transition(self):
+        for terminal in (ExecutionStatus.COMPLETED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED):
+            with self.subTest(terminal=terminal):
+                state = ExecutionState(max_iterations=8)
+                state.status = terminal
+                for candidate in ExecutionStatus:
+                    if candidate == terminal:
+                        continue
+                    self.assertFalse(state.transition_to(candidate))
+                    self.assertEqual(state.status, terminal)
+
+    def test_realistic_lifecycle_reaches_completed(self):
+        state = ExecutionState(max_iterations=8)
+        state.transition_to(ExecutionStatus.THINKING)
+        state.transition_to(ExecutionStatus.EXECUTING)
+        state.request_confirmation("run_python")
+        self.assertEqual(state.status, ExecutionStatus.WAITING_FOR_CONFIRMATION)
+        state.clear_confirmation()
+        self.assertEqual(state.status, ExecutionStatus.EXECUTING)
+        state.finish(result="ok")
+        self.assertEqual(state.status, ExecutionStatus.COMPLETED)
+
+    def test_cancel_reaches_cancelled_and_finish_does_not_override_it(self):
+        state = ExecutionState(max_iterations=8)
+        state.transition_to(ExecutionStatus.THINKING)
+        state.cancel()
+        self.assertEqual(state.status, ExecutionStatus.CANCELLED)
+        self.assertTrue(state.cancelled)
+        # A finish() call that races in after cancel() must not clobber
+        # the cancelled outcome back to COMPLETED/FAILED.
+        state.finish(result="ok")
+        self.assertEqual(state.status, ExecutionStatus.CANCELLED)
+
+    def test_finish_failure_reaches_failed(self):
+        state = ExecutionState(max_iterations=8)
+        state.transition_to(ExecutionStatus.THINKING)
+        state.finish(failed=True, error="boom")
+        self.assertEqual(state.status, ExecutionStatus.FAILED)
 
 
 if __name__ == "__main__":

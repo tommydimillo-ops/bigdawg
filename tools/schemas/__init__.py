@@ -5,6 +5,7 @@ referenced directly -- that's what populates the registry."""
 from tools.schemas import (
     browsing,
     computer_use,
+    execution_control,
     logins_and_email,
     memory_and_learning,
     productivity,
@@ -16,6 +17,7 @@ from tools.schemas import (
 __all__ = [
     "browsing",
     "computer_use",
+    "execution_control",
     "logins_and_email",
     "memory_and_learning",
     "productivity",

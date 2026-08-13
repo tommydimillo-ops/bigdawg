@@ -10,10 +10,12 @@ Run with: python -m unittest tests.test_safety -v
 """
 
 import os
+import tempfile
 import unittest
 from datetime import datetime
 
 import tools.autofill as autofill
+import agent.jarvis_state as jarvis_state
 from agent.audit import recent_actions
 from agent.brain import TOOLS
 from agent.executor import _run_tool
@@ -21,6 +23,21 @@ from agent.permissions import check_full_coverage
 from agent.scheduled_tasks import add_task, list_tasks, mark_run, remove_task
 from tools.credential_store import delete_login, save_login
 from tools.sandbox_python import run_python
+
+# _run_tool now writes cross-interface status via agent.jarvis_state on
+# every real dispatch -- redirected here (module-wide, like every other
+# file-backed store's tests in this project) so exercising it doesn't
+# clobber the real ~/Library/.../jarvis_state.json the live menu-bar/
+# dashboard apps read from.
+_real_state_file = jarvis_state.STATE_FILE
+
+
+def setUpModule():
+    jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+
+
+def tearDownModule():
+    jarvis_state.STATE_FILE = _real_state_file
 
 
 class TestPermissionCoverage(unittest.TestCase):

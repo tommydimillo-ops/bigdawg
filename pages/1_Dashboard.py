@@ -5,6 +5,8 @@ import streamlit as st
 from agent.audit import recent_actions
 from agent.autonomy import describe_level
 from agent.brain import TOOLS
+from agent.cancellation import request_cancel
+from agent.execution_history import get_by_id, get_recent
 from agent.execution_state import list_active
 from agent.memory import MemoryType, list_all
 from agent.permissions import permission_label
@@ -28,7 +30,7 @@ st.subheader("⚡ Live execution")
 if active_executions:
     for state in active_executions:
         with st.container(border=True):
-            cols = st.columns(4)
+            cols = st.columns(5)
             cols[0].metric("Model", state.selected_model or "selecting…")
             cols[1].metric("Iteration", f"{state.iteration}/{state.max_iterations}")
             cols[2].metric("Elapsed", f"{state.duration_seconds:.1f}s")
@@ -37,6 +39,13 @@ if active_executions:
                 "⏳ awaiting confirmation" if state.confirmation_pending
                 else ("🛑 cancelled" if state.cancelled else "🔄 running"),
             )
+            with cols[4]:
+                st.caption("")  # vertically aligns the button with the metrics above
+                if state.cancelled:
+                    st.button("Cancelled", key=f"cancel_{state.request_id}", disabled=True)
+                elif st.button("🛑 Cancel", key=f"cancel_{state.request_id}"):
+                    request_cancel(state.request_id)
+                    st.rerun()
             if state.confirmation_pending:
                 st.caption(f"Waiting on confirmation for: `{state.pending_confirmation_tool}`")
             if state.plan:
@@ -46,6 +55,57 @@ if active_executions:
                 st.caption("Tools so far: " + ", ".join(f"`{t}`" for t in state.tools_executed))
 else:
     st.caption("Nothing in flight right now — reload while a request is actively running to see it live.")
+
+st.divider()
+
+# --- Recent executions ---------------------------------------------------
+# Persistent (agent/execution_history.py), unlike the "Live execution"
+# section above -- these survive past the request finishing and past a
+# process restart, bounded to the most recent settings.execution_history_
+# limit entries. Sanitized before it was ever written to disk, so nothing
+# shown here needs to be filtered again at display time.
+st.subheader("🗂️ Recent executions")
+recent_executions = get_recent()
+if recent_executions:
+    st.table([
+        {
+            "Time": datetime.fromtimestamp(r.timestamp).strftime("%b %d, %I:%M %p"),
+            "Request": r.request_summary,
+            "Status": r.status,
+            "Duration": f"{r.duration_seconds:.1f}s" if r.duration_seconds is not None else "—",
+            "Model": r.model or "—",
+            "Tools used": ", ".join(r.tools_used) if r.tools_used else "—",
+        }
+        for r in recent_executions
+    ])
+
+    selected_id = st.selectbox(
+        "Inspect a specific execution",
+        options=[r.request_id for r in recent_executions],
+        format_func=lambda rid: next(
+            (f"{r.request_summary} ({r.status}, {datetime.fromtimestamp(r.timestamp).strftime('%I:%M %p')})"
+             for r in recent_executions if r.request_id == rid),
+            rid,
+        ),
+    )
+    detail = get_by_id(selected_id)
+    if detail:
+        with st.container(border=True):
+            dcols = st.columns(4)
+            dcols[0].metric("Status", detail.status)
+            dcols[1].metric("Duration", f"{detail.duration_seconds:.1f}s" if detail.duration_seconds is not None else "—")
+            dcols[2].metric("Tool calls", detail.tool_count)
+            dcols[3].metric("Memories used", detail.memories_retrieved_count)
+            if detail.plan_created:
+                st.caption(f"Plan: {detail.plan_completed_steps}/{detail.plan_total_steps} steps completed")
+            if detail.tools_used:
+                st.caption("Tools: " + ", ".join(f"`{t}`" for t in detail.tools_used))
+            if detail.errors:
+                st.error("\n".join(detail.errors))
+            if detail.autonomy_level is not None:
+                st.caption(f"Autonomy level at the time: {detail.autonomy_level}")
+else:
+    st.caption("No completed executions recorded yet.")
 
 st.divider()
 

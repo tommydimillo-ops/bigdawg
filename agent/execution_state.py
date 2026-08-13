@@ -17,9 +17,68 @@ for no benefit.
 """
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional
 
 MAX_PREVIEW_LENGTH = 160
+
+
+class ExecutionStatus(str, Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    WAITING_FOR_CONFIRMATION = "waiting_for_confirmation"
+    VERIFYING = "verifying"
+    SPEAKING = "speaking"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+# Explicit, testable transition graph -- an ExecutionState tracks ONE
+# request's lifecycle, which always ends at exactly one of the three
+# terminal states (no outgoing edges from any of them; a new request gets
+# a fresh ExecutionState rather than reusing a finished one). LISTENING
+# and SPEAKING are reachable here for completeness/shared vocabulary with
+# JarvisState (agent/jarvis_state.py), but in practice executor.py's own
+# request lifecycle only ever touches PLANNING/THINKING/EXECUTING/
+# WAITING_FOR_CONFIRMATION/VERIFYING/COMPLETED/FAILED/CANCELLED --
+# LISTENING/SPEAKING are typically set directly on JarvisState by the
+# voice/menu-bar caller, which spans before and after a specific request.
+_ALLOWED_TRANSITIONS = {
+    ExecutionStatus.IDLE: {
+        ExecutionStatus.LISTENING, ExecutionStatus.THINKING, ExecutionStatus.PLANNING,
+    },
+    ExecutionStatus.LISTENING: {
+        ExecutionStatus.THINKING, ExecutionStatus.IDLE, ExecutionStatus.CANCELLED,
+    },
+    ExecutionStatus.PLANNING: {
+        ExecutionStatus.THINKING, ExecutionStatus.CANCELLED, ExecutionStatus.FAILED,
+    },
+    ExecutionStatus.THINKING: {
+        ExecutionStatus.EXECUTING, ExecutionStatus.WAITING_FOR_CONFIRMATION,
+        ExecutionStatus.VERIFYING, ExecutionStatus.SPEAKING,
+        ExecutionStatus.COMPLETED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED,
+    },
+    ExecutionStatus.EXECUTING: {
+        ExecutionStatus.THINKING, ExecutionStatus.WAITING_FOR_CONFIRMATION,
+        ExecutionStatus.VERIFYING, ExecutionStatus.COMPLETED,
+        ExecutionStatus.FAILED, ExecutionStatus.CANCELLED,
+    },
+    ExecutionStatus.WAITING_FOR_CONFIRMATION: {
+        ExecutionStatus.EXECUTING, ExecutionStatus.CANCELLED, ExecutionStatus.FAILED,
+    },
+    ExecutionStatus.VERIFYING: {
+        ExecutionStatus.THINKING, ExecutionStatus.EXECUTING, ExecutionStatus.SPEAKING,
+        ExecutionStatus.COMPLETED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED,
+    },
+    ExecutionStatus.SPEAKING: {ExecutionStatus.COMPLETED, ExecutionStatus.IDLE},
+    ExecutionStatus.COMPLETED: set(),
+    ExecutionStatus.FAILED: set(),
+    ExecutionStatus.CANCELLED: set(),
+}
 
 
 def _preview(text: str, limit: int = MAX_PREVIEW_LENGTH) -> str:
@@ -51,6 +110,8 @@ class MemoryReference:
 @dataclass
 class ExecutionState:
     max_iterations: int
+    request_id: Optional[str] = None  # set by register_active() below
+    status: ExecutionStatus = ExecutionStatus.IDLE
     iteration: int = 0
     tools_executed: List[str] = field(default_factory=list)
     tool_results: List[ToolCallRecord] = field(default_factory=list)
@@ -66,6 +127,18 @@ class ExecutionState:
     finished_at: Optional[float] = None
     selected_provider: Optional[str] = None
     selected_model: Optional[str] = None
+
+    def transition_to(self, new_status: ExecutionStatus) -> bool:
+        """Returns True if the transition was applied. A rejected
+        (invalid) transition leaves status unchanged and returns False --
+        deliberately never raises, since a bug in status bookkeeping must
+        never be able to crash the actual request it's just observing."""
+        if new_status == self.status:
+            return True
+        if new_status not in _ALLOWED_TRANSITIONS.get(self.status, set()):
+            return False
+        self.status = new_status
+        return True
 
     def record_iteration(self) -> None:
         self.iteration += 1
@@ -111,19 +184,29 @@ class ExecutionState:
     def request_confirmation(self, tool_name: str) -> None:
         self.confirmation_pending = True
         self.pending_confirmation_tool = tool_name
+        self.transition_to(ExecutionStatus.WAITING_FOR_CONFIRMATION)
 
     def clear_confirmation(self) -> None:
         self.confirmation_pending = False
         self.pending_confirmation_tool = None
+        if self.status == ExecutionStatus.WAITING_FOR_CONFIRMATION:
+            self.transition_to(ExecutionStatus.EXECUTING)
 
     def cancel(self) -> None:
         self.cancelled = True
+        self.transition_to(ExecutionStatus.CANCELLED)
 
     def finish(self, result: Optional[str] = None, failed: bool = False, error: Optional[str] = None) -> None:
         self.finished_at = time.time()
         self.final_result = result
         self.failed = failed
         self.error = error
+        # Don't overwrite an already-cancelled outcome -- cancel() already
+        # set the correct terminal status, and CANCELLED has no outgoing
+        # transitions, so this would be a no-op anyway; being explicit
+        # here documents the intent rather than relying on that silently.
+        if not self.cancelled:
+            self.transition_to(ExecutionStatus.FAILED if failed else ExecutionStatus.COMPLETED)
 
     @property
     def duration_seconds(self) -> float:
@@ -143,6 +226,7 @@ _active: dict = {}
 
 
 def register_active(request_id: str, state: "ExecutionState") -> None:
+    state.request_id = request_id
     _active[request_id] = state
 
 

@@ -56,6 +56,24 @@ _DESTRUCTIVE_ACTION_PATTERNS = [
 ]
 
 
+def redact_secrets(text: str) -> str:
+    """Replaces any credential-shaped substring with a placeholder,
+    rather than refusing outright -- used where the content as a whole
+    still needs to be kept (e.g. agent/execution_history.py's request
+    summaries), unlike is_safe_to_remember()'s all-or-nothing refusal for
+    a memory write. Reuses the same secret patterns as that function so
+    the two never drift apart -- one real definition of "secret-shaped",
+    not two similar-but-different ones."""
+
+    if not text:
+        return text
+
+    redacted = text
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub("[redacted]", redacted)
+    return redacted
+
+
 def is_safe_to_remember(content: str):
     """Returns (True, None) if `content` is safe to store as a memory, or
     (False, reason) if it should be refused. Callers should surface the

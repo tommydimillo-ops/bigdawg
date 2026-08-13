@@ -8,12 +8,29 @@ Run with: python -m unittest tests.test_phase4_security -v
 """
 import ast
 import inspect
+import tempfile
 import unittest
 
 import tools.schemas  # noqa: F401 -- populates the registry
+import agent.jarvis_state as jarvis_state
 from agent.executor import _run_tool
 from agent.request_context import RequestContext
 from tools import registry
+
+# _run_tool now writes cross-interface status via agent.jarvis_state on
+# every real dispatch -- redirected here (module-wide, like every other
+# file-backed store's tests in this project) so exercising it doesn't
+# clobber the real ~/Library/.../jarvis_state.json the live menu-bar/
+# dashboard apps read from.
+_real_state_file = jarvis_state.STATE_FILE
+
+
+def setUpModule():
+    jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+
+
+def tearDownModule():
+    jarvis_state.STATE_FILE = _real_state_file
 
 
 class TestAutonomyCannotBypassHardGates(unittest.TestCase):

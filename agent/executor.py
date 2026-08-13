@@ -3,11 +3,12 @@ import json
 import time
 
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
+from agent import execution_history, jarvis_state
 from agent.audit import log_action
 from agent.autonomy import Decision, ExecutionContext as AutonomyContext, is_confirmed, request_confirmation, should_request_confirmation
 from agent.brain import build_system_prompt, TOOLS, client as claude_client
 from agent.chat import openai_client
-from agent.execution_state import ExecutionState, register_active, unregister_active
+from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from agent.model_router import select as select_model
 from agent.observability import log_event, preview
 from agent.planner import create_plan, is_complex
@@ -27,6 +28,14 @@ class PartialToolExecution(Exception):
 OPENAI_TOOLS = registry.openai_schemas()
 
 
+def _plan_progress(state):
+    """A short display string like "2/4" for agent.jarvis_state, or None
+    when no plan is attached (ordinary, non-multi-step requests)."""
+    if state is None or state.plan is None:
+        return None
+    return f"{state.plan.completed_count}/{state.plan.total}"
+
+
 def _run_tool(name, tool_input, source="chat", context=None, state=None):
     """Every tool call funnels through here, so this is the one place that
     needs to log — individual tool functions don't need to know about it.
@@ -40,6 +49,12 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
 
     request_id = context.request_id if context else None
     autonomy_level = context.autonomy_level if context else settings.autonomy_level
+
+    if state and state.cancelled:
+        result = f"Skipped: {name} was not run because the request was cancelled."
+        log_action(name, tool_input, result)
+        log_event("tool_skipped", request_id=request_id, component="executor", tool=name, reason="cancelled")
+        return result
 
     if source == "scheduled" and registry.requires_live_confirmation(name):
         result = (
@@ -69,6 +84,11 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
         request_confirmation(name, tool_input)
         if state:
             state.request_confirmation(name)
+        jarvis_state.set_status(
+            ExecutionStatus.WAITING_FOR_CONFIRMATION, active_request_id=request_id,
+            current_task=context.user_input if context else None, current_tool=name,
+            confirmation_pending=True, plan_progress=_plan_progress(state),
+        )
         result = (
             f"Before I run {name}, I want your OK first (current autonomy "
             "level requires confirmation for this kind of action) — "
@@ -80,6 +100,12 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
 
     if state:
         state.clear_confirmation()
+        state.transition_to(ExecutionStatus.EXECUTING)
+    jarvis_state.set_status(
+        ExecutionStatus.EXECUTING, active_request_id=request_id,
+        current_task=context.user_input if context else None, current_tool=name,
+        plan_progress=_plan_progress(state),
+    )
 
     log_event("tool_started", request_id=request_id, component="executor", tool=name)
     start = time.time()
@@ -96,6 +122,12 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
                 "tool_failed", request_id=request_id, component="executor", level="error",
                 tool=name, duration=time.time() - start, error_type=type(error).__name__, attempt=attempt,
             )
+            if state and state.cancelled:
+                result = f"Stopped: {name} failed and won't be retried because the request was cancelled."
+                log_action(name, tool_input, result)
+                log_event("tool_retry_cancelled", request_id=request_id, component="executor", tool=name, attempt=attempt)
+                state.record_tool(name, result_preview=result, ok=False, duration_seconds=time.time() - start)
+                return result
             if should_retry(name, error, attempt):
                 log_event("tool_retry", request_id=request_id, component="executor", tool=name, attempt=attempt)
                 time.sleep(retry_delay_seconds(attempt))
@@ -108,6 +140,13 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
 
     verification_note = None
     if name in registry.side_effect_tools():
+        if state:
+            state.transition_to(ExecutionStatus.VERIFYING)
+        jarvis_state.set_status(
+            ExecutionStatus.VERIFYING, active_request_id=request_id,
+            current_task=context.user_input if context else None, current_tool=name,
+            plan_progress=_plan_progress(state),
+        )
         verification = verify(name, tool_input, result)
         log_event(
             "tool_verified", request_id=request_id, component="executor",
@@ -155,6 +194,9 @@ def _run_tool_batch(tool_calls, source="chat", context=None, state=None):
                 results[futures[future]] = future.result()
 
     for call in sequential_calls:
+        if state and state.cancelled:
+            results[call["id"]] = f"Skipped: {call['name']} was not run because the request was cancelled."
+            continue
         results[call["id"]] = _run_tool(call["name"], call["input"], source, context, state)
 
     return results
@@ -199,6 +241,12 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
 
         if state:
             state.record_iteration()
+            state.transition_to(ExecutionStatus.THINKING)
+        jarvis_state.set_status(
+            ExecutionStatus.THINKING, active_request_id=request_id,
+            current_task=context.user_input if context else None,
+            plan_progress=_plan_progress(state),
+        )
         log_event(
             "agent_iteration", request_id=request_id, component="executor",
             iteration=state.iteration if state else None, provider="anthropic",
@@ -287,6 +335,12 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
 
         if state:
             state.record_iteration()
+            state.transition_to(ExecutionStatus.THINKING)
+        jarvis_state.set_status(
+            ExecutionStatus.THINKING, active_request_id=request_id,
+            current_task=context.user_input if context else None,
+            plan_progress=_plan_progress(state),
+        )
         log_event(
             "agent_iteration", request_id=request_id, component="executor",
             iteration=state.iteration if state else None, provider="openai",
@@ -361,6 +415,10 @@ def execute_task_stream(request, history=None, source="chat"):
     # attached at all (state.plan stays None, exactly like before this
     # phase existed).
     if is_complex(request):
+        state.transition_to(ExecutionStatus.PLANNING)
+        jarvis_state.set_status(
+            ExecutionStatus.PLANNING, active_request_id=context.request_id, current_task=preview(request),
+        )
         state.plan = create_plan(request)
         log_event(
             "plan_created", request_id=context.request_id, component="planner",
@@ -368,10 +426,17 @@ def execute_task_stream(request, history=None, source="chat"):
         )
 
     register_active(context.request_id, state)
+    execution_history.record_started(context.request_id, request)
 
     log_event(
         "request_started", request_id=context.request_id, component="executor",
         source=source, input_preview=preview(request),
+    )
+
+    state.transition_to(ExecutionStatus.THINKING)
+    jarvis_state.set_status(
+        ExecutionStatus.THINKING, active_request_id=context.request_id,
+        current_task=preview(request), plan_progress=_plan_progress(state),
     )
 
     messages = list(history) if history else [{"role": "user", "content": request}]
@@ -382,14 +447,24 @@ def execute_task_stream(request, history=None, source="chat"):
             for chunk in _run_claude_loop_stream(messages, source=source, context=context, state=state):
                 started = True
                 yield chunk
-            state.finish(result="ok")
-            log_event(
-                "request_completed", request_id=context.request_id, component="executor",
-                duration=time.time() - request_start, provider="anthropic",
-            )
+            if state.cancelled:
+                state.finish(result="cancelled")
+                execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                log_event(
+                    "request_cancelled", request_id=context.request_id, component="executor",
+                    duration=time.time() - request_start,
+                )
+            else:
+                state.finish(result="ok")
+                execution_history.record_completed(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                log_event(
+                    "request_completed", request_id=context.request_id, component="executor",
+                    duration=time.time() - request_start, provider="anthropic",
+                )
             return
         except PartialToolExecution:
             state.finish(failed=True, error="partial_tool_execution")
+            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
             log_event(
                 "request_failed", request_id=context.request_id, component="executor", level="error",
                 duration=time.time() - request_start, reason="partial_tool_execution",
@@ -401,6 +476,7 @@ def execute_task_stream(request, history=None, source="chat"):
                 # Can't retract text already shown, so don't risk splicing a
                 # second, unrelated fallback response onto it.
                 state.finish(failed=True, error="connection_dropped")
+                execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
                 log_event(
                     "request_failed", request_id=context.request_id, component="executor", level="error",
                     duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
@@ -414,13 +490,23 @@ def execute_task_stream(request, history=None, source="chat"):
 
         try:
             yield from _run_openai_loop_stream(messages, source=source, context=context, state=state)
-            state.finish(result="ok")
-            log_event(
-                "request_completed", request_id=context.request_id, component="executor",
-                duration=time.time() - request_start, provider="openai",
-            )
+            if state.cancelled:
+                state.finish(result="cancelled")
+                execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                log_event(
+                    "request_cancelled", request_id=context.request_id, component="executor",
+                    duration=time.time() - request_start,
+                )
+            else:
+                state.finish(result="ok")
+                execution_history.record_completed(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                log_event(
+                    "request_completed", request_id=context.request_id, component="executor",
+                    duration=time.time() - request_start, provider="openai",
+                )
         except PartialToolExecution:
             state.finish(failed=True, error="partial_tool_execution")
+            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
             log_event(
                 "request_failed", request_id=context.request_id, component="executor", level="error",
                 duration=time.time() - request_start, reason="partial_tool_execution",
@@ -428,6 +514,7 @@ def execute_task_stream(request, history=None, source="chat"):
             yield PARTIAL_EXECUTION_MESSAGE
         except Exception as error:
             state.finish(failed=True, error=type(error).__name__)
+            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
             log_event(
                 "request_failed", request_id=context.request_id, component="executor", level="error",
                 duration=time.time() - request_start, error_type=type(error).__name__,
@@ -435,6 +522,7 @@ def execute_task_stream(request, history=None, source="chat"):
             yield f"Agent error: {error}"
     finally:
         unregister_active(context.request_id)
+        jarvis_state.reset_to_idle()
 
 
 def execute_task(request, history=None, source="chat"):

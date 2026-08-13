@@ -117,6 +117,13 @@ class Settings:
     # them into every single request.
     context_memory_budget: int = 6
 
+    # --- Execution history ---
+    # IS wired (agent/execution_history.py): bounded retention -- oldest
+    # entries are dropped once this many completed executions are stored.
+    # Distinct from memory_enabled/context_memory_budget above: this is
+    # about past REQUESTS' metadata, not personal facts/preferences.
+    execution_history_limit: int = 20
+
     # --- Voice ---
     # voice_enabled is NOT YET WIRED (nothing currently checks it -- the
     # menu-bar app's voice loop always runs). wake_word and
@@ -160,6 +167,7 @@ class Settings:
             autonomy_level=_env_int("AUTONOMY_LEVEL", cls.autonomy_level),
             memory_enabled=_env_bool("MEMORY_ENABLED", cls.memory_enabled),
             context_memory_budget=_env_int("CONTEXT_MEMORY_BUDGET", cls.context_memory_budget),
+            execution_history_limit=_env_int("EXECUTION_HISTORY_LIMIT", cls.execution_history_limit),
             voice_enabled=_env_bool("VOICE_ENABLED", cls.voice_enabled),
             wake_word=_env_str("WAKE_WORD", cls.wake_word),
             voice_sample_rate=_env_int("VOICE_SAMPLE_RATE", cls.voice_sample_rate),
