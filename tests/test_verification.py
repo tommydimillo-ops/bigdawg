@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 
+import agent.scheduled_tasks as scheduled_tasks
 import database.memory as dbmem
 from agent.verification import verify
 
@@ -54,6 +55,15 @@ class TestScheduleTaskVerification(unittest.TestCase):
         self._temp_file = tempfile.mktemp(suffix=".json")
         dbmem.MEMORY_FILE = self._temp_file
 
+        # add_task() below writes through to the real production
+        # scheduled_tasks.json unless this is redirected too -- previously
+        # unisolated, so every test run silently left a real "test task"
+        # entry behind (confirmed live: 10 accumulated duplicates from
+        # repeated suite runs).
+        self._real_tasks_file = scheduled_tasks.TASKS_FILE
+        self._temp_tasks_file = tempfile.mktemp(suffix=".json")
+        scheduled_tasks.TASKS_FILE = self._temp_tasks_file
+
     def tearDown(self):
         dbmem.MEMORY_FILE = self._real_memory_file
         if os.path.exists(self._temp_file):
@@ -61,6 +71,11 @@ class TestScheduleTaskVerification(unittest.TestCase):
         tmp = f"{self._temp_file}.tmp"
         if os.path.exists(tmp):
             os.remove(tmp)
+
+        scheduled_tasks.TASKS_FILE = self._real_tasks_file
+        for path in (self._temp_tasks_file, f"{self._temp_tasks_file}.tmp"):
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_verifies_a_task_that_really_exists(self):
         from agent.scheduled_tasks import add_task

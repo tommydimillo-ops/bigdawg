@@ -100,10 +100,40 @@ def _get_page(context):
     return context.new_page()
 
 
+def _discard_dead_context():
+    """The Chrome process behind _context died or was closed outside our
+    control (crash, force-quit, the user closing the window, OS memory
+    pressure) -- the stale playwright/context handles can't be reused, a
+    real, reproduced failure mode: every browser call kept failing with
+    "...has been closed" indefinitely, since _get_context() only ever
+    checked `_context is None`, which stayed False forever once a context
+    existed even after it died. Dropping both globals lets the next
+    _get_live_page() call launch a fresh browser instead."""
+    global _playwright, _context
+    if _playwright is not None:
+        try:
+            _playwright.stop()
+        except Exception:
+            pass
+    _context = None
+    _playwright = None
+
+
+def _get_live_page():
+    """The one entry point every public function below uses to get a
+    usable page -- retries once, from a clean slate, if the existing
+    context turns out to be dead."""
+    try:
+        return _get_page(_get_context())
+    except Exception:
+        _discard_dead_context()
+        return _get_page(_get_context())
+
+
 def get_current_page():
     """The same live tab open_and_read drives, for other tools (like login
     autofill) that need to act on whatever page is currently on screen."""
-    return _get_page(_get_context())
+    return _get_live_page()
 
 
 def _shutdown():
@@ -206,8 +236,7 @@ def _extract_page_result(page, verb="Opened"):
 def open_and_read(target):
 
     target = target.strip()
-    context = _get_context()
-    page = _get_page(context)
+    page = _get_live_page()
 
     try:
         if URL_LIKE.match(target):
@@ -232,8 +261,7 @@ def search_on_page(query):
     input[type='search'], Amazon uses input[type='text'] with a matching
     aria-label) and drives it directly."""
 
-    context = _get_context()
-    page = _get_page(context)
+    page = _get_live_page()
 
     try:
         search_field = None
@@ -299,8 +327,7 @@ def click_on_page(text):
     coordinates) — it can't reach outside the one browser tab it already
     controls, same boundary as every other browser tool here."""
 
-    context = _get_context()
-    page = _get_page(context)
+    page = _get_live_page()
 
     try:
         target = page.get_by_role("link", name=text, exact=False).first
