@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 screenshot_*.png
+screenshot_*.jpg

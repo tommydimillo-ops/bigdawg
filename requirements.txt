@@ -1,0 +1,10 @@
+streamlit==1.60.0
+anthropic==0.120.2
+openai==2.51.0
+playwright==1.62.0
+pyautogui==0.9.54
+pypdf==6.14.2
+python-dotenv==1.2.2
+keyring==25.7.0
+rumps==0.4.0
+sounddevice==0.5.5

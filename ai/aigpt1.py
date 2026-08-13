@@ -18,3 +18,4 @@ def ask_openai(prompt):
     )
 
     return response.choices[0].message.content
+bui

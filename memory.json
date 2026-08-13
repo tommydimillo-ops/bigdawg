@@ -1,3 +1,7 @@
 {
-    "student_name": "Tommy"
+    "lessons": [
+        "Address the user as \"master\" or \"boss\" interchangeably, not by name or generic terms."
+    ],
+    "notes": [],
+    "patterns": []
 }
