@@ -124,7 +124,7 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
     system_prompt = [
         {
             "type": "text",
-            "text": build_system_prompt(),
+            "text": build_system_prompt(context.user_input if context else ""),
             "cache_control": {"type": "ephemeral"},
         }
     ]
@@ -210,7 +210,7 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
         provider=model_choice.provider, model=model_choice.model,
     )
 
-    messages = [{"role": "system", "content": build_system_prompt()}] + list(messages)
+    messages = [{"role": "system", "content": build_system_prompt(context.user_input if context else "")}] + list(messages)
     committed = False
 
     for _ in range(MAX_TOOL_ITERATIONS):

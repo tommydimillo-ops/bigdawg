@@ -1,7 +1,7 @@
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent.chat import anthropic_client as client
+from agent.context import build_context
 from agent.lessons import lessons_as_prompt_text
-from agent.patterns import patterns_as_prompt_text
 from config.settings import settings
 from tools.registry import anthropic_schemas, check_full_coverage
 
@@ -199,19 +199,28 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
-def build_system_prompt():
+def build_system_prompt(user_input=""):
+    """user_input is the current request, used to relevance-filter which
+    patterns get included (see agent/context.py) instead of dumping every
+    inferred pattern into every single prompt. Safe to call with no
+    argument -- an empty user_input just means no patterns match, not an
+    error; the prompt is otherwise unaffected. Standing rules (lessons)
+    are NOT relevance-filtered -- they're hard requirements, always
+    included in full regardless of user_input."""
+
     prompt = BASE_SYSTEM_PROMPT
 
-    patterns = patterns_as_prompt_text()
+    patterns = build_context(user_input).prompt_text
     if patterns:
         prompt += (
             "\n\nPATTERNS YOU'VE NOTICED — your own informal observations "
             "from past conversations about how this user talks and what "
-            "they tend to mean, so you understand casual/shorthand "
-            "phrasing better over time without them having to spell "
-            "things out formally. These are fallible inferences, not hard "
-            "rules — if one seems wrong for the current request, use your "
-            "own judgment instead of forcing it:\n" + patterns
+            "they tend to mean, relevant to their current request, so you "
+            "understand casual/shorthand phrasing better over time without "
+            "them having to spell things out formally. These are fallible "
+            "inferences, not hard rules — if one seems wrong for the "
+            "current request, use your own judgment instead of forcing "
+            "it:\n" + patterns
         )
 
     lessons = lessons_as_prompt_text()
@@ -246,7 +255,7 @@ if __name__ == "__main__":
     response = client.messages.create(
         model=settings.default_model,
         max_tokens=4096,
-        system=build_system_prompt(),
+        system=build_system_prompt(test),
         tools=TOOLS,
         messages=[{"role": "user", "content": test}],
     )

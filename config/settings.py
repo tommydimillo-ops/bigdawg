@@ -105,6 +105,10 @@ class Settings:
     # NOT YET WIRED -- nothing currently checks this before reading/
     # writing memory. Reserved for a future on/off toggle.
     memory_enabled: bool = True
+    # IS wired (agent/context.py): max number of relevance-ranked PATTERN
+    # memories injected into a given prompt, instead of dumping all of
+    # them into every single request.
+    context_memory_budget: int = 6
 
     # --- Voice ---
     # voice_enabled is NOT YET WIRED (nothing currently checks it -- the
@@ -148,6 +152,7 @@ class Settings:
             max_agent_steps=_env_int("MAX_AGENT_STEPS", cls.max_agent_steps),
             autonomy_level=_env_int("AUTONOMY_LEVEL", cls.autonomy_level),
             memory_enabled=_env_bool("MEMORY_ENABLED", cls.memory_enabled),
+            context_memory_budget=_env_int("CONTEXT_MEMORY_BUDGET", cls.context_memory_budget),
             voice_enabled=_env_bool("VOICE_ENABLED", cls.voice_enabled),
             wake_word=_env_str("WAKE_WORD", cls.wake_word),
             voice_sample_rate=_env_int("VOICE_SAMPLE_RATE", cls.voice_sample_rate),
