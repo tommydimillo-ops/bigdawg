@@ -22,7 +22,9 @@ credential-shaped doesn't end up sitting in plaintext history.
 """
 import json
 import os
+import tempfile
 import time
+import fcntl
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
@@ -76,25 +78,36 @@ def _load_raw() -> List[dict]:
 
 
 def _save_raw(records: List[dict]) -> None:
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    tmp_file = f"{HISTORY_FILE}.tmp"
-    with open(tmp_file, "w") as f:
-        json.dump(records, f, indent=2)
-    os.replace(tmp_file, HISTORY_FILE)
+    directory = os.path.dirname(HISTORY_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_file = tempfile.mkstemp(prefix="execution-history-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(records, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, HISTORY_FILE)
+    finally:
+        if os.path.exists(tmp_file):
+            os.remove(tmp_file)
 
 
 def _persist(record: ExecutionRecord) -> None:
     record.request_summary = _sanitize_summary(record.request_summary)
     record.errors = [redact_secrets(e) for e in record.errors]
 
-    records = _load_raw()
-    records.append(record.to_dict())
+    lock_file = f"{HISTORY_FILE}.lock"
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+    with open(lock_file, "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        records = _load_raw()
+        records.append(record.to_dict())
 
-    limit = max(0, settings.execution_history_limit)
-    if len(records) > limit:
-        records = records[-limit:]
+        limit = max(0, settings.execution_history_limit)
+        if len(records) > limit:
+            records = records[-limit:]
 
-    _save_raw(records)
+        _save_raw(records)
 
 
 def _record_from_state(request_id: str, request_summary: str, state: ExecutionState, status: str) -> ExecutionRecord:
@@ -113,7 +126,7 @@ def _record_from_state(request_id: str, request_summary: str, state: ExecutionSt
         errors=[state.error] if state.error else [],
         memories_retrieved_count=len(state.memories_retrieved),
         autonomy_level=None,  # set by the caller, which has the RequestContext
-        confirmation_events=sum(1 for r in state.tool_results if not r.ok) if state.tool_results else 0,
+        confirmation_events=state.confirmation_events,
     )
 
 

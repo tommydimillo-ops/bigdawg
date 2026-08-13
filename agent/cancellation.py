@@ -18,17 +18,49 @@ deliberate: an irreversible action (a click already sent, an email
 already handed to Mail) can't safely be un-sent, so "stop" here means
 "don't start anything else," not "abort whatever's happening right now."
 
-Process-scoped by construction: the active registry only ever contains
-requests running in the same Python process as the caller. request_cancel
-has no way to reach a request in a different process (e.g. cancelling a
-Streamlit-originated request from the menu-bar app, or vice versa) --
-that's a real limitation, not a bug, and is why it can only ever cancel
-"requests belonging to the current Jarvis process/session," never an
-arbitrary OS process or another interface's in-flight request.
+Cross-process requests use a tiny cancellation marker on disk. The process
+that owns the request notices that marker at the same cooperative boundaries
+used for local cancellation. A caller may only create a marker for the
+request currently advertised by JarvisState, preventing arbitrary IDs from
+leaving stale cancellation files behind.
 """
+import json
+import os
+import re
+import tempfile
+import time
 from typing import Optional
 
 from agent.execution_state import ExecutionState, cancel_active, get_active
+from agent.jarvis_state import get_state, is_busy
+
+
+CANCEL_DIR = os.path.expanduser(
+    "~/Library/Application Support/CampusPilot/cancellation_requests"
+)
+_VALID_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _marker_path(request_id: str) -> Optional[str]:
+    if not isinstance(request_id, str) or not _VALID_REQUEST_ID.fullmatch(request_id):
+        return None
+    return os.path.join(CANCEL_DIR, f"{request_id}.json")
+
+
+def _write_marker(request_id: str) -> bool:
+    path = _marker_path(request_id)
+    if path is None:
+        return False
+    os.makedirs(CANCEL_DIR, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix="cancel-", suffix=".tmp", dir=CANCEL_DIR)
+    try:
+        with os.fdopen(fd, "w") as file:
+            json.dump({"request_id": request_id, "requested_at": time.time()}, file)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    return True
 
 
 def request_cancel(request_id: str) -> bool:
@@ -37,7 +69,29 @@ def request_cancel(request_id: str) -> bool:
     here -- which is also the correct, safe outcome for a request_id that
     belongs to a different process, was never real, or already finished;
     there is nothing else for this call to affect."""
-    return cancel_active(request_id)
+    if cancel_active(request_id):
+        return True
+
+    shared = get_state()
+    if shared.active_request_id != request_id or not is_busy():
+        return False
+    return _write_marker(request_id)
+
+
+def cancellation_requested(request_id: Optional[str]) -> bool:
+    """Return whether another process requested cooperative cancellation."""
+    path = _marker_path(request_id) if request_id else None
+    return bool(path and os.path.exists(path))
+
+
+def clear_cancellation(request_id: Optional[str]) -> None:
+    """Remove a marker at request startup/cleanup so IDs cannot stay stale."""
+    path = _marker_path(request_id) if request_id else None
+    if path:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
 
 def get_request_status(request_id: str) -> Optional[ExecutionState]:

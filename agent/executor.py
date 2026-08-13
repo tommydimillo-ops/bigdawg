@@ -9,6 +9,7 @@ from agent.autonomy import Decision, ExecutionContext as AutonomyContext, is_con
 from agent.brain import build_system_prompt, TOOLS, client as claude_client
 from agent.chat import openai_client
 from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
+from agent.cancellation import cancellation_requested, clear_cancellation
 from agent.model_router import select as select_model
 from agent.observability import log_event, preview
 from agent.planner import create_plan, is_complex
@@ -19,6 +20,15 @@ from config.settings import settings
 from tools import registry
 
 MAX_TOOL_ITERATIONS = settings.max_agent_steps
+
+
+def _is_cancelled(state):
+    """Synchronize a cross-process cancel marker into live request state."""
+    if not state:
+        return False
+    if not state.cancelled and cancellation_requested(state.request_id):
+        state.cancel()
+    return state.cancelled
 
 
 class PartialToolExecution(Exception):
@@ -50,7 +60,7 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
     request_id = context.request_id if context else None
     autonomy_level = context.autonomy_level if context else settings.autonomy_level
 
-    if state and state.cancelled:
+    if _is_cancelled(state):
         result = f"Skipped: {name} was not run because the request was cancelled."
         log_action(name, tool_input, result)
         log_event("tool_skipped", request_id=request_id, component="executor", tool=name, reason="cancelled")
@@ -122,7 +132,7 @@ def _run_tool(name, tool_input, source="chat", context=None, state=None):
                 "tool_failed", request_id=request_id, component="executor", level="error",
                 tool=name, duration=time.time() - start, error_type=type(error).__name__, attempt=attempt,
             )
-            if state and state.cancelled:
+            if _is_cancelled(state):
                 result = f"Stopped: {name} failed and won't be retried because the request was cancelled."
                 log_action(name, tool_input, result)
                 log_event("tool_retry_cancelled", request_id=request_id, component="executor", tool=name, attempt=attempt)
@@ -194,7 +204,7 @@ def _run_tool_batch(tool_calls, source="chat", context=None, state=None):
                 results[futures[future]] = future.result()
 
     for call in sequential_calls:
-        if state and state.cancelled:
+        if _is_cancelled(state):
             results[call["id"]] = f"Skipped: {call['name']} was not run because the request was cancelled."
             continue
         results[call["id"]] = _run_tool(call["name"], call["input"], source, context, state)
@@ -234,7 +244,7 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
 
     for _ in range(MAX_TOOL_ITERATIONS):
 
-        if state and state.cancelled:
+        if _is_cancelled(state):
             log_event("request_cancelled", request_id=request_id, component="executor")
             yield "Stopped, as requested."
             return
@@ -329,7 +339,7 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
 
     for _ in range(MAX_TOOL_ITERATIONS):
 
-        if state and state.cancelled:
+        if _is_cancelled(state):
             log_event("request_cancelled", request_id=request_id, component="executor")
             return "Stopped, as requested."
 
@@ -404,11 +414,19 @@ PARTIAL_EXECUTION_MESSAGE = (
 )
 
 
-def execute_task_stream(request, history=None, source="chat"):
+def execute_task_stream(request, history=None, source="chat", on_state_created=None):
+    """Execute one request and stream response text.
+
+    ``on_state_created`` is an optional observer for interfaces that need
+    the exact request-scoped :class:`ExecutionState` (currently voice). It
+    does not participate in execution or permission decisions, and existing
+    callers can continue using the original three-argument API.
+    """
 
     context = RequestContext.create(request, source=source)
     state = ExecutionState(max_iterations=MAX_TOOL_ITERATIONS)
     request_start = time.time()
+    clear_cancellation(context.request_id)
 
     # Only genuinely multi-part requests pay for the extra planning model
     # call -- ordinary conversation stays on the fast path with no plan
@@ -426,6 +444,17 @@ def execute_task_stream(request, history=None, source="chat"):
         )
 
     register_active(context.request_id, state)
+    if on_state_created is not None:
+        try:
+            on_state_created(state)
+        except Exception as error:
+            # An interface observer must never be able to break the agent
+            # core after its request has already been registered.
+            log_event(
+                "state_observer_failed", request_id=context.request_id,
+                component="executor", level="warning",
+                error_type=type(error).__name__,
+            )
     execution_history.record_started(context.request_id, request)
 
     log_event(
@@ -447,7 +476,7 @@ def execute_task_stream(request, history=None, source="chat"):
             for chunk in _run_claude_loop_stream(messages, source=source, context=context, state=state):
                 started = True
                 yield chunk
-            if state.cancelled:
+            if _is_cancelled(state):
                 state.finish(result="cancelled")
                 execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
                 log_event(
@@ -490,7 +519,7 @@ def execute_task_stream(request, history=None, source="chat"):
 
         try:
             yield from _run_openai_loop_stream(messages, source=source, context=context, state=state)
-            if state.cancelled:
+            if _is_cancelled(state):
                 state.finish(result="cancelled")
                 execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
                 log_event(
@@ -522,6 +551,7 @@ def execute_task_stream(request, history=None, source="chat"):
             yield f"Agent error: {error}"
     finally:
         unregister_active(context.request_id)
+        clear_cancellation(context.request_id)
         jarvis_state.reset_to_idle()
 
 

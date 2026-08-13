@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .venv/
+.env.*
+!.env.example
 screenshot_*.png
 screenshot_*.jpg
 .DS_Store

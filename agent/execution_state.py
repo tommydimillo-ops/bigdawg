@@ -119,6 +119,7 @@ class ExecutionState:
     plan: Optional[object] = None  # agent.planner.Plan -- typed loosely to avoid a hard import here
     confirmation_pending: bool = False
     pending_confirmation_tool: Optional[str] = None
+    confirmation_events: int = 0
     cancelled: bool = False
     failed: bool = False
     error: Optional[str] = None
@@ -182,6 +183,7 @@ class ExecutionState:
         self.selected_model = model
 
     def request_confirmation(self, tool_name: str) -> None:
+        self.confirmation_events += 1
         self.confirmation_pending = True
         self.pending_confirmation_tool = tool_name
         self.transition_to(ExecutionStatus.WAITING_FOR_CONFIRMATION)

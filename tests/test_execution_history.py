@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 import agent.execution_history as execution_history
-from agent.execution_state import ExecutionState, register_active, unregister_active
+from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from config.settings import settings
 
 
@@ -26,7 +26,7 @@ class IsolatedHistoryTestCase(unittest.TestCase):
         execution_history.HISTORY_FILE = tempfile.mktemp(suffix=".json")
 
     def tearDown(self):
-        for path in (execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.tmp"):
+        for path in (execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.lock"):
             if os.path.exists(path):
                 os.remove(path)
         execution_history.HISTORY_FILE = self._real_history_file
@@ -94,6 +94,19 @@ class TestPersistAndRetention(IsolatedHistoryTestCase):
         execution_history.record_cancelled("r3", "stop this", self._state(), autonomy_level=4)
         record = execution_history.get_by_id("r3")
         self.assertEqual(record.status, "cancelled")
+
+    def test_confirmation_count_does_not_count_unrelated_tool_failures(self):
+        state = self._state()
+        state.record_tool("failed_tool", result_preview="nope", ok=False)
+        execution_history.record_failed("r-confirm", "do a thing", state)
+        self.assertEqual(execution_history.get_by_id("r-confirm").confirmation_events, 0)
+
+    def test_confirmation_count_tracks_actual_confirmation_requests(self):
+        state = ExecutionState(max_iterations=8)
+        state.transition_to(ExecutionStatus.THINKING)
+        state.request_confirmation("send_email")
+        execution_history.record_cancelled("r-confirm", "send it", state)
+        self.assertEqual(execution_history.get_by_id("r-confirm").confirmation_events, 1)
 
     def test_bounded_retention_keeps_only_the_most_recent_entries(self):
         # Directly exercises the real bound via config, not a monkeypatch --

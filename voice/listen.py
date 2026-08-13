@@ -14,7 +14,9 @@ import wave
 import numpy as np
 import sounddevice as sd
 
+from agent import voice_state
 from agent.chat import openai_client
+from agent.voice_state import VoiceState
 from config.settings import settings
 
 WAKE_WORD = settings.wake_word.lower()
@@ -30,19 +32,39 @@ def is_exit_phrase(text):
     return WAKE_WORD in text.lower() and bool(EXIT_WORDS.search(text))
 
 
+def strip_wake_word(text):
+    """Removes the wake word from anywhere in `text`, leaving whatever's
+    left as the actual command -- shared by wait_for_command and
+    agent.voice_session's speech-interruption handling so both strip it
+    the exact same way."""
+    # re.escape -- WAKE_WORD is configurable (settings.wake_word), not
+    # guaranteed regex-safe.
+    command = re.sub(r"\b" + re.escape(WAKE_WORD) + r"\b", " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", command).strip(" ,.:")
+
+
 def listen_for_utterance(
     samplerate=settings.voice_sample_rate,
-    max_seconds=15,
+    max_seconds=None,
     silence_seconds=1.2,
     calibration_seconds=1.0,
     recalibration_seconds=5.0,
     stop_flag=None,
     max_wait_seconds=None,
+    on_ready=None,
 ):
     """Listens quietly (no API calls, no cost) until speech-level volume is
     heard, then records until a stretch of silence follows (or max_seconds
     elapses). Returns (audio, samplerate), or (None, None) if stop_flag was
-    set, or max_wait_seconds elapsed, before any speech started."""
+    set, or max_wait_seconds elapsed, before any speech started.
+
+    on_ready, if given, is called right after initial calibration finishes
+    (before the detect-speech loop starts) -- lets a caller that's about to
+    make noise of its own (e.g. starting TTS playback) wait for calibration
+    against the still-quiet room first, instead of racing it."""
+
+    if max_seconds is None:
+        max_seconds = settings.voice_listen_timeout
 
     chunk_duration = 0.2
     chunk_samples = int(samplerate * chunk_duration)
@@ -74,6 +96,9 @@ def listen_for_utterance(
     with sd.InputStream(samplerate=samplerate, channels=1, dtype="int16") as stream:
 
         speech_threshold = _calibrate(stream)
+        if on_ready is not None:
+            on_ready()
+        voice_state.set_status(VoiceState.LISTENING)
 
         first_block = None
         chunks_since_calibration = 0
@@ -124,6 +149,7 @@ def listen_for_utterance(
 
 def transcribe(audio, samplerate):
 
+    voice_state.set_status(VoiceState.TRANSCRIBING)
     path = tempfile.mktemp(suffix=".wav")
 
     with wave.open(path, "wb") as wf:
@@ -180,11 +206,7 @@ def wait_for_command(stop_flag=None):
         if not text or WAKE_WORD not in text.lower():
             continue
 
-        # re.escape -- WAKE_WORD is now configurable (settings.wake_word),
-        # unlike the hardcoded "jarvis" this replaced, so it's no longer
-        # guaranteed regex-safe.
-        command = re.sub(r"\b" + re.escape(WAKE_WORD) + r"\b", " ", text, flags=re.IGNORECASE)
-        command = re.sub(r"\s+", " ", command).strip(" ,.:")
+        command = strip_wake_word(text)
 
         if command:
             return command

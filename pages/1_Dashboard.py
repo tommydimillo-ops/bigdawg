@@ -8,6 +8,7 @@ from agent.brain import TOOLS
 from agent.cancellation import request_cancel
 from agent.execution_history import get_by_id, get_recent
 from agent.execution_state import list_active
+from agent.jarvis_state import get_state, is_busy
 from agent.memory import MemoryType, list_all
 from agent.permissions import permission_label
 from agent.scheduled_tasks import list_tasks
@@ -19,42 +20,43 @@ st.title("📊 Jarvis Dashboard")
 st.caption(f"Live status — {datetime.now().strftime('%A, %B %d, %Y — %I:%M %p')}")
 
 # --- Live execution -----------------------------------------------------
-# Only sees requests running in *this* process -- the Streamlit app and
-# the menu-bar (voice) app are separate OS processes, so a voice
-# request's live state won't show up here, and vice versa. Usually empty
-# (a request typically finishes before a human reloads this page); genuine
-# and live when non-empty.
-active_executions = list_active()
+# JarvisState is filesystem-backed, so this view also sees work owned by
+# the menu-bar app or scheduler. The local registry is used only to enrich
+# the card with iteration details when Streamlit owns the request itself.
+shared_state = get_state()
+local_by_id = {state.request_id: state for state in list_active()}
+local_state = local_by_id.get(shared_state.active_request_id)
 
 st.subheader("⚡ Live execution")
-if active_executions:
-    for state in active_executions:
-        with st.container(border=True):
-            cols = st.columns(5)
-            cols[0].metric("Model", state.selected_model or "selecting…")
-            cols[1].metric("Iteration", f"{state.iteration}/{state.max_iterations}")
-            cols[2].metric("Elapsed", f"{state.duration_seconds:.1f}s")
-            cols[3].metric(
-                "Status",
-                "⏳ awaiting confirmation" if state.confirmation_pending
-                else ("🛑 cancelled" if state.cancelled else "🔄 running"),
-            )
-            with cols[4]:
-                st.caption("")  # vertically aligns the button with the metrics above
-                if state.cancelled:
-                    st.button("Cancelled", key=f"cancel_{state.request_id}", disabled=True)
-                elif st.button("🛑 Cancel", key=f"cancel_{state.request_id}"):
-                    request_cancel(state.request_id)
-                    st.rerun()
-            if state.confirmation_pending:
-                st.caption(f"Waiting on confirmation for: `{state.pending_confirmation_tool}`")
-            if state.plan:
-                st.markdown("**Plan progress:**")
-                st.text(state.plan.progress_text())
-            if state.tools_executed:
-                st.caption("Tools so far: " + ", ".join(f"`{t}`" for t in state.tools_executed))
+if is_busy() and shared_state.active_request_id:
+    with st.container(border=True):
+        cols = st.columns(5)
+        cols[0].metric("Status", shared_state.status.replace("_", " "))
+        cols[1].metric("Current tool", shared_state.current_tool or "—")
+        cols[2].metric("Plan", shared_state.plan_progress or "—")
+        cols[3].metric(
+            "Elapsed",
+            f"{local_state.duration_seconds:.1f}s" if local_state else "Another interface",
+        )
+        with cols[4]:
+            st.caption("")
+            if st.button(
+                "Cancel",
+                key=f"cancel_{shared_state.active_request_id}",
+                icon=":material/stop_circle:",
+            ):
+                if request_cancel(shared_state.active_request_id):
+                    st.success("Cancellation requested. The current tool will finish safely first.")
+                else:
+                    st.warning("That request is no longer active.")
+        if shared_state.current_task:
+            st.caption(shared_state.current_task)
+        if shared_state.confirmation_pending:
+            st.caption(f"Waiting on confirmation for `{shared_state.current_tool}`")
+        if local_state and local_state.tools_executed:
+            st.caption("Tools so far: " + ", ".join(f"`{t}`" for t in local_state.tools_executed))
 else:
-    st.caption("Nothing in flight right now — reload while a request is actively running to see it live.")
+    st.caption("Nothing in flight right now.")
 
 st.divider()
 

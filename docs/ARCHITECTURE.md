@@ -119,15 +119,16 @@ now sourced from `config.settings` instead of hardcoded.
 
 ## Memory
 
-Flat JSON key-value store: `database/memory.py` (absolute path at
-`~/Library/Application Support/CampusPilot/memory.json`), wrapped by
-`agent/memory_agent.py` (`remember`/`recall`, used for the `remember_fact`/
-`recall_facts` tools). Three other purpose-built stores sit alongside it:
-`agent/lessons.py` (standing rules from user corrections), `agent/patterns.py`
-(inferred communication patterns), `agent/conversation_store.py` (chat
-history for the Streamlit UI). No episodic/semantic split, no vector
-store, no relevance-filtered retrieval — `recall_facts` just returns
-everything stored.
+`agent/memory/` is the unified structured memory layer. Memories have typed
+categories, confidence, importance, supersession, and retrieval metadata;
+the manager persists them to the local CampusPilot application-data store.
+`agent/context.py` performs deterministic, relevance-ranked, budget-limited
+retrieval of pattern memories for prompts. Standing lessons remain always
+included because they are behavioral requirements, while facts and
+preferences remain available through explicit recall tools. Conversation
+history and short-lived execution history are separate stores rather than
+being mixed into long-term personal memory. There is intentionally no vector
+database or external database server.
 
 ## Voice
 
@@ -218,3 +219,15 @@ documented per that review's scope)
    try to drive the browser at the same moment, they're two independent
    Chrome instances contending for one profile directory. Not currently
    locked or coordinated.
+
+## Shared execution control
+
+Live status is published as an atomic JSON snapshot by `agent/jarvis_state.py`
+and can be read by Streamlit, the menu-bar app, and the scheduler. Cancellation
+is cooperative: `agent/cancellation.py` writes a validated, request-scoped
+marker that the owning executor checks between model iterations, tool calls,
+and retries. A tool already in progress is allowed to finish safely.
+
+Recent execution history is bounded and sanitized. Its read-modify-write cycle
+uses an inter-process file lock and atomic replacement so concurrent interfaces
+cannot silently discard one another's completed records.

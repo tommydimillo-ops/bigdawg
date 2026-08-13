@@ -125,13 +125,26 @@ class Settings:
     execution_history_limit: int = 20
 
     # --- Voice ---
-    # voice_enabled is NOT YET WIRED (nothing currently checks it -- the
-    # menu-bar app's voice loop always runs). wake_word and
-    # voice_sample_rate ARE real and already load-bearing.
+    # IS wired (Phase 6, ui/menu_bar.py): if False, the menu-bar app never
+    # starts its microphone listener thread at all.
     voice_enabled: bool = True
     wake_word: str = "jarvis"
     voice_sample_rate: int = 16000
     user_name: str = "Tommy"
+    # IS wired (voice/speak.py): if False, speak_natural() is a no-op --
+    # useful for a silent/text-only run without touching every call site.
+    tts_enabled: bool = True
+    # IS wired (voice/listen.py): max seconds a single recorded utterance
+    # is allowed to run before it's cut off, win or lose.
+    voice_listen_timeout: float = 15.0
+    # IS wired (agent/voice_session.py): how long to wait for a yes/no
+    # after Jarvis asks for confirmation before giving up and treating it
+    # as "no response."
+    voice_confirmation_timeout: float = 20.0
+    # IS wired (ui/menu_bar.py): if False, the wake word is heard but
+    # ignored while Jarvis is already speaking or executing, instead of
+    # interrupting it.
+    voice_interruption_enabled: bool = True
 
     # --- Scheduler ---
     scheduler_poll_seconds: int = 30
@@ -172,6 +185,10 @@ class Settings:
             wake_word=_env_str("WAKE_WORD", cls.wake_word),
             voice_sample_rate=_env_int("VOICE_SAMPLE_RATE", cls.voice_sample_rate),
             user_name=_env_str("JARVIS_USER_NAME", cls.user_name),
+            tts_enabled=_env_bool("TTS_ENABLED", cls.tts_enabled),
+            voice_listen_timeout=_env_float("LISTEN_TIMEOUT", cls.voice_listen_timeout),
+            voice_confirmation_timeout=_env_float("CONFIRMATION_TIMEOUT", cls.voice_confirmation_timeout),
+            voice_interruption_enabled=_env_bool("VOICE_INTERRUPTION_ENABLED", cls.voice_interruption_enabled),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             api_connect_timeout=_env_float("API_CONNECT_TIMEOUT", cls.api_connect_timeout),
             api_read_timeout=_env_float("API_READ_TIMEOUT", cls.api_read_timeout),

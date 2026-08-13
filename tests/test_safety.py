@@ -16,6 +16,7 @@ from datetime import datetime
 
 import tools.autofill as autofill
 import agent.jarvis_state as jarvis_state
+import agent.scheduled_tasks as scheduled_tasks
 from agent.audit import recent_actions
 from agent.brain import TOOLS
 from agent.executor import _run_tool
@@ -28,16 +29,22 @@ from tools.sandbox_python import run_python
 # every real dispatch -- redirected here (module-wide, like every other
 # file-backed store's tests in this project) so exercising it doesn't
 # clobber the real ~/Library/.../jarvis_state.json the live menu-bar/
-# dashboard apps read from.
+# dashboard apps read from. TestScheduler below writes real tasks (albeit
+# briefly, cleaned up again in its own tearDown) -- redirected the same
+# way so even that transient write never touches the real
+# scheduled_tasks.json.
 _real_state_file = jarvis_state.STATE_FILE
+_real_tasks_file = scheduled_tasks.TASKS_FILE
 
 
 def setUpModule():
     jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+    scheduled_tasks.TASKS_FILE = tempfile.mktemp(suffix=".json")
 
 
 def tearDownModule():
     jarvis_state.STATE_FILE = _real_state_file
+    scheduled_tasks.TASKS_FILE = _real_tasks_file
 
 
 class TestPermissionCoverage(unittest.TestCase):
@@ -104,11 +111,14 @@ class TestConfirmLoginGate(unittest.TestCase):
 class TestAuditLog(unittest.TestCase):
 
     def test_real_tool_call_is_logged(self):
-        before = len(recent_actions(1000))
+        # Checks the last entry itself, not a before/after length delta --
+        # the real audit log this test deliberately exercises (see the
+        # module docstring) has no cap, so once it's grown past whatever
+        # window recent_actions() is asked for, adding one more entry
+        # doesn't change that window's *length*, only its content.
         _run_tool("get_system_status", {})
         after = recent_actions(1000)
 
-        self.assertEqual(len(after), before + 1)
         self.assertEqual(after[-1]["tool"], "get_system_status")
 
     def test_tool_error_is_logged_with_error_prefix(self):

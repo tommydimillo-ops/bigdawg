@@ -5,15 +5,30 @@ process-local active-execution registry.
 Run with: python -m unittest tests.test_cancellation -v
 """
 import unittest
+import os
+import tempfile
 
+import agent.cancellation as cancellation
+import agent.jarvis_state as jarvis_state
 from agent.cancellation import get_request_status, request_cancel
+from agent.execution_state import ExecutionStatus
 from agent.execution_state import ExecutionState, register_active, unregister_active
 
 
 class TestRequestCancel(unittest.TestCase):
 
+    def setUp(self):
+        self._real_cancel_dir = cancellation.CANCEL_DIR
+        self._real_state_file = jarvis_state.STATE_FILE
+        self.temp_dir = tempfile.TemporaryDirectory()
+        cancellation.CANCEL_DIR = os.path.join(self.temp_dir.name, "cancellations")
+        jarvis_state.STATE_FILE = os.path.join(self.temp_dir.name, "state.json")
+
     def tearDown(self):
         unregister_active("test-cancel-id")
+        cancellation.CANCEL_DIR = self._real_cancel_dir
+        jarvis_state.STATE_FILE = self._real_state_file
+        self.temp_dir.cleanup()
 
     def test_cancels_a_real_active_request(self):
         state = ExecutionState(max_iterations=8)
@@ -37,6 +52,30 @@ class TestRequestCancel(unittest.TestCase):
         self.assertTrue(request_cancel("test-cancel-id"))
         self.assertTrue(request_cancel("test-cancel-id"))
         self.assertTrue(state.cancelled)
+
+    def test_cancels_request_owned_by_another_process(self):
+        jarvis_state.set_status(
+            ExecutionStatus.EXECUTING,
+            active_request_id="remote-request",
+            current_task="remote work",
+        )
+        self.assertTrue(request_cancel("remote-request"))
+        self.assertTrue(cancellation.cancellation_requested("remote-request"))
+
+    def test_cannot_create_marker_for_unadvertised_request(self):
+        jarvis_state.set_status(ExecutionStatus.EXECUTING, active_request_id="real-request")
+        self.assertFalse(request_cancel("made-up-request"))
+        self.assertFalse(cancellation.cancellation_requested("made-up-request"))
+
+    def test_rejects_request_id_path_traversal(self):
+        jarvis_state.set_status(ExecutionStatus.EXECUTING, active_request_id="../escape")
+        self.assertFalse(request_cancel("../escape"))
+
+    def test_clear_cancellation_removes_marker(self):
+        jarvis_state.set_status(ExecutionStatus.EXECUTING, active_request_id="remote-request")
+        self.assertTrue(request_cancel("remote-request"))
+        cancellation.clear_cancellation("remote-request")
+        self.assertFalse(cancellation.cancellation_requested("remote-request"))
 
 
 class TestGetRequestStatus(unittest.TestCase):

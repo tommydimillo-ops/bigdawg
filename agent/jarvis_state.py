@@ -15,6 +15,7 @@ here.
 """
 import json
 import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
@@ -52,11 +53,18 @@ class JarvisState:
 
 
 def _save(state: JarvisState) -> None:
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    tmp_file = f"{STATE_FILE}.tmp"
-    with open(tmp_file, "w") as f:
-        json.dump(state.to_dict(), f, indent=2)
-    os.replace(tmp_file, STATE_FILE)
+    directory = os.path.dirname(STATE_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_file = tempfile.mkstemp(prefix="jarvis-state-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state.to_dict(), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, STATE_FILE)
+    finally:
+        if os.path.exists(tmp_file):
+            os.remove(tmp_file)
 
 
 def get_state() -> JarvisState:
