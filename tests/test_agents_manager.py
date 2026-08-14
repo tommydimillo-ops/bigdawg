@@ -1,15 +1,22 @@
 """Tests for agent/agents/manager.py -- the registry (register/
-unregister/list/find) and route_and_execute's failure handling (unknown
+unregister/list/find), route_and_execute's failure handling (unknown
 agent, disabled agent, exception, timeout, cancellation, recursion
-depth). Uses fake, minimal Agent implementations throughout -- no real
+depth), and execute_agent's subprocess-isolated failure handling (Phase 8
+part 4). Uses fake, minimal Agent implementations throughout -- no real
 network calls, no real Speech/tool access, matching this project's
-established policy of mocking at the external-call boundary.
+established policy of mocking at the external-call boundary; for
+execute_agent that boundary is subprocess.run itself (a real,
+separate OS process), exactly the same policy this project already
+applies to every other external call (see tools/agenda.py's AppleScript
+subprocess tests, agent/agents/qa.py's own test-suite subprocess).
 
 Run with: python -m unittest tests.test_agents_manager -v
 """
+import json
+import subprocess
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.agents import manager
 from agent.agents.base import Agent, AgentMetadata
@@ -160,6 +167,141 @@ class TestRouteAndExecute(IsolatedRegistryTestCase):
         ctx = self._context("Research the best laptops.")
         manager.route_and_execute("Research the best laptops.", ctx)
         self.assertEqual(agent.executed_with, ("Research the best laptops.", ctx))
+
+
+class TestExecuteAgent(IsolatedRegistryTestCase):
+    """execute_agent (Phase 8 part 4) is the real, live execution entry
+    point -- tools/schemas/agents.py's consult_coworker_agent calls it,
+    not route_and_execute. Every real subprocess launch is mocked at the
+    subprocess.run boundary, so nothing here ever spawns a real process
+    or makes a real network/memory call."""
+
+    def _context(self, text="task", request_id="req-1"):
+        return RequestContext.create(text, source="test", request_id=request_id)
+
+    def _completed(self, stdout, returncode=0, stderr=""):
+        return subprocess.CompletedProcess(
+            args=["python", "-m", "agent.agents.worker"], returncode=returncode,
+            stdout=stdout, stderr=stderr,
+        )
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_successful_execution_returns_parsed_result(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+        mock_run.return_value = self._completed(json.dumps({
+            "success": True, "agent_name": "research", "request_id": "req-1",
+            "result": "found some laptops", "error": None, "duration_seconds": 1.2,
+            "tools_used": [], "model_used": None, "provider_used": None,
+            "verification_status": None, "cancelled": False, "metadata": {},
+        }))
+
+        result = manager.execute_agent("research", "best laptops", self._context())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.result, "found some laptops")
+        mock_run.assert_called_once()
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_passes_task_request_id_and_autonomy_level_to_the_subprocess(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+        mock_run.return_value = self._completed(json.dumps({
+            "success": True, "agent_name": "research", "request_id": "req-1",
+            "result": "ok", "error": None,
+        }))
+
+        context = self._context("best laptops", request_id="req-42")
+        context.autonomy_level = 2
+        manager.execute_agent("research", "best laptops", context)
+
+        _, kwargs = mock_run.call_args
+        payload = json.loads(kwargs["input"])
+        self.assertEqual(payload["agent_name"], "research")
+        self.assertEqual(payload["task"], "best laptops")
+        self.assertEqual(payload["request_id"], "req-42")
+        self.assertEqual(payload["autonomy_level"], 2)
+        self.assertEqual(kwargs["timeout"], manager.settings.agent_timeout_seconds)
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_timeout_kills_the_subprocess_and_reports_it(self, mock_run):
+        # subprocess.run itself guarantees the kill on TimeoutExpired
+        # (it SIGKILLs the child before raising) -- this test proves
+        # execute_agent surfaces that as a normal AgentResult rather than
+        # letting the exception escape.
+        manager.register(_FakeAgent(name="research"))
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="agent.agents.worker", timeout=60)
+
+        result = manager.execute_agent("research", "best laptops", self._context())
+
+        self.assertFalse(result.success)
+        self.assertIn("timed out", result.error)
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_nonzero_exit_code_is_reported_not_raised(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+        mock_run.return_value = self._completed("", returncode=1, stderr="Traceback...")
+
+        result = manager.execute_agent("research", "best laptops", self._context())
+
+        self.assertFalse(result.success)
+        self.assertIn("exited with code 1", result.error)
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_malformed_stdout_is_reported_not_raised(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+        mock_run.return_value = self._completed("not valid json")
+
+        result = manager.execute_agent("research", "best laptops", self._context())
+
+        self.assertFalse(result.success)
+        self.assertIn("unreadable", result.error)
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_worker_reported_error_is_surfaced(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+        mock_run.return_value = self._completed(json.dumps({"error": "Agent 'research' is not registered."}))
+
+        result = manager.execute_agent("research", "best laptops", self._context())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Agent 'research' is not registered.")
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_unknown_agent_never_spawns_a_subprocess(self, mock_run):
+        result = manager.execute_agent("nonexistent", "task", self._context())
+
+        self.assertFalse(result.success)
+        self.assertIn("not registered", result.error)
+        mock_run.assert_not_called()
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_disabled_agent_never_spawns_a_subprocess(self, mock_run):
+        manager.register(_FakeAgent(name="research", enabled=False))
+
+        result = manager.execute_agent("research", "task", self._context())
+
+        self.assertFalse(result.success)
+        self.assertIn("disabled", result.error)
+        mock_run.assert_not_called()
+
+    @patch("agent.agents.manager.cancellation_requested", return_value=True)
+    @patch("agent.agents.manager.subprocess.run")
+    def test_cancelled_before_start_never_spawns_a_subprocess(self, mock_run, mock_cancelled):
+        manager.register(_FakeAgent(name="research"))
+
+        result = manager.execute_agent("research", "task", self._context())
+
+        self.assertTrue(result.cancelled)
+        mock_run.assert_not_called()
+
+    @patch("agent.agents.manager.subprocess.run")
+    def test_max_depth_never_spawns_a_subprocess(self, mock_run):
+        manager.register(_FakeAgent(name="research"))
+
+        result = manager.execute_agent("research", "task", self._context(), depth=manager.MAX_AGENT_DEPTH)
+
+        self.assertFalse(result.success)
+        self.assertIn("depth", result.error)
+        mock_run.assert_not_called()
 
 
 if __name__ == "__main__":

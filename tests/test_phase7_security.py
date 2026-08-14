@@ -87,10 +87,18 @@ class TestAgentToolCannotBypassConfirmation(unittest.TestCase):
     def test_consult_coworker_agent_itself_goes_through_run_tool(self):
         # Dispatched via the real funnel, not called directly -- proves
         # it's an ordinary tool subject to the same logging/permission
-        # machinery as everything else, not a special bypass path.
+        # machinery as everything else, not a special bypass path. Real
+        # execution (Phase 8 part 4) happens in a subprocess spawned by
+        # agent.agents.manager.execute_agent, so that's the boundary
+        # mocked here -- mocking agent.agents.research.research (an
+        # in-process function) would have zero effect on that subprocess
+        # and would let this test make a real, unmocked network call.
         ctx = RequestContext.create("research something", source="chat")
         state = ExecutionState(max_iterations=8)
-        with patch("agent.agents.research.research", return_value="a real answer"):
+        fake_result = AgentResult(
+            success=True, agent_name="research", request_id=ctx.request_id, result="a real answer",
+        )
+        with patch("tools.schemas.agents.execute_agent", return_value=fake_result):
             result = _run_tool(
                 "consult_coworker_agent",
                 {"agent_name": "research", "task": "best laptops"},

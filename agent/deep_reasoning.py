@@ -6,7 +6,11 @@ to noticeably improve reasoning quality on a problem with a tempting wrong
 answer (correctly worked past the "17 sheep" red herring rather than
 computing 17-9)."""
 
+import time
+
 from agent.chat import anthropic_client as client
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from config.settings import settings
 
 SYSTEM_PROMPT = (
@@ -19,6 +23,7 @@ SYSTEM_PROMPT = (
 
 
 def deep_reason(question):
+    _call_started = time.time()
     response = client.messages.create(
         model=settings.default_model,
         # "max" effort thinking can use substantially more tokens than
@@ -31,6 +36,14 @@ def deep_reason(question):
         output_config={"effort": "max"},
         messages=[{"role": "user", "content": question}],
     )
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        record_llm_usage(
+            provider="anthropic", model=settings.default_model, operation="deep_reasoning",
+            request_id=get_current_request_id(),
+            input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+            duration_seconds=time.time() - _call_started,
+        )
 
     text = "".join(block.text for block in response.content if block.type == "text").strip()
     return text or "I wasn't able to reach a clear conclusion on that."

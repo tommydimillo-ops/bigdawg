@@ -8,13 +8,21 @@ the coordinator actually decides a task needs it — simple requests never
 touch this module.
 """
 
+import time
+
 from agent.audit import log_action
 from agent.chat import anthropic_client as client
+from agent.request_context import get_current_request_id
+from agent.usage import check_request_limits, record_llm_usage
 from config.settings import settings
 from documents.reader import read_document
 from tools.browser import open_and_read
 
-MAX_ITERATIONS = 6
+# Phase 8 part 3: configurable via settings.max_agent_iterations rather
+# than a hardcoded constant, so a single safety limit governs every
+# coworker agent's own internal loop, not one hand-tuned number per
+# agent.
+MAX_ITERATIONS = settings.max_agent_iterations
 
 SYSTEM_PROMPT = (
     "You are a focused research assistant. Given a research question, use "
@@ -76,8 +84,14 @@ def research(question):
     from inside the main agent's own tool loop."""
 
     messages = [{"role": "user", "content": question}]
+    request_id = get_current_request_id()
 
     for _ in range(MAX_ITERATIONS):
+        limit_check = check_request_limits(request_id)
+        if limit_check.exceeded:
+            return f"Stopping the research here — {limit_check.reason}."
+
+        _call_started = time.time()
         response = client.messages.create(
             model=settings.default_model,
             # Same headroom fix as agent/executor.py — adaptive thinking
@@ -88,6 +102,14 @@ def research(question):
             tools=TOOLS,
             messages=messages,
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_llm_usage(
+                provider="anthropic", model=settings.default_model, operation="research",
+                request_id=request_id, agent="research",
+                input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+                duration_seconds=time.time() - _call_started,
+            )
 
         if response.stop_reason != "tool_use":
             text = "".join(block.text for block in response.content if block.type == "text").strip()

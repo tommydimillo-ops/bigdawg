@@ -17,30 +17,35 @@ from unittest.mock import MagicMock, patch
 
 import agent.execution_history as execution_history
 import agent.jarvis_state as jarvis_state
+import agent.usage as usage
 import agent.voice_session as voice_session
 from agent.execution_state import ExecutionState, register_active, unregister_active
 
 
 class IsolatedExecutorTestCase(unittest.TestCase):
-    """Redirects both execution_history.HISTORY_FILE and
-    jarvis_state.STATE_FILE -- run_request() drives the real
-    execute_task_stream(), which writes both for real."""
+    """Redirects execution_history.HISTORY_FILE, jarvis_state.STATE_FILE,
+    and agent.usage.USAGE_FILE -- run_request() drives the real
+    execute_task_stream(), which writes all three for real."""
 
     def setUp(self):
         self._real_history_file = execution_history.HISTORY_FILE
         self._real_state_file = jarvis_state.STATE_FILE
+        self._real_usage_file = usage.USAGE_FILE
         execution_history.HISTORY_FILE = tempfile.mktemp(suffix=".json")
         jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+        usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
 
     def tearDown(self):
         for path in (
             execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.tmp",
             jarvis_state.STATE_FILE, f"{jarvis_state.STATE_FILE}.tmp",
+            usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock",
         ):
             if os.path.exists(path):
                 os.remove(path)
         execution_history.HISTORY_FILE = self._real_history_file
         jarvis_state.STATE_FILE = self._real_state_file
+        usage.USAGE_FILE = self._real_usage_file
 
 
 class _MockStream:

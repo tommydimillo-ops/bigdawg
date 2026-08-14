@@ -16,6 +16,7 @@ from agent.memory import MemoryType, list_all
 from agent.permissions import permission_label
 from agent.scheduled_tasks import list_tasks
 from agent.skills.registry import list_skills
+from agent.usage import get_recent as get_recent_usage, get_since as get_usage_since, total_tokens_for_request
 from config.settings import settings
 
 st.set_page_config(page_title="Jarvis Dashboard", page_icon="📊", layout="wide")
@@ -112,6 +113,82 @@ if recent_executions:
                 st.caption(f"Autonomy level at the time: {detail.autonomy_level}")
 else:
     st.caption("No completed executions recorded yet.")
+
+st.divider()
+
+# --- Jarvis Usage (Phase 8 part 2) ---------------------------------------
+# Real per-call token/cost accounting captured at every LLM/audio API call
+# site (agent/usage.py's own docstring lists all 9), not a guess -- this
+# is what finally answers "what exactly is costing me money" instead of
+# just "which tools ran" (see Recent activity below). ESTIMATED COST ONLY:
+# agent/usage.py's _PRICING table is this project's best-effort snapshot
+# of published rates, not pulled from a live pricing API or reconciled
+# against an actual invoice -- treat these dollar figures as relative,
+# not authoritative.
+st.subheader("💰 Jarvis Usage")
+
+midnight_today = datetime.combine(datetime.now().date(), datetime.min.time()).timestamp()
+usage_today = get_usage_since(midnight_today)
+usage_recent = get_recent_usage()
+
+ucols = st.columns(3)
+ucols[0].metric("Requests today", len({u.request_id for u in usage_today if u.request_id}))
+ucols[1].metric("Tokens today", f"{sum(u.input_tokens + u.output_tokens for u in usage_today):,}")
+ucols[2].metric("Estimated cost today", f"${sum(u.estimated_cost_usd for u in usage_today):.2f}")
+
+ucol_left, ucol_right = st.columns(2)
+
+with ucol_left:
+    st.markdown("**By provider (today)**")
+    cost_by_provider = {}
+    for u in usage_today:
+        cost_by_provider[u.provider] = cost_by_provider.get(u.provider, 0.0) + u.estimated_cost_usd
+    if cost_by_provider:
+        st.table([
+            {"Provider": provider, "Estimated cost": f"${cost:.2f}"}
+            for provider, cost in sorted(cost_by_provider.items(), key=lambda kv: -kv[1])
+        ])
+    else:
+        st.caption("No usage recorded today.")
+
+with ucol_right:
+    st.markdown("**By operation (today)**")
+    cost_by_operation = {}
+    for u in usage_today:
+        cost_by_operation[u.operation] = cost_by_operation.get(u.operation, 0.0) + u.estimated_cost_usd
+    if cost_by_operation:
+        st.table([
+            {"Operation": operation, "Estimated cost": f"${cost:.2f}"}
+            for operation, cost in sorted(cost_by_operation.items(), key=lambda kv: -kv[1])
+        ])
+    else:
+        st.caption("No usage recorded today.")
+
+st.markdown("**Top expensive requests (recent)**")
+cost_by_request = {}
+for u in usage_recent:
+    if not u.request_id:
+        continue
+    cost_by_request[u.request_id] = cost_by_request.get(u.request_id, 0.0) + u.estimated_cost_usd
+if cost_by_request:
+    top_requests = sorted(cost_by_request.items(), key=lambda kv: -kv[1])[:10]
+    st.table([
+        {
+            "Request": request_id,
+            "Estimated cost": f"${cost:.4f}",
+            "Tokens": f"{total_tokens_for_request(request_id):,}",
+        }
+        for request_id, cost in top_requests
+    ])
+else:
+    st.caption("No usage recorded yet.")
+
+st.caption(
+    f"Safety limits: max {settings.max_requests_per_execution or '∞'} provider calls, "
+    f"{settings.max_tokens_per_request or '∞'} tokens, and "
+    f"${settings.max_cost_per_request_usd if settings.max_cost_per_request_usd is not None else '∞'} "
+    "estimated cost per single request (config/settings.py)."
+)
 
 st.divider()
 
@@ -233,7 +310,7 @@ with right:
     st.subheader("Autonomy")
     st.metric("Current level", settings.autonomy_level)
     st.caption(describe_level(settings.autonomy_level))
-    pending_now = [s for s in active_executions if s.confirmation_pending]
+    pending_now = [s for s in list_active() if s.confirmation_pending]
     if pending_now:
         st.warning(
             f"⏳ {len(pending_now)} action(s) currently awaiting confirmation: "

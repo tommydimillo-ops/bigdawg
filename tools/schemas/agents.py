@@ -14,8 +14,8 @@ autonomy/confirmation gate every other tool call already does -- see
 Phase 7 section 13's explicit agent-must-go-through-the-tool-registry
 requirement.
 """
-from agent.agents.manager import get as get_agent
-from agent.request_context import RequestContext
+from agent.agents.manager import execute_agent, get as get_agent
+from agent.request_context import RequestContext, get_current_request_id
 from tools.registry import ToolSpec, register
 
 _VALID_AGENTS = ("coding", "research", "qa", "memory")
@@ -36,8 +36,19 @@ def _consult_coworker_agent(tool_input: dict) -> str:
     if not agent.metadata.enabled:
         return f"Agent '{agent_name}' is currently disabled."
 
-    context = RequestContext.create(task, source="agent_tool")
-    result = agent.execute(task, context)
+    # Phase 8 part 5: reuse the OUTER request's id (set by
+    # agent.executor.execute_task_stream via a contextvar -- see
+    # agent/request_context.py) instead of minting a fresh one, so this
+    # agent's own logs correlate back to the request that triggered it.
+    # Falls back to a fresh id only if this is somehow invoked outside
+    # execute_task_stream's call stack at all (e.g. a direct test call).
+    context = RequestContext.create(task, source="agent_tool", request_id=get_current_request_id())
+    # Phase 8 part 4: execute_agent runs the agent in its own OS process
+    # with a genuine, killable timeout (see agent/agents/manager.py's
+    # execute_agent docstring) rather than calling agent.execute()
+    # directly in-process, which had no timeout protection at all on this
+    # -- the real, live -- execution path.
+    result = execute_agent(agent_name, task, context)
 
     if not result.success:
         return f"{agent_name} agent could not complete this: {result.error or 'unknown error'}"

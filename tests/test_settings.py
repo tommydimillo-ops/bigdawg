@@ -131,7 +131,12 @@ class TestSecretsNeverLiveHere(unittest.TestCase):
                 lowered = name.lower()
                 self.assertNotIn("key", lowered)
                 self.assertNotIn("password", lowered)
-                self.assertNotIn("token", lowered)
+                # Singular "token" only -- an auth/API/session/bearer
+                # token is always singular in a field name; "tokens"
+                # (plural) is the ordinary, non-secret LLM-token-count
+                # sense (e.g. max_tokens_per_request, Phase 8's usage
+                # limit), which this must not flag as a credential.
+                self.assertNotRegex(lowered, r"token(?!s)")
                 self.assertNotIn("secret", lowered)
 
     def test_settings_module_does_not_import_secrets_module(self):

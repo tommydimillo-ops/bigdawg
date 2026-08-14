@@ -9,6 +9,7 @@ retry-wrapped openai_client instead of constructing a second one.
 import os
 import re
 import tempfile
+import time
 import wave
 
 import numpy as np
@@ -17,6 +18,8 @@ import sounddevice as sd
 from agent import voice_state
 from agent.chat import openai_client
 from agent.observability import log_event
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from agent.voice_state import VoiceState
 from config.settings import settings
 from voice import local_transcribe
@@ -255,6 +258,7 @@ def transcribe(audio, samplerate):
                 # style bias hint (not a strict vocabulary list): it nudges
                 # toward hearing "Jarvis" correctly and not over-formalizing
                 # casual American slang into stiffer phrasing.
+                _call_started = time.time()
                 response = openai_client.audio.transcriptions.create(
                     model=settings.transcription_model,
                     file=f,
@@ -265,6 +269,16 @@ def transcribe(audio, samplerate):
                     ),
                     timeout=20
                 )
+            # Billed by audio duration, not tokens -- this happens BEFORE
+            # a request_id exists (transcription is what determines what
+            # the request even is), so request_id is typically None here;
+            # still correctly bucketed under operation="voice_transcription"
+            # for the cost dashboard's by-operation breakdown.
+            record_llm_usage(
+                provider="openai", model=settings.transcription_model, operation="voice_transcription",
+                request_id=get_current_request_id(), audio_seconds=len(audio) / samplerate,
+                duration_seconds=time.time() - _call_started,
+            )
             return clean_transcript(response.text)
 
         except Exception as error:

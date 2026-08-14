@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import agent.execution_history as execution_history
 import agent.jarvis_state as jarvis_state
 import agent.skills.registry as skills_registry
+import agent.usage as usage
 import agent.voice_session as voice_session
 from agent.skills.models import Skill
 
@@ -25,8 +26,10 @@ class TestVoiceTriggersSkillDelegation(unittest.TestCase):
     def setUp(self):
         self._real_history_file = execution_history.HISTORY_FILE
         self._real_state_file = jarvis_state.STATE_FILE
+        self._real_usage_file = usage.USAGE_FILE
         execution_history.HISTORY_FILE = tempfile.mktemp(suffix=".json")
         jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+        usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
 
         self._real_registry = dict(skills_registry._REGISTRY)
         skills_registry.clear()
@@ -40,11 +43,13 @@ class TestVoiceTriggersSkillDelegation(unittest.TestCase):
         for path in (
             execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.tmp",
             jarvis_state.STATE_FILE, f"{jarvis_state.STATE_FILE}.tmp",
+            usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock",
         ):
             if os.path.exists(path):
                 os.remove(path)
         execution_history.HISTORY_FILE = self._real_history_file
         jarvis_state.STATE_FILE = self._real_state_file
+        usage.USAGE_FILE = self._real_usage_file
         skills_registry.clear()
         skills_registry._REGISTRY.update(self._real_registry)
 

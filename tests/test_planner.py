@@ -7,9 +7,12 @@ needed.
 Run with: python -m unittest tests.test_planner -v
 """
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+import agent.usage as usage
 from agent.planner import Plan, PlanStep, StepStatus, create_plan, is_complex
 
 
@@ -48,6 +51,20 @@ def _mock_response(json_text):
 
 
 class TestCreatePlan(unittest.TestCase):
+    """create_plan's mocked response's `.usage` attribute auto-vivifies as
+    a truthy MagicMock, so create_plan's Phase 8 part 1 usage-recording
+    call fires for real on every test here -- USAGE_FILE is redirected
+    the same way execution_history.HISTORY_FILE is elsewhere."""
+
+    def setUp(self):
+        self._real_usage_file = usage.USAGE_FILE
+        usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
+
+    def tearDown(self):
+        for path in (usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock"):
+            if os.path.exists(path):
+                os.remove(path)
+        usage.USAGE_FILE = self._real_usage_file
 
     @patch("agent.planner.anthropic_client")
     def test_parses_structured_steps(self, mock_client):

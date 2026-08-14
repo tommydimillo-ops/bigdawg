@@ -1,18 +1,32 @@
 """Tests for tools/schemas/agents.py's consult_coworker_agent -- the
 real execution entry point for coworker agents, exercised through the
 real tools.registry.dispatch() path, matching tests/test_registry.py's
-established pattern. Underlying agent execution is mocked at the same
-boundary as agent/agents/*'s own tests (research()/remember()/recall()),
-so nothing here makes a real network call or memory write.
+established pattern. Since Phase 8 part 4, real agent execution goes
+through agent.agents.manager.execute_agent (a subprocess launch) rather
+than an agent's own execute() being called directly in-process -- so
+that's the boundary these tests mock (see tools.schemas.agents.
+execute_agent, patched here as imported into that module), matching this
+project's established "mock at the external-call boundary" policy the
+same way execute_agent's own tests (tests/test_agents_manager.py) mock
+subprocess.run rather than reaching further in. Nothing here spawns a
+real subprocess, makes a real network call, or writes to real memory.
 
 Run with: python -m unittest tests.test_agents_tool -v
 """
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import tools.schemas  # noqa: F401 -- populates the registry
 from agent.agents import manager
+from agent.agents.models import AgentResult
 from tools import registry
+
+
+def _result(agent_name, success=True, result="", error=None, metadata=None):
+    return AgentResult(
+        success=success, agent_name=agent_name, request_id="req-1",
+        result=result, error=error, metadata=metadata or {},
+    )
 
 
 class TestToolIsRegistered(unittest.TestCase):
@@ -34,31 +48,35 @@ class TestConsultCoworkerAgent(unittest.TestCase):
         result = registry.dispatch("consult_coworker_agent", {"agent_name": "research", "task": ""})
         self.assertIn("task description is required", result)
 
-    @patch("agent.agents.research.research")
-    def test_research_agent_reachable_through_the_tool(self, mock_research):
-        mock_research.return_value = "found some laptops"
+    @patch("tools.schemas.agents.execute_agent")
+    def test_research_agent_reachable_through_the_tool(self, mock_execute):
+        mock_execute.return_value = _result("research", result="found some laptops")
         result = registry.dispatch(
             "consult_coworker_agent", {"agent_name": "research", "task": "best laptops under $1000"},
         )
-        mock_research.assert_called_once()
+        mock_execute.assert_called_once_with("research", "best laptops under $1000", ANY)
         self.assertEqual(result, "found some laptops")
 
-    @patch("agent.agents.memory.remember")
-    def test_memory_agent_reachable_through_the_tool(self, mock_remember):
-        mock_remember.return_value = "I'll remember that."
+    @patch("tools.schemas.agents.execute_agent")
+    def test_memory_agent_reachable_through_the_tool(self, mock_execute):
+        mock_execute.return_value = _result("memory", result="I'll remember that.")
         result = registry.dispatch(
             "consult_coworker_agent", {"agent_name": "memory", "task": "remember that I prefer dark mode"},
         )
-        mock_remember.assert_called_once()
+        mock_execute.assert_called_once()
         self.assertEqual(result, "I'll remember that.")
 
-    def test_coding_agent_reports_deferred(self):
+    @patch("tools.schemas.agents.execute_agent")
+    def test_coding_agent_reports_deferred(self, mock_execute):
+        mock_execute.return_value = _result("coding", metadata={"deferred_to_executor": True})
         result = registry.dispatch(
             "consult_coworker_agent", {"agent_name": "coding", "task": "fix this bug"},
         )
         self.assertIn("doesn't handle this directly yet", result)
 
-    def test_qa_agent_defers_for_non_test_requests(self):
+    @patch("tools.schemas.agents.execute_agent")
+    def test_qa_agent_defers_for_non_test_requests(self, mock_execute):
+        mock_execute.return_value = _result("qa", metadata={"deferred_to_executor": True})
         result = registry.dispatch(
             "consult_coworker_agent", {"agent_name": "qa", "task": "verify the email was sent"},
         )
@@ -87,9 +105,14 @@ class TestConsultCoworkerAgent(unittest.TestCase):
             manager.unregister("research")
             manager.register(real_agent)
 
-    @patch("agent.agents.research.research")
-    def test_agent_exception_is_reported_not_raised(self, mock_research):
-        mock_research.side_effect = RuntimeError("network down")
+    @patch("tools.schemas.agents.execute_agent")
+    def test_agent_exception_is_reported_not_raised(self, mock_execute):
+        # execute_agent itself is what turns an in-subprocess exception
+        # (or a timeout, or a crash) into a failed AgentResult rather than
+        # letting anything raise -- see tests/test_agents_manager.py's
+        # TestExecuteAgent for that. This test only proves the tool
+        # correctly surfaces a failed result as "could not complete".
+        mock_execute.return_value = _result("research", success=False, error="RuntimeError: network down")
         result = registry.dispatch(
             "consult_coworker_agent", {"agent_name": "research", "task": "best laptops"},
         )

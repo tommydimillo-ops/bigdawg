@@ -11,10 +11,13 @@ this module needing its own separate, duplicate interruption path."""
 import os
 import subprocess
 import tempfile
+import time
 
 from agent import tts_control
 from agent.chat import openai_client
 from agent.observability import log_event, preview
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from config.settings import settings
 
 OPENAI_VOICE = "onyx"
@@ -53,6 +56,7 @@ def _speak_openai(text):
         # occasionally drifts into another language partway through longer
         # responses (a real, reported OpenAI model quirk, not a bug in this
         # code); gpt-4o-mini-tts doesn't exhibit that.
+        _call_started = time.time()
         with openai_client.audio.speech.with_streaming_response.create(
             model=settings.tts_model,
             voice=OPENAI_VOICE,
@@ -60,6 +64,16 @@ def _speak_openai(text):
             timeout=20
         ) as response:
             response.stream_to_file(path)
+        # Billed by input character count, not tokens -- by the time
+        # speech_natural() runs, execute_task_stream's own request_id
+        # binding has already been unbound (the reply was fully
+        # generated first), so request_id is typically None here too;
+        # still correctly bucketed under operation="tts".
+        record_llm_usage(
+            provider="openai", model=settings.tts_model, operation="tts",
+            request_id=get_current_request_id(), character_count=len(text),
+            duration_seconds=time.time() - _call_started,
+        )
 
         _play_and_track(["afplay", path])
     finally:

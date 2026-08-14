@@ -1,7 +1,10 @@
 import base64
+import time
 
 from agent.chat import anthropic_client, openai_client
 from agent.observability import log_event
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from config.settings import settings
 
 VISION_PROMPT = "Describe what is on this screen."
@@ -9,6 +12,7 @@ VISION_PROMPT = "Describe what is on this screen."
 
 def _analyze_with_openai(encoded_image):
 
+    _call_started = time.time()
     response = openai_client.chat.completions.create(
         model=settings.vision_model,
         messages=[
@@ -29,12 +33,21 @@ def _analyze_with_openai(encoded_image):
             }
         ]
     )
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        record_llm_usage(
+            provider="openai", model=settings.vision_model, operation="vision",
+            request_id=get_current_request_id(),
+            input_tokens=getattr(usage, "prompt_tokens", 0), output_tokens=getattr(usage, "completion_tokens", 0),
+            duration_seconds=time.time() - _call_started,
+        )
 
     return response.choices[0].message.content
 
 
 def _analyze_with_claude(encoded_image):
 
+    _call_started = time.time()
     response = anthropic_client.messages.create(
         model=settings.vision_fallback_model,
         max_tokens=1024,
@@ -58,6 +71,14 @@ def _analyze_with_claude(encoded_image):
             }
         ]
     )
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        record_llm_usage(
+            provider="anthropic", model=settings.vision_fallback_model, operation="vision",
+            request_id=get_current_request_id(),
+            input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+            duration_seconds=time.time() - _call_started,
+        )
 
     return response.content[0].text
 

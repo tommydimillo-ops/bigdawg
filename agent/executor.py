@@ -16,8 +16,9 @@ from agent.delegation import decide as decide_delegation
 from agent.model_router import select as select_model
 from agent.observability import log_event, preview
 from agent.planner import create_plan, is_complex
-from agent.request_context import RequestContext
+from agent.request_context import RequestContext, bind_current_request_id, unbind_current_request_id
 from agent.retry_policy import retry_delay_seconds, should_retry
+from agent.usage import check_request_limits, record_llm_usage
 from agent.verification import verify
 from config.settings import settings
 from tools import registry
@@ -273,6 +274,15 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
             yield "Stopped, as requested."
             return
 
+        limit_check = check_request_limits(request_id)
+        if limit_check.exceeded:
+            log_event(
+                "request_limit_exceeded", request_id=request_id, component="executor",
+                reason=limit_check.reason,
+            )
+            yield f"Stopping here — {limit_check.reason}."
+            return
+
         if state:
             state.record_iteration()
             state.transition_to(ExecutionStatus.THINKING)
@@ -287,6 +297,7 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
         )
 
         try:
+            _call_started = time.time()
             with claude_client.messages.stream(
                 model=model_choice.model,
                 # Claude Sonnet 5 does adaptive extended thinking
@@ -307,6 +318,14 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
                     yielded_any = True
                     yield text
                 response = stream.get_final_message()
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                record_llm_usage(
+                    provider="anthropic", model=model_choice.model, operation="chat",
+                    request_id=request_id, agent=state.active_agent if state else None,
+                    input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+                    duration_seconds=time.time() - _call_started,
+                )
         except Exception as error:
             log_event(
                 "model_call_failed", request_id=request_id, component="executor",
@@ -367,6 +386,14 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
             log_event("request_cancelled", request_id=request_id, component="executor")
             return "Stopped, as requested."
 
+        limit_check = check_request_limits(request_id)
+        if limit_check.exceeded:
+            log_event(
+                "request_limit_exceeded", request_id=request_id, component="executor",
+                reason=limit_check.reason,
+            )
+            return f"Stopping here — {limit_check.reason}."
+
         if state:
             state.record_iteration()
             state.transition_to(ExecutionStatus.THINKING)
@@ -381,6 +408,7 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
         )
 
         try:
+            _call_started = time.time()
             response = openai_client.chat.completions.create(
                 model=model_choice.model,
                 messages=messages,
@@ -394,6 +422,15 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
             if committed:
                 raise PartialToolExecution from error
             raise
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_llm_usage(
+                provider="openai", model=model_choice.model, operation="fallback",
+                request_id=request_id, agent=state.active_agent if state else None,
+                input_tokens=getattr(usage, "prompt_tokens", 0), output_tokens=getattr(usage, "completion_tokens", 0),
+                duration_seconds=time.time() - _call_started,
+            )
 
         choice = response.choices[0].message
 
@@ -451,6 +488,14 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     state = ExecutionState(max_iterations=MAX_TOOL_ITERATIONS)
     request_start = time.time()
     clear_cancellation(context.request_id)
+
+    # Phase 8 part 5: bind this request's id so anything deeper in the
+    # call stack -- including a tool handler with no context parameter
+    # of its own, e.g. consult_coworker_agent -- can correlate back to
+    # it. Reset in the same finally block that already handles this
+    # request's other end-of-life cleanup, regardless of how execution
+    # ends (completed, failed, cancelled, or an exception escapes).
+    _request_id_token = bind_current_request_id(context.request_id)
 
     # Delegation (Phase 6.5): decide whether a skill's instructions
     # should be attached to this request -- a plain keyword-overlap
@@ -624,6 +669,7 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
         unregister_active(context.request_id)
         clear_cancellation(context.request_id)
         jarvis_state.reset_to_idle()
+        unbind_current_request_id(_request_id_token)
 
 
 def execute_task(request, history=None, source="chat"):

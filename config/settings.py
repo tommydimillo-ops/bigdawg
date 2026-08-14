@@ -23,6 +23,7 @@ it's never ambiguous whether a value is load-bearing.
 """
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -183,6 +184,24 @@ class Settings:
     # two agents the manager calls directly.
     agent_timeout_seconds: float = 60.0
 
+    # --- Usage tracking & limits (Phase 8) ---
+    # IS wired (agent/usage.py): how many past API-call usage records to
+    # keep -- same bounded-JSON-file pattern as execution_history_limit
+    # above, sized larger since a single request can span several calls
+    # (research alone can be 7+ per invocation -- see Phase 7's usage
+    # investigation), not one record per request the way execution
+    # history is.
+    usage_history_limit: int = 5000
+    # IS wired (agent/usage_limits.py): safety ceilings a single
+    # request's total usage can't exceed before later calls within that
+    # SAME request are refused -- a circuit breaker, not a permission
+    # check. Already-made calls can't be undone, but nothing further
+    # compounds. None disables the corresponding check.
+    max_requests_per_execution: Optional[int] = 25
+    max_agent_iterations: int = 6  # ResearchAgent's own internal loop cap
+    max_tokens_per_request: Optional[int] = 200_000
+    max_cost_per_request_usd: Optional[float] = 1.00
+
     # --- API behavior: timeouts & retries (both Claude and OpenAI clients) ---
     api_connect_timeout: float = 5.0
     api_read_timeout: float = 25.0
@@ -232,6 +251,11 @@ class Settings:
             ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             agent_timeout_seconds=_env_float("AGENT_TIMEOUT_SECONDS", cls.agent_timeout_seconds),
+            usage_history_limit=_env_int("USAGE_HISTORY_LIMIT", cls.usage_history_limit),
+            max_requests_per_execution=_env_int("MAX_REQUESTS_PER_EXECUTION", cls.max_requests_per_execution),
+            max_agent_iterations=_env_int("MAX_AGENT_ITERATIONS", cls.max_agent_iterations),
+            max_tokens_per_request=_env_int("MAX_TOKENS_PER_REQUEST", cls.max_tokens_per_request),
+            max_cost_per_request_usd=_env_float("MAX_COST_PER_REQUEST_USD", cls.max_cost_per_request_usd),
             api_connect_timeout=_env_float("API_CONNECT_TIMEOUT", cls.api_connect_timeout),
             api_read_timeout=_env_float("API_READ_TIMEOUT", cls.api_read_timeout),
             api_write_timeout=_env_float("API_WRITE_TIMEOUT", cls.api_write_timeout),

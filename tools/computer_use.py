@@ -31,6 +31,8 @@ import pyautogui
 
 from agent.chat import anthropic_client
 from agent.computer_use_status import set_active
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from config.settings import settings
 from tools.screen import MAX_DIMENSION
 from tools.vision import analyze_image
@@ -96,6 +98,7 @@ def computer_locate(description):
     with open(path, "rb") as f:
         encoded = base64.b64encode(f.read()).decode("utf-8")
 
+    _call_started = time.time()
     response = anthropic_client.messages.create(
         model=settings.default_model,
         # 200 was tight enough that adaptive extended thinking could
@@ -122,6 +125,14 @@ def computer_locate(description):
             ],
         }],
     )
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        record_llm_usage(
+            provider="anthropic", model=settings.default_model, operation="computer_locate",
+            request_id=get_current_request_id(),
+            input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+            duration_seconds=time.time() - _call_started,
+        )
 
     # response.content[0] isn't reliably the text block -- Claude Sonnet 5's
     # adaptive extended thinking can put a ThinkingBlock first.

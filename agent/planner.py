@@ -24,11 +24,14 @@ avoids building.
 """
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
 from agent.chat import anthropic_client
+from agent.request_context import get_current_request_id
+from agent.usage import record_llm_usage
 from config.settings import settings
 
 MAX_STEPS = 8
@@ -157,6 +160,7 @@ def create_plan(request: str) -> Plan:
     the request."""
 
     try:
+        _call_started = time.time()
         response = anthropic_client.messages.create(
             model=settings.planner_model,
             # A plan is a short JSON array, not prose. Keeping this tight
@@ -165,6 +169,14 @@ def create_plan(request: str) -> Plan:
             system=_planner_system_prompt(),
             messages=[{"role": "user", "content": request}],
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_llm_usage(
+                provider="anthropic", model=settings.planner_model, operation="planning",
+                request_id=get_current_request_id(),
+                input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
+                duration_seconds=time.time() - _call_started,
+            )
         text = "".join(block.text for block in response.content if block.type == "text").strip()
         text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
         raw_steps = json.loads(text)

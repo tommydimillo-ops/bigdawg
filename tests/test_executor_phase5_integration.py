@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import tools.schemas  # noqa: F401 -- populates the registry
 import agent.execution_history as execution_history
 import agent.jarvis_state as jarvis_state
+import agent.usage as usage
 from agent.execution_state import ExecutionStatus, cancel_active, list_active
 from agent.executor import execute_task_stream
 
@@ -59,25 +60,31 @@ def _tool_use_block(tool_id, name, tool_input):
 
 
 class IsolatedExecutorTestCase(unittest.TestCase):
-    """Redirects both execution_history.HISTORY_FILE and
-    jarvis_state.STATE_FILE (execute_task_stream writes both for real),
-    matching every other file-backed store's tests in this project."""
+    """Redirects execution_history.HISTORY_FILE, jarvis_state.STATE_FILE,
+    and agent.usage.USAGE_FILE (execute_task_stream writes all three for
+    real -- usage.py since Phase 8 part 1, whenever a mocked response's
+    `.usage` attribute auto-vivifies as a truthy MagicMock), matching
+    every other file-backed store's tests in this project."""
 
     def setUp(self):
         self._real_history_file = execution_history.HISTORY_FILE
         self._real_state_file = jarvis_state.STATE_FILE
+        self._real_usage_file = usage.USAGE_FILE
         execution_history.HISTORY_FILE = tempfile.mktemp(suffix=".json")
         jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
+        usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
 
     def tearDown(self):
         for path in (
             execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.tmp",
             jarvis_state.STATE_FILE, f"{jarvis_state.STATE_FILE}.tmp",
+            usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock",
         ):
             if os.path.exists(path):
                 os.remove(path)
         execution_history.HISTORY_FILE = self._real_history_file
         jarvis_state.STATE_FILE = self._real_state_file
+        usage.USAGE_FILE = self._real_usage_file
 
 
 class TestSuccessfulRequest(IsolatedExecutorTestCase):
