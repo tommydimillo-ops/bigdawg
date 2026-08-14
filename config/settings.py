@@ -156,18 +156,18 @@ class Settings:
     # ignored while Jarvis is already speaking or executing, instead of
     # interrupting it.
     voice_interruption_enabled: bool = True
-    # IS wired (voice/listen.py): defaults to False -- confirmed live via
-    # CPU profiling that SFSpeechRecognitionTask.cancel() does not
-    # actually stop macOS's on-device recognition work (a real profile
-    # showed a dozen-plus abandoned Speech.Task.Internal/
-    # SFLocalSpeechRecognitionClient dispatch queues still consuming
-    # hundreds of percent CPU, sustained, well after every call that
-    # spawned them had already returned). Until that's root-caused
-    # (or Apple fixes it), the fallback does more harm -- pegging the
-    # whole Mac -- than the silence it was meant to prevent. Leave the
-    # code in place and this flag flippable rather than deleting the
-    # feature outright.
-    local_transcription_fallback_enabled: bool = False
+    # IS wired (voice/listen.py): SFSpeechRecognitionTask.cancel() does
+    # not actually stop macOS's on-device recognition work (confirmed
+    # live via CPU profiling -- a real profile showed a dozen-plus
+    # abandoned dispatch queues still consuming hundreds of percent CPU
+    # minutes after the in-process calls that spawned them returned).
+    # voice/local_transcribe.py now runs the recognition in a separate
+    # OS process specifically so a timeout can kill it outright instead
+    # of relying on that broken cancel() API -- with that fixed, this
+    # flag is back on by default. Kept flippable in case a future
+    # regression in that isolation needs a fast way to fall back to
+    # silence rather than a resource leak.
+    local_transcription_fallback_enabled: bool = True
 
     # --- Scheduler ---
     scheduler_poll_seconds: int = 30

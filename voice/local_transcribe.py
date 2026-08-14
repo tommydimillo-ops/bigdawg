@@ -16,6 +16,9 @@ on-device recognition -- callers already treat "no local fallback
 available" as an acceptable outcome, the same as any other transcription
 failure.
 """
+import os
+import subprocess
+import sys
 import threading
 from typing import Optional
 
@@ -23,7 +26,7 @@ from agent.observability import log_event
 
 try:
     import Speech
-    from Foundation import NSBundle, NSURL
+    from Foundation import NSBundle
     _AVAILABLE = True
 except ImportError:
     _AVAILABLE = False
@@ -119,75 +122,57 @@ def is_available() -> bool:
         return False
 
 
+_WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_local_transcribe_worker.py")
+
+
 def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
     """Transcribes the WAV file at `path` entirely on-device. Returns the
-    recognized text, or None if unavailable, denied, errored, or the
-    recognizer didn't produce a final result within `timeout` seconds.
+    recognized text, or None if unavailable, denied, errored, or nothing
+    was recognized within `timeout` seconds.
+
+    Runs the actual recognition in a SEPARATE OS process (see
+    _local_transcribe_worker.py), not in-process --
+    SFSpeechRecognitionTask.cancel() does not reliably stop macOS's
+    on-device recognition work (confirmed live via CPU profiling: it
+    left dispatch queues running and consuming hundreds of percent CPU
+    minutes after both a timeout-triggered cancel() and an
+    unconditional one on every completion path). Killing a subprocess
+    on timeout is an OS-level guarantee no in-process API here could
+    match -- whatever it was using is reliably reclaimed the instant
+    it's terminated.
 
     Confirmed live: a wake-word-triggered clip that's actually going to
     produce a result does so in under ~2s; one that doesn't (ambiguous or
     non-speech audio) doesn't get more likely to succeed by waiting
     longer, it just hangs. This is the fallback for when the primary
     cloud transcription has ALREADY failed, so every second here is a
-    second the user sits waiting with no response -- 20s made a single
-    ambiguous utterance feel like the assistant had stopped responding
-    entirely."""
+    second the user sits waiting with no response."""
     if not is_available():
         return None
 
     try:
-        recognizer = Speech.SFSpeechRecognizer.alloc().init()
-        request = Speech.SFSpeechURLRecognitionRequest.alloc().initWithURL_(
-            NSURL.fileURLWithPath_(path)
+        result = subprocess.run(
+            [sys.executable, _WORKER_SCRIPT, path],
+            capture_output=True, text=True, timeout=timeout,
         )
-        request.setRequiresOnDeviceRecognition_(True)
-        request.setShouldReportPartialResults_(False)
-
-        done = threading.Event()
-        result = {}
-
-        def _on_result(speech_result, error):
-            if error is not None:
-                result["error"] = error
-                done.set()
-                return
-            if speech_result is not None and speech_result.isFinal():
-                result["text"] = str(
-                    speech_result.bestTranscription().formattedString()
-                )
-                done.set()
-
-        task = recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
-        try:
-            finished = done.wait(timeout=timeout)
-        finally:
-            # ALWAYS cancel, whether the callback already fired (with a
-            # result or an error) or timed out -- confirmed live via a
-            # CPU profile that this isn't just a timeout problem: tasks
-            # that completed normally through the error callback were
-            # STILL found running minutes later, each burning real CPU
-            # in their own SFLocalSpeechRecognitionClient/Speech.Task
-            # dispatch queue. A completion handler firing doesn't mean
-            # the underlying task's resources are actually released;
-            # cancel() on an already-finished task is a documented no-op,
-            # so doing this unconditionally is always safe.
-            task.cancel()
-
-        if not finished:
-            log_event("local_transcribe_recognition_timed_out", component="voice", level="warning")
-            return None
-
-        if "error" in result:
-            log_event(
-                "local_transcribe_recognition_failed", component="voice",
-                level="warning", error_type=type(result["error"]).__name__,
-            )
-            return None
-        return result.get("text")
-
+    except subprocess.TimeoutExpired:
+        # subprocess.run has already killed the child and waited for it
+        # by the time this exception is raised -- nothing left running.
+        log_event("local_transcribe_recognition_timed_out", component="voice", level="warning")
+        return None
     except Exception as error:
         log_event(
             "local_transcribe_unexpected_error", component="voice",
             level="warning", error_type=type(error).__name__,
         )
         return None
+
+    if result.returncode != 0:
+        log_event(
+            "local_transcribe_recognition_failed", component="voice",
+            level="warning", returncode=result.returncode,
+        )
+        return None
+
+    text = result.stdout.strip()
+    return text or None
