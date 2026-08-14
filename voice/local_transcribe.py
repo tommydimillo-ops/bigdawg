@@ -158,19 +158,22 @@ def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
                 done.set()
 
         task = recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
-        finished = done.wait(timeout=timeout)
+        try:
+            finished = done.wait(timeout=timeout)
+        finally:
+            # ALWAYS cancel, whether the callback already fired (with a
+            # result or an error) or timed out -- confirmed live via a
+            # CPU profile that this isn't just a timeout problem: tasks
+            # that completed normally through the error callback were
+            # STILL found running minutes later, each burning real CPU
+            # in their own SFLocalSpeechRecognitionClient/Speech.Task
+            # dispatch queue. A completion handler firing doesn't mean
+            # the underlying task's resources are actually released;
+            # cancel() on an already-finished task is a documented no-op,
+            # so doing this unconditionally is always safe.
+            task.cancel()
 
         if not finished:
-            # The task's own callback never fired within `timeout` --
-            # without an explicit cancel() here, the recognition task
-            # keeps running in the background indefinitely (confirmed
-            # live via a CPU profile: multiple abandoned recognition
-            # tasks from earlier timed-out calls were still running
-            # concurrently, minutes later, each burning real CPU --
-            # every ambiguous utterance was silently leaking a
-            # permanent background worker instead of actually stopping
-            # when this function gave up and returned).
-            task.cancel()
             log_event("local_transcribe_recognition_timed_out", component="voice", level="warning")
             return None
 

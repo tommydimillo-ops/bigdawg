@@ -191,6 +191,7 @@ class TestTranscribeLocal(unittest.TestCase):
 
         def _fake_task(request, handler):
             handler(speech_result, None)
+            return MagicMock()
 
         recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
 
@@ -204,6 +205,7 @@ class TestTranscribeLocal(unittest.TestCase):
 
         def _fake_task(request, handler):
             handler(None, RuntimeError("recognition failed"))
+            return MagicMock()
 
         recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
 
@@ -223,6 +225,7 @@ class TestTranscribeLocal(unittest.TestCase):
         def _fake_task(request, handler):
             handler(partial, None)
             handler(final, None)
+            return MagicMock()
 
         recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
 
@@ -254,7 +257,12 @@ class TestTranscribeLocal(unittest.TestCase):
 
     @patch("voice.local_transcribe.NSURL")
     @patch("voice.local_transcribe.Speech")
-    def test_successful_result_does_not_cancel_the_task(self, mock_speech, mock_nsurl):
+    def test_successful_result_still_cancels_the_task(self, mock_speech, mock_nsurl):
+        # A completion handler firing doesn't mean the task's underlying
+        # resources are actually released -- confirmed live via a CPU
+        # profile that tasks which completed through the error callback
+        # (not just ones that timed out) were still found running
+        # minutes later. cancel() must run unconditionally.
         recognizer = self._mock_available(mock_speech)
         mock_task = MagicMock()
 
@@ -268,7 +276,21 @@ class TestTranscribeLocal(unittest.TestCase):
 
         recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
         local_transcribe.transcribe_local("/tmp/x.wav")
-        mock_task.cancel.assert_not_called()
+        mock_task.cancel.assert_called_once()
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_error_result_still_cancels_the_task(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+        mock_task = MagicMock()
+
+        def _fake_task(request, handler):
+            handler(None, RuntimeError("recognition failed"))
+            return mock_task
+
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
+        local_transcribe.transcribe_local("/tmp/x.wav")
+        mock_task.cancel.assert_called_once()
 
     @patch("voice.local_transcribe.NSURL")
     @patch("voice.local_transcribe.Speech")
