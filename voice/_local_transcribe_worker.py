@@ -21,31 +21,40 @@ import sys
 import threading
 
 
+def _fail(reason: str) -> int:
+    # Diagnostic detail on stderr, not stdout -- the parent only treats
+    # stdout as the transcript, but captures stderr too (subprocess.run
+    # with capture_output=True) specifically so a failure here is
+    # debuggable from the parent's own logs instead of a bare "it didn't
+    # work," which is exactly the kind of thing that made this whole
+    # class of bug slow to track down in the first place.
+    print(reason, file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     if len(sys.argv) != 2:
-        return 1
+        return _fail("wrong argument count")
     path = sys.argv[1]
 
     try:
         import Speech
         from Foundation import NSURL
     except ImportError:
-        return 1
+        return _fail("Speech/Foundation not importable in this process")
 
     try:
-        if (
-            Speech.SFSpeechRecognizer.authorizationStatus()
-            != Speech.SFSpeechRecognizerAuthorizationStatusAuthorized
-        ):
-            return 1
+        status = Speech.SFSpeechRecognizer.authorizationStatus()
+        if status != Speech.SFSpeechRecognizerAuthorizationStatusAuthorized:
+            return _fail(f"not authorized in this process (status={status})")
 
         recognizer = Speech.SFSpeechRecognizer.alloc().init()
-        if not (
-            recognizer
-            and recognizer.isAvailable()
-            and recognizer.supportsOnDeviceRecognition()
-        ):
-            return 1
+        if not recognizer:
+            return _fail("SFSpeechRecognizer.alloc().init() returned nothing")
+        if not recognizer.isAvailable():
+            return _fail("recognizer.isAvailable() is False")
+        if not recognizer.supportsOnDeviceRecognition():
+            return _fail("recognizer.supportsOnDeviceRecognition() is False")
 
         request = Speech.SFSpeechURLRecognitionRequest.alloc().initWithURL_(
             NSURL.fileURLWithPath_(path)
@@ -71,15 +80,17 @@ def main() -> int:
         # Generous -- the PARENT process enforces the real deadline via
         # subprocess.run(timeout=...) and kills this whole process if
         # it's exceeded, so there's no benefit to a tight wait here.
-        done.wait(timeout=25)
+        finished = done.wait(timeout=25)
 
+        if not finished:
+            return _fail("recognition callback never fired within the internal 25s wait")
         if "text" in result:
             print(result["text"])
             return 0
-        return 1
+        return _fail(f"recognition error callback fired: {result.get('error')!r}")
 
-    except Exception:
-        return 1
+    except Exception as error:
+        return _fail(f"unexpected exception: {type(error).__name__}: {error}")
 
 
 if __name__ == "__main__":

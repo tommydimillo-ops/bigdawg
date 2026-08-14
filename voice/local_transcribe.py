@@ -171,6 +171,7 @@ def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
         log_event(
             "local_transcribe_recognition_failed", component="voice",
             level="warning", returncode=result.returncode,
+            reason=(result.stderr or "").strip()[:200],
         )
         return None
 

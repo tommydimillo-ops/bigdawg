@@ -206,7 +206,7 @@ class TestTranscribeLocal(unittest.TestCase):
     @patch("voice.local_transcribe.Speech")
     def test_nonzero_exit_returns_none(self, mock_speech, mock_run):
         self._mock_available(mock_speech)
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not authorized")
 
         self.assertIsNone(local_transcribe.transcribe_local("/tmp/x.wav"))
 
