@@ -26,6 +26,7 @@ import atexit
 import concurrent.futures
 import os
 import queue
+import signal
 import threading
 from datetime import datetime
 
@@ -39,6 +40,7 @@ from agent.memory_agent import recall
 from agent.scheduled_tasks import list_tasks, mark_run
 from agent.voice_state import VoiceState
 from config.settings import settings
+from voice import local_transcribe
 from voice.listen import is_exit_phrase, listen_for_followup, wait_for_command
 
 USER_NAME = settings.user_name
@@ -139,6 +141,17 @@ class CampusPilotApp(rumps.App):
                 daemon=True
             )
             self.listener_thread.start()
+
+            # Requests the one-time macOS "Speech Recognition" permission
+            # up front, on its own thread, rather than surprising the user
+            # with a system dialog the first time OpenAI transcription
+            # actually fails. A no-op after the first grant/denial --
+            # local_transcribe.request_authorization() just returns the
+            # existing answer instantly on every later call.
+            threading.Thread(
+                target=local_transcribe.request_authorization,
+                daemon=True,
+            ).start()
         else:
             self.listener_thread = None
 
@@ -462,6 +475,18 @@ class CampusPilotApp(rumps.App):
         rumps.alert("Recent Actions", recent_actions_text(10))
 
 
+def _handle_termination_signal(signum, frame):
+    # atexit alone isn't reliable here: rumps' AppKit run loop (NSApplication.
+    # run(), blocking C code, not plain Python) doesn't reliably unwind back
+    # through a normal Python interpreter shutdown on SIGTERM, so registered
+    # atexit callbacks can be skipped entirely -- confirmed live (a plain
+    # `kill -TERM` left the lock file behind with no cleanup running at all).
+    # os._exit() guarantees this cleanup actually happens before the process
+    # goes away, rather than hoping the interrupted run loop gets back to it.
+    _release_single_instance_lock()
+    os._exit(0)
+
+
 if __name__ == "__main__":
 
     if not _acquire_single_instance_lock():
@@ -469,5 +494,6 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     atexit.register(_release_single_instance_lock)
+    signal.signal(signal.SIGTERM, _handle_termination_signal)
 
     CampusPilotApp().run()

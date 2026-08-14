@@ -16,8 +16,10 @@ import sounddevice as sd
 
 from agent import voice_state
 from agent.chat import openai_client
+from agent.observability import log_event
 from agent.voice_state import VoiceState
 from config.settings import settings
+from voice import local_transcribe
 
 WAKE_WORD = settings.wake_word.lower()
 
@@ -197,25 +199,45 @@ def transcribe(audio, samplerate):
             wf.setframerate(samplerate)
             wf.writeframes(audio.tobytes())
 
-        with open(path, "rb") as f:
+        try:
+            with open(path, "rb") as f:
 
-            # gpt-4o-transcribe over whisper-1 -- meaningfully better on
-            # casual/accented real speech in testing. The prompt is a style
-            # bias hint (not a strict vocabulary list): it nudges toward
-            # hearing "Jarvis" correctly and not over-formalizing casual
-            # American slang into stiffer phrasing.
-            response = openai_client.audio.transcriptions.create(
-                model=settings.transcription_model,
-                file=f,
-                prompt=(
-                    "Casual spoken request to a personal assistant named "
-                    "Jarvis. May include American slang, filler words, and "
-                    "informal phrasing (e.g. \"gonna\", \"y'all\", \"kinda\")."
-                ),
-                timeout=20
+                # gpt-4o-transcribe over whisper-1 -- meaningfully better on
+                # casual/accented real speech in testing. The prompt is a
+                # style bias hint (not a strict vocabulary list): it nudges
+                # toward hearing "Jarvis" correctly and not over-formalizing
+                # casual American slang into stiffer phrasing.
+                response = openai_client.audio.transcriptions.create(
+                    model=settings.transcription_model,
+                    file=f,
+                    prompt=(
+                        "Casual spoken request to a personal assistant named "
+                        "Jarvis. May include American slang, filler words, and "
+                        "informal phrasing (e.g. \"gonna\", \"y'all\", \"kinda\")."
+                    ),
+                    timeout=20
+                )
+            return clean_transcript(response.text)
+
+        except Exception as error:
+            # OpenAI is unreachable, out of quota, or erroring -- fall back
+            # to on-device recognition (voice.local_transcribe) rather than
+            # going deaf entirely. No network call, no cost, but usually
+            # somewhat less accurate than the cloud model, so it's a
+            # fallback and not the default.
+            log_event(
+                "transcription_primary_failed", component="voice",
+                level="warning", error_type=type(error).__name__,
             )
-
-        return clean_transcript(response.text)
+            local_text = local_transcribe.transcribe_local(path)
+            if local_text is None:
+                log_event(
+                    "transcription_completely_failed", component="voice",
+                    level="error", error_type=type(error).__name__,
+                )
+                return ""
+            log_event("transcription_used_local_fallback", component="voice")
+            return clean_transcript(local_text)
 
     finally:
         try:

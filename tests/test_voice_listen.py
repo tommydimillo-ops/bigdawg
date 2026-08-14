@@ -215,6 +215,74 @@ class TestTranscribeSetsVoiceState(unittest.TestCase):
         self.assertEqual(result, "")
 
 
+class TestTranscribeFallsBackToLocal(unittest.TestCase):
+    """When the primary (OpenAI) transcription call fails -- e.g. no
+    credits, network down -- transcribe() must try the on-device fallback
+    before giving up entirely."""
+
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.local_transcribe")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_openai_failure_uses_local_fallback_result(
+        self, mock_voice_state, mock_client, mock_local, mock_wave, mock_remove,
+    ):
+        mock_client.audio.transcriptions.create.side_effect = RuntimeError("no credits")
+        mock_local.transcribe_local.return_value = "what's the weather"
+
+        with patch("builtins.open", MagicMock()):
+            result = listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+
+        mock_local.transcribe_local.assert_called_once()
+        self.assertEqual(result, "what's the weather")
+
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.local_transcribe")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_both_paths_failing_returns_empty_string_not_raise(
+        self, mock_voice_state, mock_client, mock_local, mock_wave, mock_remove,
+    ):
+        mock_client.audio.transcriptions.create.side_effect = RuntimeError("no credits")
+        mock_local.transcribe_local.return_value = None
+
+        with patch("builtins.open", MagicMock()):
+            result = listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+
+        self.assertEqual(result, "")
+
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.local_transcribe")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_openai_success_never_touches_local_fallback(
+        self, mock_voice_state, mock_client, mock_local, mock_wave, mock_remove,
+    ):
+        mock_client.audio.transcriptions.create.return_value = MagicMock(text="hi jarvis")
+        with patch("builtins.open", MagicMock()):
+            listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+        mock_local.transcribe_local.assert_not_called()
+
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.local_transcribe")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_local_fallback_result_still_goes_through_hallucination_filter(
+        self, mock_voice_state, mock_client, mock_local, mock_wave, mock_remove,
+    ):
+        mock_client.audio.transcriptions.create.side_effect = RuntimeError("no credits")
+        mock_local.transcribe_local.return_value = "context:"
+
+        with patch("builtins.open", MagicMock()):
+            result = listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+
+        self.assertEqual(result, "")
+
+
 class TestWakeDispatchGuards(unittest.TestCase):
 
     @patch("voice.listen.transcribe", return_value="Jarvis.")

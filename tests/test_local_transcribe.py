@@ -1,0 +1,201 @@
+"""Tests for voice/local_transcribe.py -- the on-device Speech-framework
+fallback used when the primary, cloud-based transcription fails. No real
+recognition or permission dialogs happen here: Speech/NSURL are replaced
+with mocks entirely, since this module's own logic (status checks,
+blocking-wait-for-callback bridging, graceful degradation) is what's
+under test, not Apple's actual on-device model.
+
+Run with: python -m unittest tests.test_local_transcribe -v
+"""
+import unittest
+from unittest.mock import MagicMock, patch
+
+import voice.local_transcribe as local_transcribe
+
+
+class TestFrameworkUnavailable(unittest.TestCase):
+
+    @patch("voice.local_transcribe._AVAILABLE", False)
+    def test_is_available_false_when_framework_missing(self):
+        self.assertFalse(local_transcribe.is_available())
+
+    @patch("voice.local_transcribe._AVAILABLE", False)
+    def test_request_authorization_false_when_framework_missing(self):
+        self.assertFalse(local_transcribe.request_authorization())
+
+    @patch("voice.local_transcribe._AVAILABLE", False)
+    def test_transcribe_local_none_when_framework_missing(self):
+        self.assertIsNone(local_transcribe.transcribe_local("/tmp/x.wav"))
+
+
+class TestIsAvailable(unittest.TestCase):
+
+    @patch("voice.local_transcribe.Speech")
+    def test_true_when_authorized_and_supported(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 3
+        recognizer = MagicMock()
+        recognizer.isAvailable.return_value = True
+        recognizer.supportsOnDeviceRecognition.return_value = True
+        mock_speech.SFSpeechRecognizer.alloc.return_value.init.return_value = recognizer
+        self.assertTrue(local_transcribe.is_available())
+
+    @patch("voice.local_transcribe.Speech")
+    def test_false_when_not_authorized(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0  # not determined
+        self.assertFalse(local_transcribe.is_available())
+
+    @patch("voice.local_transcribe.Speech")
+    def test_false_when_on_device_unsupported(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 3
+        recognizer = MagicMock()
+        recognizer.isAvailable.return_value = True
+        recognizer.supportsOnDeviceRecognition.return_value = False
+        mock_speech.SFSpeechRecognizer.alloc.return_value.init.return_value = recognizer
+        self.assertFalse(local_transcribe.is_available())
+
+    @patch("voice.local_transcribe.Speech")
+    def test_exceptions_degrade_to_false_not_raise(self, mock_speech):
+        mock_speech.SFSpeechRecognizer.authorizationStatus.side_effect = RuntimeError("boom")
+        self.assertFalse(local_transcribe.is_available())
+
+
+class TestRequestAuthorization(unittest.TestCase):
+
+    @patch("voice.local_transcribe.Speech")
+    def test_already_authorized_returns_true_immediately(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 3
+        self.assertTrue(local_transcribe.request_authorization())
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.assert_not_called()
+
+    @patch("voice.local_transcribe.Speech")
+    def test_denied_returns_false_immediately_without_prompting(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 1  # denied
+        self.assertFalse(local_transcribe.request_authorization())
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.assert_not_called()
+
+    @patch("voice.local_transcribe.Speech")
+    def test_not_determined_prompts_and_waits_for_callback(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
+
+        def _fake_request(callback):
+            callback(3)  # simulate the user granting access
+
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.side_effect = _fake_request
+
+        self.assertTrue(local_transcribe.request_authorization())
+
+    @patch("voice.local_transcribe.Speech")
+    def test_not_determined_and_denied_by_user(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
+
+        def _fake_request(callback):
+            callback(1)  # simulate the user denying access
+
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.side_effect = _fake_request
+
+        self.assertFalse(local_transcribe.request_authorization())
+
+    @patch("voice.local_transcribe.Speech")
+    def test_exception_requesting_authorization_returns_false(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.side_effect = RuntimeError("boom")
+        self.assertFalse(local_transcribe.request_authorization())
+
+
+class TestTranscribeLocal(unittest.TestCase):
+
+    def _mock_available(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 3
+        recognizer = MagicMock()
+        recognizer.isAvailable.return_value = True
+        recognizer.supportsOnDeviceRecognition.return_value = True
+        mock_speech.SFSpeechRecognizer.alloc.return_value.init.return_value = recognizer
+        return recognizer
+
+    @patch("voice.local_transcribe.Speech")
+    def test_returns_none_when_unavailable(self, mock_speech):
+        mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
+        mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
+        self.assertIsNone(local_transcribe.transcribe_local("/tmp/x.wav"))
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_returns_text_on_successful_final_result(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+
+        speech_result = MagicMock()
+        speech_result.isFinal.return_value = True
+        speech_result.bestTranscription.return_value.formattedString.return_value = "what's the weather"
+
+        def _fake_task(request, handler):
+            handler(speech_result, None)
+
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
+
+        result = local_transcribe.transcribe_local("/tmp/x.wav")
+        self.assertEqual(result, "what's the weather")
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_returns_none_on_recognition_error(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+
+        def _fake_task(request, handler):
+            handler(None, RuntimeError("recognition failed"))
+
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
+
+        self.assertIsNone(local_transcribe.transcribe_local("/tmp/x.wav"))
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_ignores_non_final_partial_results(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+
+        partial = MagicMock()
+        partial.isFinal.return_value = False
+        final = MagicMock()
+        final.isFinal.return_value = True
+        final.bestTranscription.return_value.formattedString.return_value = "done"
+
+        def _fake_task(request, handler):
+            handler(partial, None)
+            handler(final, None)
+
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
+
+        result = local_transcribe.transcribe_local("/tmp/x.wav")
+        self.assertEqual(result, "done")
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_timeout_with_no_callback_returns_none(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = lambda *a: None
+        result = local_transcribe.transcribe_local("/tmp/x.wav", timeout=0.1)
+        self.assertIsNone(result)
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_unexpected_exception_returns_none_not_raise(self, mock_speech, mock_nsurl):
+        self._mock_available(mock_speech)
+        mock_speech.SFSpeechURLRecognitionRequest.alloc.return_value.initWithURL_.side_effect = RuntimeError("boom")
+        result = local_transcribe.transcribe_local("/tmp/x.wav")
+        self.assertIsNone(result)
+
+
+if __name__ == "__main__":
+    unittest.main()

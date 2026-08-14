@@ -18,6 +18,7 @@ Three guarantees this covers, specific to voice:
 Run with: python -m unittest tests.test_phase6_security -v
 """
 import os
+import signal
 import tempfile
 import threading
 import unittest
@@ -212,6 +213,19 @@ class TestSingleInstanceLock(unittest.TestCase):
             f.write("999999")  # some other (dead) process's lock
         menu_bar._release_single_instance_lock()
         self.assertTrue(os.path.exists(menu_bar.APP_LOCK_FILE))  # untouched
+
+    @patch("ui.menu_bar.os._exit")
+    def test_sigterm_handler_releases_lock_before_exiting(self, mock_exit):
+        # Regression test for a real, confirmed bug: atexit callbacks don't
+        # reliably fire when a rumps app is sent SIGTERM (its AppKit run
+        # loop doesn't unwind back through normal Python interpreter
+        # shutdown), so a plain `kill -TERM` left the lock file behind
+        # forever. os._exit is mocked here so the handler's cleanup can be
+        # observed without actually terminating the test process.
+        menu_bar._acquire_single_instance_lock()
+        menu_bar._handle_termination_signal(signal.SIGTERM, None)
+        self.assertFalse(os.path.exists(menu_bar.APP_LOCK_FILE))
+        mock_exit.assert_called_once_with(0)
 
     def test_release_removes_our_own_lock(self):
         menu_bar._acquire_single_instance_lock()
