@@ -61,6 +61,11 @@ class ExecutionRecord:
     # its current description/instructions; those aren't duplicated here).
     delegation_destination: Optional[str] = None
     delegated_skill: Optional[str] = None
+    # Phase 7: which coworker agent(s) (see agent/agents/) handled this
+    # request, if any -- distinct from delegation_destination/
+    # delegated_skill the same way agent.agents.router is distinct from
+    # agent.delegation (see that module's docstring).
+    agents_used: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -135,6 +140,7 @@ def _record_from_state(request_id: str, request_summary: str, state: ExecutionSt
         confirmation_events=state.confirmation_events,
         delegation_destination=state.delegation_destination,
         delegated_skill=state.selected_skill,
+        agents_used=list(state.agents_used),
     )
 
 

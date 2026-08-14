@@ -172,6 +172,17 @@ class Settings:
     # --- Scheduler ---
     scheduler_poll_seconds: int = 30
 
+    # --- Agent Manager (Phase 7) ---
+    # IS wired (agent/agents/manager.py): bounds how long a single
+    # coworker-agent invocation (ResearchAgent/MemoryAgent's direct
+    # execution path) is allowed to run before the manager gives up and
+    # reports a timeout, rather than a runaway background agent silently
+    # never returning. CodingAgent/QAAgent don't run their own loop this
+    # phase (they defer to the ordinary executor, which already has its
+    # own bounds via max_agent_steps), so this specifically covers the
+    # two agents the manager calls directly.
+    agent_timeout_seconds: float = 60.0
+
     # --- API behavior: timeouts & retries (both Claude and OpenAI clients) ---
     api_connect_timeout: float = 5.0
     api_read_timeout: float = 25.0
@@ -220,6 +231,7 @@ class Settings:
                 "LOCAL_TRANSCRIPTION_FALLBACK_ENABLED", cls.local_transcription_fallback_enabled,
             ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
+            agent_timeout_seconds=_env_float("AGENT_TIMEOUT_SECONDS", cls.agent_timeout_seconds),
             api_connect_timeout=_env_float("API_CONNECT_TIMEOUT", cls.api_connect_timeout),
             api_read_timeout=_env_float("API_READ_TIMEOUT", cls.api_read_timeout),
             api_write_timeout=_env_float("API_WRITE_TIMEOUT", cls.api_write_timeout),

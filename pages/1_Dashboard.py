@@ -2,6 +2,7 @@ from datetime import datetime
 
 import streamlit as st
 
+from agent.agents.manager import list_agents
 from agent.audit import recent_actions
 from agent.autonomy import describe_level
 from agent.brain import TOOLS
@@ -291,3 +292,45 @@ with right:
         ])
 
     st.caption(f"Cowork integration: {cowork_status().value} — {describe_cowork_status()}")
+
+    st.subheader("🤝 Coworker Agents")
+    st.caption(
+        "Which specialist (see agent/agents/) a request looks routed to -- "
+        "a separate decision from Skills above (agent/agents/router.py's "
+        "own docstring explains why). Purely a routing/attribution signal: "
+        "ResearchAgent and MemoryAgent reuse already-safe existing "
+        "capabilities; CodingAgent and QAAgent don't execute anything "
+        "directly yet this phase, and everything still goes through the "
+        "same permission/autonomy/confirmation path as any other tool call."
+    )
+    registered_agents = list_agents()
+    for agent_meta in sorted(registered_agents, key=lambda m: m.name):
+        status = "✅ enabled" if agent_meta.enabled else "⏸️ disabled"
+        with st.expander(f"{agent_meta.name} (v{agent_meta.version}) — {status}"):
+            st.caption(agent_meta.description)
+            if agent_meta.capabilities:
+                st.markdown("**Capabilities:** " + ", ".join(agent_meta.capabilities))
+
+    active_agents = [s for s in list_active() if s.active_agent]
+    if active_agents:
+        st.markdown("**Currently active:**")
+        st.table([
+            {"Agent": s.active_agent, "Task": s.agent_task, "Status": s.agent_status}
+            for s in active_agents
+        ])
+
+    recent_agent_runs = [r for r in recent_executions if r.agents_used]
+    if recent_agent_runs:
+        st.markdown("**Recent agent-routed requests:**")
+        st.table([
+            {
+                "Time": datetime.fromtimestamp(r.timestamp).strftime("%b %d, %I:%M %p"),
+                "Agent(s)": ", ".join(r.agents_used),
+                "Request": r.request_summary,
+                "Model": r.model or "—",
+                "Status": r.status,
+            }
+            for r in recent_agent_runs[:10]
+        ])
+    else:
+        st.caption("No agent-routed requests yet.")

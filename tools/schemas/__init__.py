@@ -3,6 +3,7 @@ side effect. agent/brain.py imports this before deriving TOOLS from the
 registry, so this must stay imported here even though nothing below is
 referenced directly -- that's what populates the registry."""
 from tools.schemas import (
+    agents,
     browsing,
     computer_use,
     execution_control,
@@ -16,6 +17,7 @@ from tools.schemas import (
 )
 
 __all__ = [
+    "agents",
     "browsing",
     "computer_use",
     "execution_control",

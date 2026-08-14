@@ -138,6 +138,32 @@ class ExecutionState:
     # memory content.
     selected_skill: Optional[str] = None
     delegation_destination: Optional[str] = None
+    # Phase 7: which coworker agent (see agent/agents/) this request was
+    # routed to, if any -- distinct axis from delegation_destination the
+    # same way agent.agents.router is distinct from agent.delegation
+    # (see that module's docstring). active_agent/agent_task track the
+    # CURRENTLY running agent (agent_task is a short preview, not the
+    # agent's full input/output -- same bounded-preview convention as
+    # ToolCallRecord/MemoryReference above); agents_used is the ordered
+    # list of every agent name actually invoked during this request
+    # (in practice at most one, since agents cannot recursively
+    # delegate -- see agent.agents.manager.MAX_AGENT_DEPTH).
+    active_agent: Optional[str] = None
+    agent_task: Optional[str] = None
+    agent_status: Optional[str] = None
+    agents_used: List[str] = field(default_factory=list)
+
+    def record_agent(self, agent_name: str, task_preview: str, status: str) -> None:
+        self.active_agent = agent_name
+        self.agent_task = _preview(task_preview)
+        self.agent_status = status
+        if agent_name not in self.agents_used:
+            self.agents_used.append(agent_name)
+
+    def clear_active_agent(self) -> None:
+        self.active_agent = None
+        self.agent_task = None
+        self.agent_status = None
 
     def transition_to(self, new_status: ExecutionStatus) -> bool:
         """Returns True if the transition was applied. A rejected

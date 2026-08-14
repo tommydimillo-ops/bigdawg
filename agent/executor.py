@@ -4,6 +4,8 @@ import time
 
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent import execution_history, jarvis_state
+import agent.agents  # noqa: F401 -- populates agent.agents.manager's registry as a side effect
+from agent.agents.router import route as route_agent_task
 from agent.audit import log_action
 from agent.autonomy import Decision, ExecutionContext as AutonomyContext, is_confirmed, request_confirmation, should_request_confirmation
 from agent.brain import build_system_prompt, TOOLS, client as claude_client
@@ -463,6 +465,33 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
         "delegation_decided", request_id=context.request_id, component="delegation",
         destination=decision.destination.value, skill=decision.skill,
         confidence=round(decision.confidence, 2), reason=decision.reason,
+    )
+
+    # Agent Manager (Phase 7): a PURE routing decision only -- which
+    # coworker agent (see agent/agents/) this request looks like it's
+    # for, purely for attribution/observability (dashboard, execution
+    # history). Deliberately does NOT execute an agent here: the actual
+    # agents (agent/agents/coding.py etc.) reuse real infrastructure
+    # (network calls for ResearchAgent, a real memory write for
+    # MemoryAgent), and this call site runs unconditionally on every
+    # request through the one shared execute_task_stream every existing
+    # test already exercises -- invoking an agent for real from here
+    # would mean any request whose text happens to match a routing
+    # keyword makes a real, unmocked, potentially paid call the moment
+    # execute_task_stream runs, including from tests that were never
+    # written expecting that. Real agent execution instead happens
+    # through the same tool-registry/permission/confirmation path every
+    # other capability in this project already uses -- see
+    # tools/schemas/agents.py's consult_coworker_agent tool, which is
+    # reachable exactly like any other tool the model chooses to call,
+    # and therefore just as safely mockable in tests.
+    agent_decision = route_agent_task(request)
+    if agent_decision.destination.value != "direct":
+        state.record_agent(agent_decision.agent_name, request, "routed")
+    log_event(
+        "agent_routing_decided", request_id=context.request_id, component="agents",
+        destination=agent_decision.destination.value, confidence=round(agent_decision.confidence, 2),
+        reason=agent_decision.reason,
     )
 
     # Only genuinely multi-part requests pay for the extra planning model
