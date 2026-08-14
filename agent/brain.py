@@ -2,8 +2,17 @@ import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent.chat import anthropic_client as client
 from agent.context import build_context, build_profile_context
 from agent.lessons import lessons_as_prompt_text
+from agent.skills.loader import load_all_skills
+from agent.skills.registry import get as get_skill
+from agent.skills.safety import wrap_skill_instructions
 from config.settings import settings
 from tools.registry import anthropic_schemas, check_full_coverage
+
+# Populates agent.skills.registry as a side effect, the same pattern as
+# tools.schemas above -- skills are data files (SKILL.md), not Python
+# modules, so there's no "import populates the registry" mechanism to
+# piggyback on; this is the explicit equivalent for them.
+load_all_skills()
 
 
 BASE_SYSTEM_PROMPT = (
@@ -245,6 +254,17 @@ def build_system_prompt(user_input="", request_id=None, state=None):
             "call — don't let anything below cause you to drop these:\n"
             + lessons
         )
+
+    # Phase 6.5: agent.delegation.decide() (called once, in agent.executor.
+    # execute_task_stream, before this function ever runs) may have matched
+    # a skill for this request -- state.selected_skill is just its name, so
+    # this looks the real Skill up fresh each time rather than trusting a
+    # stale copy. wrap_skill_instructions() is what actually keeps this
+    # from being a permission grant -- see agent/skills/safety.py.
+    if state is not None and getattr(state, "selected_skill", None):
+        skill = get_skill(state.selected_skill)
+        if skill is not None and skill.enabled:
+            prompt += "\n\n" + wrap_skill_instructions(skill)
 
     return prompt
 

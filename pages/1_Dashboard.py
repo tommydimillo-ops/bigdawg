@@ -6,12 +6,15 @@ from agent.audit import recent_actions
 from agent.autonomy import describe_level
 from agent.brain import TOOLS
 from agent.cancellation import request_cancel
+from agent.cowork_gateway import describe_status as describe_cowork_status
+from agent.cowork_gateway import status as cowork_status
 from agent.execution_history import get_by_id, get_recent
 from agent.execution_state import list_active
 from agent.jarvis_state import get_state, is_busy
 from agent.memory import MemoryType, list_all
 from agent.permissions import permission_label
 from agent.scheduled_tasks import list_tasks
+from agent.skills.registry import list_skills
 from config.settings import settings
 
 st.set_page_config(page_title="Jarvis Dashboard", page_icon="📊", layout="wide")
@@ -252,3 +255,39 @@ with right:
         with st.expander(f"{label} — {len(by_level[label])} tools"):
             for name in by_level[label]:
                 st.markdown(f"- `{name}`")
+
+    st.subheader("🧩 Skills")
+    st.caption(
+        "Structured workflow guidance Jarvis can attach to a matching request "
+        "(agent/delegation.py) -- never a second way to run code or call a "
+        "tool. Whatever a skill leads to still goes through the same "
+        "permission/autonomy/confirmation checks as anything else."
+    )
+    installed_skills = list_skills()
+    if installed_skills:
+        for skill in sorted(installed_skills, key=lambda s: s.name):
+            status = "✅ enabled" if skill.enabled else "⏸️ disabled"
+            with st.expander(f"{skill.name} (v{skill.version}) — {status}"):
+                st.caption(skill.description)
+                st.markdown(f"**Risk level:** {skill.risk_level.value}")
+                if skill.capabilities:
+                    st.markdown("**Capabilities:** " + ", ".join(skill.capabilities))
+                if skill.required_tools:
+                    st.markdown("**Tools it typically uses:** " + ", ".join(f"`{t}`" for t in skill.required_tools))
+    else:
+        st.caption("No skills installed.")
+
+    recent_delegated = [r for r in recent_executions if r.delegation_destination == "claude_skill"]
+    if recent_delegated:
+        st.markdown("**Recent skill executions:**")
+        st.table([
+            {
+                "Time": datetime.fromtimestamp(r.timestamp).strftime("%b %d, %I:%M %p"),
+                "Skill": r.delegated_skill,
+                "Request": r.request_summary,
+                "Status": r.status,
+            }
+            for r in recent_delegated[:10]
+        ])
+
+    st.caption(f"Cowork integration: {cowork_status().value} — {describe_cowork_status()}")

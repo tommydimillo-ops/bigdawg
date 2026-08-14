@@ -11,6 +11,7 @@ from tools.schemas import (
     productivity,
     reasoning,
     scheduling,
+    skills,
     system,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "productivity",
     "reasoning",
     "scheduling",
+    "skills",
     "system",
 ]

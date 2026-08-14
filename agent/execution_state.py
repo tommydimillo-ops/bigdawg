@@ -128,6 +128,16 @@ class ExecutionState:
     finished_at: Optional[float] = None
     selected_provider: Optional[str] = None
     selected_model: Optional[str] = None
+    # Phase 6.5: which capability layer handled this request (see
+    # agent/delegation.py) -- "native_tool" for the ordinary, unmodified
+    # path, "claude_skill" when a matched skill's instructions were
+    # attached. selected_skill is only ever a name to look up in
+    # agent.skills.registry, never the skill's own instructions text --
+    # duplicating that here would be redundant, unbounded growth for no
+    # benefit, the same reasoning MemoryReference already documents for
+    # memory content.
+    selected_skill: Optional[str] = None
+    delegation_destination: Optional[str] = None
 
     def transition_to(self, new_status: ExecutionStatus) -> bool:
         """Returns True if the transition was applied. A rejected

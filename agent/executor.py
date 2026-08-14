@@ -10,6 +10,7 @@ from agent.brain import build_system_prompt, TOOLS, client as claude_client
 from agent.chat import openai_client
 from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from agent.cancellation import cancellation_requested, clear_cancellation
+from agent.delegation import decide as decide_delegation
 from agent.model_router import select as select_model
 from agent.observability import log_event, preview
 from agent.planner import create_plan, is_complex
@@ -448,6 +449,21 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     state = ExecutionState(max_iterations=MAX_TOOL_ITERATIONS)
     request_start = time.time()
     clear_cancellation(context.request_id)
+
+    # Delegation (Phase 6.5): decide whether a skill's instructions
+    # should be attached to this request -- a plain keyword-overlap
+    # match against agent.skills.registry, no model call. Only ever
+    # *attaches extra system-prompt context*; it doesn't change what
+    # tools are allowed, dispatch anything itself, or affect any
+    # permission/confirmation decision later in this same request.
+    decision = decide_delegation(request)
+    state.selected_skill = decision.skill
+    state.delegation_destination = decision.destination.value
+    log_event(
+        "delegation_decided", request_id=context.request_id, component="delegation",
+        destination=decision.destination.value, skill=decision.skill,
+        confidence=round(decision.confidence, 2), reason=decision.reason,
+    )
 
     # Only genuinely multi-part requests pay for the extra planning model
     # call -- ordinary conversation stays on the fast path with no plan

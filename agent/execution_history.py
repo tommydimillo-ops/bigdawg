@@ -55,6 +55,12 @@ class ExecutionRecord:
     memories_retrieved_count: int = 0
     autonomy_level: Optional[int] = None
     confirmation_events: int = 0
+    # Phase 6.5: which capability layer handled this request (see
+    # agent/delegation.py) -- "native_tool"/"claude_skill"/etc. delegated_skill
+    # is just the skill's name (look it up in agent.skills.registry for
+    # its current description/instructions; those aren't duplicated here).
+    delegation_destination: Optional[str] = None
+    delegated_skill: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -127,6 +133,8 @@ def _record_from_state(request_id: str, request_summary: str, state: ExecutionSt
         memories_retrieved_count=len(state.memories_retrieved),
         autonomy_level=None,  # set by the caller, which has the RequestContext
         confirmation_events=state.confirmation_events,
+        delegation_destination=state.delegation_destination,
+        delegated_skill=state.selected_skill,
     )
 
 
