@@ -277,6 +277,14 @@ def transcribe(audio, samplerate):
                 "transcription_primary_failed", component="voice",
                 level="warning", error_type=type(error).__name__,
             )
+
+            if not settings.local_transcription_fallback_enabled:
+                log_event(
+                    "transcription_completely_failed", component="voice",
+                    level="error", error_type=type(error).__name__,
+                )
+                return ""
+
             local_text = local_transcribe.transcribe_local(path)
             if local_text is None:
                 log_event(

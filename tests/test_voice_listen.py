@@ -9,6 +9,7 @@ here, real audio hardware in the automated suite).
 
 Run with: python -m unittest tests.test_voice_listen -v
 """
+import dataclasses
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ import numpy as np
 
 import voice.listen as listen
 from agent.voice_state import VoiceState
+from config.settings import settings
 
 
 class TestStripWakeWord(unittest.TestCase):
@@ -273,9 +275,16 @@ class TestTranscribeSetsVoiceState(unittest.TestCase):
 
 class TestTranscribeFallsBackToLocal(unittest.TestCase):
     """When the primary (OpenAI) transcription call fails -- e.g. no
-    credits, network down -- transcribe() must try the on-device fallback
-    before giving up entirely."""
+    credits, network down -- transcribe() tries the on-device fallback
+    before giving up entirely, IF local_transcription_fallback_enabled is
+    on. It defaults to off: confirmed live via CPU profiling that
+    SFSpeechRecognitionTask.cancel() doesn't actually stop macOS's
+    on-device recognition work, so leaving this on by default left
+    abandoned recognition tasks pegging the CPU indefinitely. The
+    fallback mechanism itself is still tested here (patched on) since
+    the code isn't gone, just off until that's root-caused."""
 
+    @patch("voice.listen.settings", dataclasses.replace(settings, local_transcription_fallback_enabled=True))
     @patch("voice.listen.os.remove")
     @patch("voice.listen.wave.open")
     @patch("voice.listen.local_transcribe")
@@ -293,6 +302,24 @@ class TestTranscribeFallsBackToLocal(unittest.TestCase):
         mock_local.transcribe_local.assert_called_once()
         self.assertEqual(result, "what's the weather")
 
+    @patch("voice.listen.settings", dataclasses.replace(settings, local_transcription_fallback_enabled=False))
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.local_transcribe")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_disabled_by_default_skips_local_fallback_entirely(
+        self, mock_voice_state, mock_client, mock_local, mock_wave, mock_remove,
+    ):
+        mock_client.audio.transcriptions.create.side_effect = RuntimeError("no credits")
+
+        with patch("builtins.open", MagicMock()):
+            result = listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+
+        mock_local.transcribe_local.assert_not_called()
+        self.assertEqual(result, "")
+
+    @patch("voice.listen.settings", dataclasses.replace(settings, local_transcription_fallback_enabled=True))
     @patch("voice.listen.os.remove")
     @patch("voice.listen.wave.open")
     @patch("voice.listen.local_transcribe")
@@ -322,6 +349,7 @@ class TestTranscribeFallsBackToLocal(unittest.TestCase):
             listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
         mock_local.transcribe_local.assert_not_called()
 
+    @patch("voice.listen.settings", dataclasses.replace(settings, local_transcription_fallback_enabled=True))
     @patch("voice.listen.os.remove")
     @patch("voice.listen.wave.open")
     @patch("voice.listen.local_transcribe")

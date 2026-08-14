@@ -156,6 +156,18 @@ class Settings:
     # ignored while Jarvis is already speaking or executing, instead of
     # interrupting it.
     voice_interruption_enabled: bool = True
+    # IS wired (voice/listen.py): defaults to False -- confirmed live via
+    # CPU profiling that SFSpeechRecognitionTask.cancel() does not
+    # actually stop macOS's on-device recognition work (a real profile
+    # showed a dozen-plus abandoned Speech.Task.Internal/
+    # SFLocalSpeechRecognitionClient dispatch queues still consuming
+    # hundreds of percent CPU, sustained, well after every call that
+    # spawned them had already returned). Until that's root-caused
+    # (or Apple fixes it), the fallback does more harm -- pegging the
+    # whole Mac -- than the silence it was meant to prevent. Leave the
+    # code in place and this flag flippable rather than deleting the
+    # feature outright.
+    local_transcription_fallback_enabled: bool = False
 
     # --- Scheduler ---
     scheduler_poll_seconds: int = 30
@@ -204,6 +216,9 @@ class Settings:
             voice_listen_timeout=_env_float("LISTEN_TIMEOUT", cls.voice_listen_timeout),
             voice_confirmation_timeout=_env_float("CONFIRMATION_TIMEOUT", cls.voice_confirmation_timeout),
             voice_interruption_enabled=_env_bool("VOICE_INTERRUPTION_ENABLED", cls.voice_interruption_enabled),
+            local_transcription_fallback_enabled=_env_bool(
+                "LOCAL_TRANSCRIPTION_FALLBACK_ENABLED", cls.local_transcription_fallback_enabled,
+            ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             api_connect_timeout=_env_float("API_CONNECT_TIMEOUT", cls.api_connect_timeout),
             api_read_timeout=_env_float("API_READ_TIMEOUT", cls.api_read_timeout),
