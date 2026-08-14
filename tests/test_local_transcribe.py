@@ -62,25 +62,72 @@ class TestIsAvailable(unittest.TestCase):
         self.assertFalse(local_transcribe.is_available())
 
 
-class TestRequestAuthorization(unittest.TestCase):
+class TestUsageDescriptionGuard(unittest.TestCase):
+    """Regression tests for a real, confirmed production crash: macOS's
+    TCC privacy system hard-aborts (SIGABRT, not a catchable Python
+    exception) any process that calls SFSpeechRecognizer.
+    requestAuthorization_ without NSSpeechRecognitionUsageDescription in
+    its own Info.plist. request_authorization() must never reach that
+    call at all when the key is missing -- these confirm the guard runs
+    first, unconditionally, before anything Speech-framework-related."""
+
+    @patch("voice.local_transcribe.NSBundle")
+    def test_has_usage_description_true_when_key_present(self, mock_bundle):
+        mock_bundle.mainBundle.return_value.infoDictionary.return_value = {
+            "NSSpeechRecognitionUsageDescription": "explains why",
+        }
+        self.assertTrue(local_transcribe._has_usage_description())
+
+    @patch("voice.local_transcribe.NSBundle")
+    def test_has_usage_description_false_when_key_missing(self, mock_bundle):
+        mock_bundle.mainBundle.return_value.infoDictionary.return_value = {
+            "CFBundleIdentifier": "org.python.python",
+        }
+        self.assertFalse(local_transcribe._has_usage_description())
+
+    @patch("voice.local_transcribe.NSBundle")
+    def test_has_usage_description_false_on_exception(self, mock_bundle):
+        mock_bundle.mainBundle.side_effect = RuntimeError("boom")
+        self.assertFalse(local_transcribe._has_usage_description())
 
     @patch("voice.local_transcribe.Speech")
-    def test_already_authorized_returns_true_immediately(self, mock_speech):
+    @patch("voice.local_transcribe._has_usage_description", return_value=False)
+    def test_missing_usage_description_never_calls_request_authorization(
+        self, mock_has_usage_description, mock_speech,
+    ):
+        result = local_transcribe.request_authorization()
+        self.assertFalse(result)
+        mock_speech.SFSpeechRecognizer.requestAuthorization_.assert_not_called()
+        # Not even the read-only status check should run first -- the
+        # guard is the very first thing this function does.
+        mock_speech.SFSpeechRecognizer.authorizationStatus.assert_not_called()
+
+
+class TestRequestAuthorization(unittest.TestCase):
+    """These all assume a correctly-configured bundle (the usage
+    description guard above is tested in isolation) -- patched True here
+    so the rest of request_authorization()'s logic can be exercised."""
+
+    @patch("voice.local_transcribe._has_usage_description", return_value=True)
+    @patch("voice.local_transcribe.Speech")
+    def test_already_authorized_returns_true_immediately(self, mock_speech, mock_has_usage_description):
         mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
         mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 3
         self.assertTrue(local_transcribe.request_authorization())
         mock_speech.SFSpeechRecognizer.requestAuthorization_.assert_not_called()
 
+    @patch("voice.local_transcribe._has_usage_description", return_value=True)
     @patch("voice.local_transcribe.Speech")
-    def test_denied_returns_false_immediately_without_prompting(self, mock_speech):
+    def test_denied_returns_false_immediately_without_prompting(self, mock_speech, mock_has_usage_description):
         mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
         mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
         mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 1  # denied
         self.assertFalse(local_transcribe.request_authorization())
         mock_speech.SFSpeechRecognizer.requestAuthorization_.assert_not_called()
 
+    @patch("voice.local_transcribe._has_usage_description", return_value=True)
     @patch("voice.local_transcribe.Speech")
-    def test_not_determined_prompts_and_waits_for_callback(self, mock_speech):
+    def test_not_determined_prompts_and_waits_for_callback(self, mock_speech, mock_has_usage_description):
         mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
         mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
         mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
@@ -92,8 +139,9 @@ class TestRequestAuthorization(unittest.TestCase):
 
         self.assertTrue(local_transcribe.request_authorization())
 
+    @patch("voice.local_transcribe._has_usage_description", return_value=True)
     @patch("voice.local_transcribe.Speech")
-    def test_not_determined_and_denied_by_user(self, mock_speech):
+    def test_not_determined_and_denied_by_user(self, mock_speech, mock_has_usage_description):
         mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
         mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
         mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0
@@ -105,8 +153,9 @@ class TestRequestAuthorization(unittest.TestCase):
 
         self.assertFalse(local_transcribe.request_authorization())
 
+    @patch("voice.local_transcribe._has_usage_description", return_value=True)
     @patch("voice.local_transcribe.Speech")
-    def test_exception_requesting_authorization_returns_false(self, mock_speech):
+    def test_exception_requesting_authorization_returns_false(self, mock_speech, mock_has_usage_description):
         mock_speech.SFSpeechRecognizerAuthorizationStatusAuthorized = 3
         mock_speech.SFSpeechRecognizerAuthorizationStatusNotDetermined = 0
         mock_speech.SFSpeechRecognizer.authorizationStatus.return_value = 0

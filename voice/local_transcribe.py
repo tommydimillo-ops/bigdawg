@@ -23,10 +23,34 @@ from agent.observability import log_event
 
 try:
     import Speech
-    from Foundation import NSURL
+    from Foundation import NSBundle, NSURL
     _AVAILABLE = True
 except ImportError:
     _AVAILABLE = False
+
+_USAGE_DESCRIPTION_KEY = "NSSpeechRecognitionUsageDescription"
+
+
+def _has_usage_description() -> bool:
+    """True if the CURRENT process's own Info.plist declares
+    NSSpeechRecognitionUsageDescription.
+
+    CRITICAL: macOS's TCC privacy system hard-aborts (SIGABRT) any
+    process that calls SFSpeechRecognizer.requestAuthorization_ without
+    this key present -- not a Python exception, an OS-level crash that no
+    try/except here can catch, confirmed live in production (the whole
+    menu-bar app died within 4 seconds of startup, silently, with no
+    Python traceback at all -- only a macOS crash report explained it).
+    Every call site in this module must check this FIRST. Bundling as
+    CampusPilotAgent.app (whose Info.plist does declare this key) avoids
+    the crash; running via a bare `python3 -m ui.menu_bar` invocation
+    does not, since that runs as the system Python.framework's own
+    bundle, which never declares this key and never will."""
+    try:
+        info = NSBundle.mainBundle().infoDictionary()
+        return bool(info and _USAGE_DESCRIPTION_KEY in info)
+    except Exception:
+        return False
 
 
 def request_authorization(timeout: float = 10) -> bool:
@@ -35,6 +59,13 @@ def request_authorization(timeout: float = 10) -> bool:
     macOS only ever prompts once per app identity; every call after the
     first just returns the existing answer instantly."""
     if not _AVAILABLE:
+        return False
+
+    if not _has_usage_description():
+        log_event(
+            "local_transcribe_missing_usage_description", component="voice",
+            level="warning",
+        )
         return False
 
     status = Speech.SFSpeechRecognizer.authorizationStatus()
