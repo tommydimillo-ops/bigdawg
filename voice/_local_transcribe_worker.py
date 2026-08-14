@@ -32,20 +32,28 @@ failure (unavailable, denied, no result, recognition error).
 """
 import sys
 import threading
+import time
+
+_start = time.monotonic()
+
+
+def _log(message: str) -> None:
+    # Timestamped, immediately-flushed breadcrumbs on stderr -- if the
+    # PARENT's subprocess.run(timeout=...) kills this process partway
+    # through, subprocess.TimeoutExpired still carries whatever was
+    # written to the pipe before the kill, so this is what makes a
+    # "it timed out" failure debuggable instead of a total black box
+    # about which stage actually took the time.
+    print(f"[{time.monotonic() - _start:6.2f}s] {message}", file=sys.stderr, flush=True)
 
 
 def _fail(reason: str) -> int:
-    # Diagnostic detail on stderr, not stdout -- the parent only treats
-    # stdout as the transcript, but captures stderr too (subprocess.run
-    # with capture_output=True) specifically so a failure here is
-    # debuggable from the parent's own logs instead of a bare "it didn't
-    # work," which is exactly the kind of thing that made this whole
-    # class of bug slow to track down in the first place.
-    print(reason, file=sys.stderr)
+    _log(f"FAIL: {reason}")
     return 1
 
 
 def main(path: str = None) -> int:
+    _log("worker started")
     if path is None:
         if len(sys.argv) != 2:
             return _fail("wrong argument count")
@@ -54,11 +62,13 @@ def main(path: str = None) -> int:
     try:
         import Speech
         from Foundation import NSURL
+        _log("Speech/Foundation imported")
     except ImportError:
         return _fail("Speech/Foundation not importable in this process")
 
     try:
         status = Speech.SFSpeechRecognizer.authorizationStatus()
+        _log(f"authorization status: {status}")
         if status != Speech.SFSpeechRecognizerAuthorizationStatusAuthorized:
             return _fail(f"not authorized in this process (status={status})")
 
@@ -69,6 +79,7 @@ def main(path: str = None) -> int:
             return _fail("recognizer.isAvailable() is False")
         if not recognizer.supportsOnDeviceRecognition():
             return _fail("recognizer.supportsOnDeviceRecognition() is False")
+        _log("recognizer available and supports on-device")
 
         request = Speech.SFSpeechURLRecognitionRequest.alloc().initWithURL_(
             NSURL.fileURLWithPath_(path)
@@ -80,6 +91,7 @@ def main(path: str = None) -> int:
         result = {}
 
         def _on_result(speech_result, error):
+            _log(f"callback fired: error={error!r} final={getattr(speech_result, 'isFinal', lambda: None)()}")
             if error is not None:
                 result["error"] = error
                 done.set()
@@ -91,10 +103,12 @@ def main(path: str = None) -> int:
                 done.set()
 
         recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
+        _log("recognition task started, waiting")
         # Generous -- the PARENT process enforces the real deadline via
         # subprocess.run(timeout=...) and kills this whole process if
         # it's exceeded, so there's no benefit to a tight wait here.
         finished = done.wait(timeout=25)
+        _log(f"wait finished={finished}")
 
         if not finished:
             return _fail("recognition callback never fired within the internal 25s wait")

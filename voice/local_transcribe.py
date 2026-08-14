@@ -177,10 +177,19 @@ def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
             command,
             capture_output=True, text=True, timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         # subprocess.run has already killed the child and waited for it
         # by the time this exception is raised -- nothing left running.
-        log_event("local_transcribe_recognition_timed_out", component="voice", level="warning")
+        # The exception itself still carries whatever the worker wrote
+        # before being killed (capture_output=True), which is what
+        # actually makes a timeout debuggable instead of a black box.
+        partial_stderr = (error.stderr or b"")
+        if isinstance(partial_stderr, bytes):
+            partial_stderr = partial_stderr.decode("utf-8", errors="replace")
+        log_event(
+            "local_transcribe_recognition_timed_out", component="voice",
+            level="warning", partial_output=partial_stderr.strip()[-300:],
+        )
         return None
     except Exception as error:
         log_event(
