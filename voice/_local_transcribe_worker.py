@@ -104,10 +104,22 @@ def main(path: str = None) -> int:
 
         recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
         _log("recognition task started, waiting")
-        # Generous -- the PARENT process enforces the real deadline via
-        # subprocess.run(timeout=...) and kills this whole process if
-        # it's exceeded, so there's no benefit to a tight wait here.
-        finished = done.wait(timeout=25)
+        # NOT a plain done.wait() -- confirmed live that the completion
+        # handler above never fires that way. This process has no
+        # NSApplication/CFRunLoop actively running (unlike the full app,
+        # where AppKit's own event loop happens to keep one spinning),
+        # and Speech framework's async delivery needs an active run loop
+        # somewhere to actually dispatch the callback -- a bare Python
+        # threading.Event blocks the interpreter without pumping
+        # anything Objective-C's runtime can use to deliver it. Running
+        # the run loop in short increments both services that delivery
+        # and lets the plain Python Event still be checked in between.
+        from Foundation import NSDate, NSRunLoop
+        run_loop = NSRunLoop.currentRunLoop()
+        deadline = time.monotonic() + 25
+        while not done.is_set() and time.monotonic() < deadline:
+            run_loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
+        finished = done.is_set()
         _log(f"wait finished={finished}")
 
         if not finished:
