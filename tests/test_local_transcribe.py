@@ -8,6 +8,7 @@ script's internals.
 
 Run with: python -m unittest tests.test_local_transcribe -v
 """
+import os
 import subprocess
 import sys
 import unittest
@@ -242,16 +243,56 @@ class TestTranscribeLocal(unittest.TestCase):
 
     @patch("voice.local_transcribe.subprocess.run")
     @patch("voice.local_transcribe.Speech")
-    def test_worker_invoked_with_the_venv_python_and_audio_path(self, mock_speech, mock_run):
+    def test_prefers_the_packaged_app_binary_when_present(self, mock_speech, mock_run):
+        # Confirmed live via TCC.db: com.tommy.campuspilot.jarvis (this
+        # app's own signed identity) has Speech Recognition
+        # authorization granted, but a plain python subprocess does NOT
+        # inherit it -- it gets its own, separate, never-authorized
+        # identity no matter which interpreter runs it. Re-running the
+        # SAME signed binary (in worker mode) keeps the identity that's
+        # actually authorized.
         self._mock_available(mock_speech)
         mock_run.return_value = MagicMock(returncode=0, stdout="hi\n")
 
-        local_transcribe.transcribe_local("/tmp/x.wav")
+        with patch("voice.local_transcribe.os.path.exists", return_value=True):
+            local_transcribe.transcribe_local("/tmp/x.wav")
+
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], local_transcribe._APP_BINARY)
+        self.assertEqual(args[1], "--transcribe-worker")
+        self.assertEqual(args[2], "/tmp/x.wav")
+
+    @patch("voice.local_transcribe.subprocess.run")
+    @patch("voice.local_transcribe.Speech")
+    def test_falls_back_to_venv_python_and_worker_script_outside_the_app(self, mock_speech, mock_run):
+        # Not running from inside the packaged app (e.g. local dev via
+        # `python3 -m ui.menu_bar`) -- no app binary to re-invoke, so
+        # fall back to running the worker script directly.
+        self._mock_available(mock_speech)
+        mock_run.return_value = MagicMock(returncode=0, stdout="hi\n")
+
+        def _exists(path):
+            return path != local_transcribe._APP_BINARY
+
+        with patch("voice.local_transcribe.os.path.exists", side_effect=_exists):
+            local_transcribe.transcribe_local("/tmp/x.wav")
+
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], local_transcribe._VENV_PYTHON)
+        self.assertIn("_local_transcribe_worker.py", args[1])
+        self.assertEqual(args[2], "/tmp/x.wav")
+
+    @patch("voice.local_transcribe.subprocess.run")
+    @patch("voice.local_transcribe.Speech")
+    def test_falls_back_to_sys_executable_if_neither_app_nor_venv_python_exist(self, mock_speech, mock_run):
+        self._mock_available(mock_speech)
+        mock_run.return_value = MagicMock(returncode=0, stdout="hi\n")
+
+        with patch("voice.local_transcribe.os.path.exists", return_value=False):
+            local_transcribe.transcribe_local("/tmp/x.wav")
 
         args = mock_run.call_args.args[0]
         self.assertEqual(args[0], sys.executable)
-        self.assertIn("_local_transcribe_worker.py", args[1])
-        self.assertEqual(args[2], "/tmp/x.wav")
 
     @patch("voice.local_transcribe.subprocess.run")
     @patch("voice.local_transcribe.Speech")

@@ -41,6 +41,22 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+# Worker mode: voice/local_transcribe.py re-invokes THIS SAME signed app
+# binary (CampusPilotAgent.app/Contents/MacOS/CampusPilotAgent
+# --transcribe-worker <path>) as a subprocess for on-device speech
+# recognition, instead of a plain python subprocess -- confirmed live
+# that a bare python subprocess gets its own, never-authorized TCC
+# identity, while re-running this same binary keeps the identity
+# (com.tommy.campuspilot.jarvis) that already has Speech Recognition
+# authorization granted. Checked and exited before any of the heavy
+# rumps/agent imports below, both so a transcription attempt isn't
+# slowed down loading the whole app's dependency tree, and so this
+# doesn't try to acquire the single-instance lock or start a second
+# microphone listener/menu bar icon.
+if len(sys.argv) >= 3 and sys.argv[1] == "--transcribe-worker":
+    from voice._local_transcribe_worker import main as _worker_main
+    sys.exit(_worker_main(sys.argv[2]))
+
 # When launched via the .app bundle (LaunchServices sets this env var to
 # our own bundle identity), py2app's own bootstrap sends stdout/stderr to
 # the unified system log (Console.app) instead of a file -- unlike a plain

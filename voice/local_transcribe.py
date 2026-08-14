@@ -122,7 +122,18 @@ def is_available() -> bool:
         return False
 
 
-_WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_local_transcribe_worker.py")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WORKER_SCRIPT = os.path.join(_PROJECT_ROOT, "voice", "_local_transcribe_worker.py")
+_VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python")
+# The packaged app's own signed binary -- confirmed live via TCC.db that
+# com.tommy.campuspilot.jarvis (this bundle's identity) has Speech
+# Recognition authorization granted, but a plain python subprocess does
+# NOT inherit it -- it gets its own, separate, never-authorized identity
+# no matter which python binary runs it. Re-running this SAME signed
+# binary (in worker mode -- see ui/menu_bar.py's early argv check) keeps
+# the identity that's actually authorized, instead of spawning a
+# process that can never be.
+_APP_BINARY = os.path.join(_PROJECT_ROOT, "CampusPilotAgent.app", "Contents", "MacOS", "CampusPilotAgent")
 
 
 def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
@@ -150,9 +161,20 @@ def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
     if not is_available():
         return None
 
+    if os.path.exists(_APP_BINARY):
+        command = [_APP_BINARY, "--transcribe-worker", path]
+    else:
+        # Not running from inside the packaged app (e.g. local dev via
+        # `python3 -m ui.menu_bar`) -- fall back to a plain interpreter
+        # running the worker script directly. Whatever identity that
+        # gets from TCC is whatever it would already have gotten for
+        # any other python invocation in this same context.
+        python = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
+        command = [python, _WORKER_SCRIPT, path]
+
     try:
         result = subprocess.run(
-            [sys.executable, _WORKER_SCRIPT, path],
+            command,
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:

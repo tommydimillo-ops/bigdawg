@@ -12,10 +12,23 @@ level guarantee no in-process cancellation API can match: whatever the
 process was using is reliably reclaimed the instant it's terminated,
 regardless of whether Apple's framework itself would have released it.
 
-Not meant to be imported -- run directly with a single argument (the
-path to the WAV file to transcribe). Prints the recognized text to
-stdout and exits 0 on success; exits non-zero with nothing on stdout on
-any failure (unavailable, denied, no result, recognition error).
+Invoked two ways, both ending up here:
+  - `python3 _local_transcribe_worker.py <path>` for standalone/manual
+    testing.
+  - `CampusPilotAgent.app/Contents/MacOS/CampusPilotAgent
+    --transcribe-worker <path>` -- what local_transcribe.py actually
+    runs in production. Confirmed live that a plain python subprocess
+    gets its OWN, never-authorized TCC identity (Speech Recognition
+    authorization does not carry over from the parent, even though the
+    parent .app itself is properly authorized); running the SAME
+    signed app binary again, in worker mode, keeps the same
+    com.tommy.campuspilot.jarvis identity and its existing grant. See
+    ui/menu_bar.py's early argv check for the second path -- it exits
+    before any of the app's own heavy imports so this stays fast.
+
+Prints the recognized text to stdout and exits 0 on success; exits
+non-zero with nothing on stdout (a reason on stderr instead) on any
+failure (unavailable, denied, no result, recognition error).
 """
 import sys
 import threading
@@ -32,10 +45,11 @@ def _fail(reason: str) -> int:
     return 1
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        return _fail("wrong argument count")
-    path = sys.argv[1]
+def main(path: str = None) -> int:
+    if path is None:
+        if len(sys.argv) != 2:
+            return _fail("wrong argument count")
+        path = sys.argv[1]
 
     try:
         import Speech
