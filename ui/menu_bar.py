@@ -27,8 +27,38 @@ import concurrent.futures
 import os
 import queue
 import signal
+import sys
 import threading
 from datetime import datetime
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The py2app alias-mode bundle (CampusPilotAgent.app) only puts its
+# detected third-party dependencies (rumps, sounddevice, ...) on sys.path
+# -- it has no way to know this project's own top-level packages (agent,
+# tools, voice, config) need to be importable too, since they're not a
+# pip-installed dependency it discovered by static analysis.
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# When launched via the .app bundle (LaunchServices sets this env var to
+# our own bundle identity), py2app's own bootstrap sends stdout/stderr to
+# the unified system log (Console.app) instead of a file -- unlike a plain
+# `python3 -m ui.menu_bar` terminal run, where the caller's own terminal
+# already is stdout/stderr. Redirecting here, before agent.observability's
+# logger binds to sys.stderr on import, keeps every log_event() call
+# landing in logs/menubar.err.log either way, since that file is what
+# every other diagnostic in this project (and every runbook step) already
+# assumes. Checked against our OWN bundle ID specifically, not just
+# whether the variable is set at all -- it's also present (with some
+# other app's identity) when this module gets imported for tests running
+# inside an IDE's own integrated terminal, which must not have its
+# stdout/stderr silently redirected as an import side effect.
+if os.environ.get("__CFBundleIdentifier") == "com.tommy.campuspilot.jarvis":
+    _LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    sys.stdout = open(os.path.join(_LOG_DIR, "menubar.out.log"), "a", buffering=1)
+    sys.stderr = open(os.path.join(_LOG_DIR, "menubar.err.log"), "a", buffering=1)
 
 import rumps
 

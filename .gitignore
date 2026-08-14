@@ -8,4 +8,7 @@ screenshot_*.png
 screenshot_*.jpg
 .DS_Store
 CampusPilotAgent.app/
+CampusPilotAgent.app.old-handbuilt/
+build/
+dist/
 logs/
