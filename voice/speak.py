@@ -14,6 +14,7 @@ import tempfile
 
 from agent import tts_control
 from agent.chat import openai_client
+from agent.observability import log_event, preview
 from config.settings import settings
 
 OPENAI_VOICE = "onyx"
@@ -88,9 +89,23 @@ def speak_natural(text):
 
     try:
         _speak_openai(text)
-    except Exception:
+    except Exception as primary_error:
+
+        log_event(
+            "tts_primary_failed", component="voice", level="warning",
+            error_type=type(primary_error).__name__, text_preview=preview(text),
+        )
 
         try:
             _speak_fallback(text)
-        except Exception:
-            pass
+        except Exception as fallback_error:
+            # Both paths failed -- Jarvis is now silently mute. This is the
+            # one place that outcome is otherwise invisible (no exception
+            # propagates, no caller checks a return value), so it's the one
+            # place that must not just swallow it silently.
+            log_event(
+                "tts_completely_failed", component="voice", level="error",
+                primary_error_type=type(primary_error).__name__,
+                fallback_error_type=type(fallback_error).__name__,
+                text_preview=preview(text),
+            )
