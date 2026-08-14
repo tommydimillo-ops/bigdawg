@@ -119,10 +119,19 @@ def is_available() -> bool:
         return False
 
 
-def transcribe_local(path: str, timeout: float = 20) -> Optional[str]:
+def transcribe_local(path: str, timeout: float = 6) -> Optional[str]:
     """Transcribes the WAV file at `path` entirely on-device. Returns the
     recognized text, or None if unavailable, denied, errored, or the
-    recognizer didn't produce a final result within `timeout` seconds."""
+    recognizer didn't produce a final result within `timeout` seconds.
+
+    Confirmed live: a wake-word-triggered clip that's actually going to
+    produce a result does so in under ~2s; one that doesn't (ambiguous or
+    non-speech audio) doesn't get more likely to succeed by waiting
+    longer, it just hangs. This is the fallback for when the primary
+    cloud transcription has ALREADY failed, so every second here is a
+    second the user sits waiting with no response -- 20s made a single
+    ambiguous utterance feel like the assistant had stopped responding
+    entirely."""
     if not is_available():
         return None
 
@@ -148,8 +157,22 @@ def transcribe_local(path: str, timeout: float = 20) -> Optional[str]:
                 )
                 done.set()
 
-        recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
-        done.wait(timeout=timeout)
+        task = recognizer.recognitionTaskWithRequest_resultHandler_(request, _on_result)
+        finished = done.wait(timeout=timeout)
+
+        if not finished:
+            # The task's own callback never fired within `timeout` --
+            # without an explicit cancel() here, the recognition task
+            # keeps running in the background indefinitely (confirmed
+            # live via a CPU profile: multiple abandoned recognition
+            # tasks from earlier timed-out calls were still running
+            # concurrently, minutes later, each burning real CPU --
+            # every ambiguous utterance was silently leaking a
+            # permanent background worker instead of actually stopping
+            # when this function gave up and returned).
+            task.cancel()
+            log_event("local_transcribe_recognition_timed_out", component="voice", level="warning")
+            return None
 
         if "error" in result:
             log_event(

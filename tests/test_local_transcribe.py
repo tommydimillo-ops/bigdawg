@@ -233,9 +233,42 @@ class TestTranscribeLocal(unittest.TestCase):
     @patch("voice.local_transcribe.Speech")
     def test_timeout_with_no_callback_returns_none(self, mock_speech, mock_nsurl):
         recognizer = self._mock_available(mock_speech)
-        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = lambda *a: None
+        mock_task = MagicMock()
+        recognizer.recognitionTaskWithRequest_resultHandler_.return_value = mock_task
         result = local_transcribe.transcribe_local("/tmp/x.wav", timeout=0.1)
         self.assertIsNone(result)
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_timeout_cancels_the_abandoned_recognition_task(self, mock_speech, mock_nsurl):
+        # Regression test for a real, confirmed production bug: an
+        # abandoned recognition task that isn't explicitly cancelled on
+        # timeout keeps running in the background indefinitely -- a live
+        # CPU profile showed multiple leaked tasks from earlier timed-out
+        # calls still consuming real CPU minutes later, concurrently.
+        recognizer = self._mock_available(mock_speech)
+        mock_task = MagicMock()
+        recognizer.recognitionTaskWithRequest_resultHandler_.return_value = mock_task
+        local_transcribe.transcribe_local("/tmp/x.wav", timeout=0.1)
+        mock_task.cancel.assert_called_once()
+
+    @patch("voice.local_transcribe.NSURL")
+    @patch("voice.local_transcribe.Speech")
+    def test_successful_result_does_not_cancel_the_task(self, mock_speech, mock_nsurl):
+        recognizer = self._mock_available(mock_speech)
+        mock_task = MagicMock()
+
+        speech_result = MagicMock()
+        speech_result.isFinal.return_value = True
+        speech_result.bestTranscription.return_value.formattedString.return_value = "done"
+
+        def _fake_task(request, handler):
+            handler(speech_result, None)
+            return mock_task
+
+        recognizer.recognitionTaskWithRequest_resultHandler_.side_effect = _fake_task
+        local_transcribe.transcribe_local("/tmp/x.wav")
+        mock_task.cancel.assert_not_called()
 
     @patch("voice.local_transcribe.NSURL")
     @patch("voice.local_transcribe.Speech")
