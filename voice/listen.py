@@ -76,6 +76,37 @@ def clean_transcript(text):
     return value
 
 
+def _select_input_device():
+    """The OS's "default" input device can silently become a paired
+    iPhone/iPad's mic (Continuity Camera) instead of the Mac's own
+    built-in microphone, whenever one happens to be nearby and unlocked
+    -- confirmed live: calibration measured near-silence because the
+    always-on listener was picking up an iPhone sitting across the room
+    rather than the user talking at their laptop, with no error or
+    crash to signal it, just a threshold that never gets crossed.
+    Re-queried on every call (not cached) so a phone connecting or
+    disconnecting mid-session can't leave this pointed at a device that
+    no longer makes sense. Falls back to the OS default only if no
+    other input device is available at all."""
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return None
+
+    fallback = None
+    for i, d in enumerate(devices):
+        if d.get("max_input_channels", 0) <= 0:
+            continue
+        name = d.get("name", "").lower()
+        if "iphone" in name or "ipad" in name:
+            continue
+        if fallback is None:
+            fallback = i
+        if "macbook" in name or "built-in" in name:
+            return i
+    return fallback
+
+
 def listen_for_utterance(
     samplerate=settings.voice_sample_rate,
     max_seconds=None,
@@ -124,16 +155,33 @@ def listen_for_utterance(
         # assistant silently, permanently deaf until recalibration -- a far
         # worse failure mode than an occasional false trigger (which just
         # transcribes something that doesn't match "jarvis" and is ignored).
-        adaptive = float(np.median(levels)) * 2.2 + 60
+        # A steady room (fan/HVAC hum, distant traffic) already sits at a
+        # mean-amplitude noise floor of ~150-250 on a laptop's built-in
+        # mic, and normal (not shouted) conversational speech at normal
+        # distance only reaches roughly 250-350 above that -- a multiplier
+        # much above ~1.2x pushes the bar above what real speech actually
+        # produces, not just above noise, which is what silently produced
+        # the "permanently deaf" failure mode this comment already warned
+        # against.
+        adaptive = float(np.median(levels)) * 1.15 + 25
         return max(settings.voice_min_signal_level, adaptive)
 
-    with sd.InputStream(samplerate=samplerate, channels=1, dtype="int16") as stream:
+    input_device = _select_input_device()
+
+    with sd.InputStream(
+        samplerate=samplerate, channels=1, dtype="int16", device=input_device,
+    ) as stream:
 
         # Opening/calibrating the microphone is already part of listening.
         # Surface that immediately instead of leaving the menu icon looking
         # idle for the whole calibration window.
         voice_state.set_status(VoiceState.LISTENING)
         speech_threshold = _calibrate(stream)
+        log_event(
+            "voice_calibrated", component="voice",
+            speech_threshold=round(speech_threshold, 1),
+            input_device=str(input_device),
+        )
         if on_ready is not None:
             on_ready()
 

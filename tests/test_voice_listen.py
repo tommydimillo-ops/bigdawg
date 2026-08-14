@@ -106,12 +106,68 @@ def _loud_chunk(n=800):
     return np.full((n, 1), 5000, dtype="int16")
 
 
+class TestSelectInputDevice(unittest.TestCase):
+    """Regression tests for a real, confirmed production bug: the OS
+    "default" input device silently became a paired iPhone's Continuity
+    Camera mic instead of the Mac's own microphone, so the always-on
+    listener was picking up near-silence from a phone across the room
+    with no error to signal it. _select_input_device must always avoid
+    an iPhone/iPad device when any other input device exists."""
+
+    @patch("voice.listen.sd.query_devices")
+    def test_prefers_macbook_over_iphone(self, mock_query):
+        mock_query.return_value = [
+            {"name": "iPhone Microphone", "max_input_channels": 1},
+            {"name": "MacBook Pro Microphone", "max_input_channels": 1},
+        ]
+        self.assertEqual(listen._select_input_device(), 1)
+
+    @patch("voice.listen.sd.query_devices")
+    def test_skips_ipad_too(self, mock_query):
+        mock_query.return_value = [
+            {"name": "iPad Microphone", "max_input_channels": 1},
+            {"name": "External USB Mic", "max_input_channels": 2},
+        ]
+        self.assertEqual(listen._select_input_device(), 1)
+
+    @patch("voice.listen.sd.query_devices")
+    def test_falls_back_to_iphone_if_nothing_else_has_input(self, mock_query):
+        mock_query.return_value = [
+            {"name": "iPhone Microphone", "max_input_channels": 1},
+            {"name": "MacBook Pro Speakers", "max_input_channels": 0},
+        ]
+        self.assertIsNone(listen._select_input_device())
+
+    @patch("voice.listen.sd.query_devices")
+    def test_no_input_devices_at_all_returns_none(self, mock_query):
+        mock_query.return_value = [
+            {"name": "MacBook Pro Speakers", "max_input_channels": 0},
+        ]
+        self.assertIsNone(listen._select_input_device())
+
+    @patch("voice.listen.sd.query_devices")
+    def test_query_failure_degrades_to_none_not_raise(self, mock_query):
+        mock_query.side_effect = RuntimeError("PortAudio error")
+        self.assertIsNone(listen._select_input_device())
+
+    @patch("voice.listen.sd.query_devices")
+    def test_non_macbook_non_phone_device_is_used_over_the_fallback_search(self, mock_query):
+        mock_query.return_value = [
+            {"name": "Microsoft Teams Audio", "max_input_channels": 2},
+        ]
+        self.assertEqual(listen._select_input_device(), 0)
+
+
 class TestListenForUtterance(unittest.TestCase):
 
     def setUp(self):
         listen_state_patcher = patch("voice.listen.voice_state")
         self.mock_voice_state = listen_state_patcher.start()
         self.addCleanup(listen_state_patcher.stop)
+
+        device_patcher = patch("voice.listen._select_input_device", return_value=None)
+        device_patcher.start()
+        self.addCleanup(device_patcher.stop)
 
     @patch("voice.listen.sd.InputStream")
     def test_returns_none_when_stop_flag_already_set(self, mock_input_stream):
