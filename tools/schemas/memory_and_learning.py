@@ -1,8 +1,55 @@
 """Remembered facts, learned rules, and noticed communication patterns."""
+import agent.personal_context as personal_context
 from agent.lessons import learn_rule, list_rules
 from agent.memory_agent import recall, remember
 from agent.patterns import forget_pattern, list_patterns, note_pattern
 from tools.registry import ToolSpec, register
+
+
+def _get_personal_context(_tool_input):
+    # Builds the catalog on first use rather than requiring a separate
+    # "set this up" step -- load_catalog() alone would just say "no
+    # catalog yet" forever, since nothing else in the app ever calls
+    # refresh_catalog(). Later calls reuse the saved catalog instead of
+    # re-scanning the disk/Photos library on every single read.
+    if personal_context.load_catalog() is None:
+        personal_context.refresh_catalog()
+    return personal_context.summary_text()
+
+
+def _refresh_personal_context(_tool_input):
+    personal_context.refresh_catalog()
+    return personal_context.summary_text()
+
+
+register(ToolSpec(
+    name="get_personal_context",
+    description=(
+        "Read the user's privacy-preserving local context summary: aggregate "
+        "document counts, recurring course codes, and photo-library date/count "
+        "metadata. It contains no raw filenames, content, pixels, or locations. "
+        "Use when the user asks what Jarvis knows about them or their files. "
+        "Builds the summary on first use, then reuses it -- call "
+        "refresh_personal_context instead if the user says their files changed."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    permission_level=0,
+    handler=_get_personal_context,
+    parallel_safe=True,
+))
+
+register(ToolSpec(
+    name="refresh_personal_context",
+    description=(
+        "Re-scan the user's document folders and photo library to refresh "
+        "the aggregate-only personal context summary (see get_personal_context). "
+        "Use when the user says they've added/removed files or wants an "
+        "updated count -- not needed for routine reads."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    permission_level=1,
+    handler=_refresh_personal_context,
+))
 
 register(ToolSpec(
     name="remember_fact",

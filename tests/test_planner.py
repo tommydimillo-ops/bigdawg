@@ -63,6 +63,10 @@ class TestCreatePlan(unittest.TestCase):
         self.assertEqual(plan.steps[0].description, "Research laptops")
         self.assertEqual(plan.steps[0].required_tools, ["research_agent"])
         self.assertEqual(plan.steps[2].description, "Write report")
+        call = mock_client.messages.create.call_args.kwargs
+        from config.settings import settings
+        self.assertEqual(call["model"], settings.planner_model)
+        self.assertEqual(call["max_tokens"], 512)
 
     @patch("agent.planner.anthropic_client")
     def test_first_step_starts_in_progress(self, mock_client):

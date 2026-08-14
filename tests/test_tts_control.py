@@ -45,6 +45,13 @@ class TestTrackPid(IsolatedTtsControlTestCase):
         with open(tts_control.TTS_PID_FILE) as f:
             self.assertEqual(f.read().strip(), "4242")
 
+    def test_untrack_removes_only_matching_pid(self):
+        tts_control.track_pid(4242)
+        tts_control.untrack_pid(1111)
+        self.assertTrue(os.path.exists(tts_control.TTS_PID_FILE))
+        tts_control.untrack_pid(4242)
+        self.assertFalse(os.path.exists(tts_control.TTS_PID_FILE))
+
 
 class TestIsSpeaking(IsolatedTtsControlTestCase):
 

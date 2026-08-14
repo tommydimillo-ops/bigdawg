@@ -29,29 +29,43 @@ def _play_and_track(command):
     concurrently-listening wake-word watcher) cut it short."""
     process = subprocess.Popen(command)
     tts_control.track_pid(process.pid)
-    process.wait(timeout=60)
+    try:
+        process.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        tts_control.untrack_pid(process.pid)
 
 
 def _speak_openai(text):
 
-    path = tempfile.mktemp(suffix=".mp3")
-
-    # gpt-4o-mini-tts over tts-1 -- tts-1 has a known issue where it
-    # occasionally drifts into another language partway through longer
-    # responses (a real, reported OpenAI model quirk, not a bug in this
-    # code); gpt-4o-mini-tts doesn't exhibit that.
-    with openai_client.audio.speech.with_streaming_response.create(
-        model=settings.tts_model,
-        voice=OPENAI_VOICE,
-        input=text,
-        timeout=20
-    ) as response:
-        response.stream_to_file(path)
-
+    descriptor, path = tempfile.mkstemp(suffix=".mp3")
+    os.close(descriptor)
     try:
+        # gpt-4o-mini-tts over tts-1 -- tts-1 has a known issue where it
+        # occasionally drifts into another language partway through longer
+        # responses (a real, reported OpenAI model quirk, not a bug in this
+        # code); gpt-4o-mini-tts doesn't exhibit that.
+        with openai_client.audio.speech.with_streaming_response.create(
+            model=settings.tts_model,
+            voice=OPENAI_VOICE,
+            input=text,
+            timeout=20
+        ) as response:
+            response.stream_to_file(path)
+
         _play_and_track(["afplay", path])
     finally:
-        os.remove(path)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
 
 def _speak_fallback(text):

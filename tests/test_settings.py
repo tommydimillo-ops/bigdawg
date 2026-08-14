@@ -16,8 +16,12 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(settings.default_model, "claude-sonnet-5")
         self.assertEqual(settings.fallback_model, "gpt-5")
         self.assertEqual(settings.max_agent_steps, 8)
+        self.assertEqual(settings.model_history_limit, 24)
+        self.assertEqual(settings.planner_model, "claude-haiku-4-5-20251001")
         self.assertEqual(settings.scheduler_poll_seconds, 30)
         self.assertEqual(settings.wake_word, "jarvis")
+        self.assertEqual(settings.voice_min_signal_level, 100.0)
+        self.assertEqual(settings.voice_trigger_chunks, 2)
         self.assertFalse(settings.debug)
 
     def test_settings_is_frozen(self):
@@ -46,6 +50,10 @@ class TestEnvironmentOverrides(unittest.TestCase):
     def test_int_override(self):
         self._set("MAX_AGENT_STEPS", "12")
         self.assertEqual(Settings.load().max_agent_steps, 12)
+
+    def test_model_history_limit_override(self):
+        self._set("MODEL_HISTORY_LIMIT", "10")
+        self.assertEqual(Settings.load().model_history_limit, 10)
 
     def test_float_override(self):
         self._set("API_READ_TIMEOUT", "45.5")

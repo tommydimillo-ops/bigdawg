@@ -4,9 +4,9 @@ tests/test_phase4_security.py and tests/test_phase5_security.py), not just
 the pure decision functions in isolation.
 
 Three guarantees this covers, specific to voice:
-1. A request that came from voice is held to the exact same permission/
-   confirmation rules as a typed chat message -- source="chat", nothing
-   voice-specific ever loosens it.
+1. A request that came from voice is held to the same permission system
+   with an additional voice-only confirmation gate for reminders --
+   nothing voice-specific ever loosens security.
 2. A spoken "yes" cannot make a tool call run that wasn't the exact one
    already pending -- classify_confirmation_response() is pure text
    classification with no side effects; the only thing that can actually
@@ -19,12 +19,14 @@ Run with: python -m unittest tests.test_phase6_security -v
 """
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
 import tools.schemas  # noqa: F401 -- populates the registry
 import agent.execution_history as execution_history
 import agent.jarvis_state as jarvis_state
+import agent.quiet_mode as quiet_mode
 import agent.voice_session as voice_session
 import ui.menu_bar as menu_bar
 from tools import registry
@@ -89,9 +91,8 @@ class TestVoiceRequestsGetFullPermissionEnforcement(IsolatedExecutorTestCase):
     @patch("agent.executor.claude_client")
     def test_a_gated_tool_call_from_voice_is_held_for_confirmation_not_run(self, mock_client):
         # A fake permission_level-5-equivalent tool that would be
-        # immediately obvious if it ran -- confirms voice's source="chat"
-        # routing gets the SAME confirmation gate any chat message would,
-        # never a bypass.
+        # immediately obvious if it ran -- confirms voice routing gets the
+        # same permission gate any chat message would, never a bypass.
         mock_handler = MagicMock(return_value="EXECUTED")
         registry.register(registry.ToolSpec(
             name="_phase6_security_test_tool",
@@ -119,6 +120,28 @@ class TestVoiceRequestsGetFullPermissionEnforcement(IsolatedExecutorTestCase):
             self.assertEqual(result.pending_tool, "_phase6_security_test_tool")
         finally:
             registry._REGISTRY.pop("_phase6_security_test_tool", None)
+
+    @patch("tools.schemas.productivity.add_reminder")
+    @patch("agent.executor.claude_client")
+    def test_voice_reminder_requires_confirmation_before_dispatch(
+        self, mock_client, mock_add_reminder,
+    ):
+        turn1 = MagicMock(stop_reason="tool_use")
+        turn1.content = [
+            _text_block("I'll set that reminder."),
+            _tool_use_block("reminder1", "add_reminder", {"title": "Call mom"}),
+        ]
+        turn2 = MagicMock(stop_reason="end_turn")
+        mock_client.messages.stream.side_effect = [
+            _MockStream(["I'll set that reminder."], turn1),
+            _MockStream(["Please confirm first."], turn2),
+        ]
+
+        result = voice_session.run_request("remind me to call mom")
+
+        mock_add_reminder.assert_not_called()
+        self.assertTrue(result.needs_confirmation)
+        self.assertEqual(result.pending_tool, "add_reminder")
 
 
 class TestConfirmationClassificationHasNoSideEffects(unittest.TestCase):
@@ -194,6 +217,77 @@ class TestSingleInstanceLock(unittest.TestCase):
         menu_bar._acquire_single_instance_lock()
         menu_bar._release_single_instance_lock()
         self.assertFalse(os.path.exists(menu_bar.APP_LOCK_FILE))
+
+
+class TestMenuBarTimeoutSafety(unittest.TestCase):
+
+    @patch("ui.menu_bar.voice_session.request_cancel")
+    def test_timeout_cancels_and_waits_for_worker_before_returning(self, mock_cancel):
+        state = MagicMock(request_id="voice-timeout-request")
+        completed = voice_session.VoiceRunResult(text="late result", state=state)
+        future = MagicMock()
+
+        def _result(timeout=None):
+            if timeout is not None:
+                raise menu_bar.concurrent.futures.TimeoutError
+            return completed
+
+        future.result.side_effect = _result
+        executor = MagicMock()
+
+        def _submit(function, request, history, on_state_created=None):
+            on_state_created(state)
+            return future
+
+        executor.submit.side_effect = _submit
+
+        app = MagicMock()
+        app.executor = executor
+        app.conversation = []
+        app.events = MagicMock()
+        app.stop_flag = threading.Event()
+        app._speak.return_value = None
+
+        result = menu_bar.CampusPilotApp._run_conversation_turn(app, "slow request")
+
+        self.assertIsNone(result)
+        mock_cancel.assert_called_once_with("voice-timeout-request")
+        self.assertEqual(future.result.call_count, 2)
+        app._speak.assert_called_once_with(
+            "That took too long, so I gave up on it. Try again?"
+        )
+
+
+class TestMenuBarQuietMode(unittest.TestCase):
+
+    def setUp(self):
+        self.real_file = quiet_mode.QUIET_MODE_FILE
+        quiet_mode.QUIET_MODE_FILE = tempfile.mktemp(suffix=".json")
+
+    def tearDown(self):
+        if os.path.exists(quiet_mode.QUIET_MODE_FILE):
+            os.remove(quiet_mode.QUIET_MODE_FILE)
+        quiet_mode.QUIET_MODE_FILE = self.real_file
+
+    @patch("agent.tts_control.stop_speaking")
+    def test_quiet_command_never_reaches_executor_or_speaker(self, mock_stop):
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._run_and_report(app, "quiet jarvis")
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
+        mock_stop.assert_called_once()
+        self.assertTrue(quiet_mode.is_quiet())
+
+    def test_non_wake_command_is_silently_ignored_while_quiet(self):
+        quiet_mode.set_quiet(True)
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._run_and_report(app, "what time is it")
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
 
 
 if __name__ == "__main__":

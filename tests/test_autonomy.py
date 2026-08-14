@@ -65,6 +65,30 @@ class TestScheduledSourceDeniesInsteadOfConfirms(unittest.TestCase):
         self.assertEqual(should_request_confirmation("run_python", 1, ctx), Decision.CONFIRM)
 
 
+class TestVoiceSourceSafety(unittest.TestCase):
+
+    def test_voice_reminder_always_confirms_at_max_autonomy(self):
+        ctx = ExecutionContext(source="voice")
+        self.assertEqual(
+            should_request_confirmation("add_reminder", 4, ctx),
+            Decision.CONFIRM,
+        )
+
+    def test_voice_read_only_tool_still_runs_normally(self):
+        ctx = ExecutionContext(source="voice")
+        self.assertEqual(
+            should_request_confirmation("get_weather", 4, ctx),
+            Decision.ALLOW,
+        )
+
+    def test_typed_chat_reminder_keeps_existing_behavior(self):
+        ctx = ExecutionContext(source="chat")
+        self.assertEqual(
+            should_request_confirmation("add_reminder", 4, ctx),
+            Decision.ALLOW,
+        )
+
+
 class TestPendingConfirmationLedger(unittest.TestCase):
 
     def test_not_confirmed_before_request(self):

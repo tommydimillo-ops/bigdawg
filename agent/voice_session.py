@@ -89,11 +89,11 @@ class VoiceRunResult:
         return bool(self.state and self.state.cancelled)
 
 
-def run_request(request: str, history=None) -> VoiceRunResult:
+def run_request(request: str, history=None, on_state_created=None) -> VoiceRunResult:
     """Runs `request` through the real Jarvis core -- the exact same
-    execute_task_stream() every other interface calls, source="chat" so
-    it's held to the same permission/confirmation rules a typed chat
-    message would be (voice input is untrusted input, same as text).
+    execute_task_stream() every other interface calls, source="voice" so
+    it gets all normal chat permission rules plus voice-specific safety
+    gates for persistent actions such as reminders.
 
     Captures the exact live ExecutionState through the executor's observer
     hook, avoiding ambiguity if another interface has a request active in
@@ -103,9 +103,11 @@ def run_request(request: str, history=None) -> VoiceRunResult:
 
     def _capture_state(state):
         state_holder["state"] = state
+        if on_state_created is not None:
+            on_state_created(state)
 
     gen = execute_task_stream(
-        request, history=history, source="chat", on_state_created=_capture_state,
+        request, history=history, source="voice", on_state_created=_capture_state,
     )
     chunks = []
     for chunk in gen:
@@ -115,6 +117,7 @@ def run_request(request: str, history=None) -> VoiceRunResult:
 
 def run_request_with_cancellation_watch(
     request: str, history=None, max_wait_seconds: float = 300,
+    on_state_created=None,
 ) -> VoiceRunResult:
     """run_request(), plus a concurrent "Jarvis, stop" listener for the
     whole duration -- the function voice code should actually call for
@@ -125,7 +128,9 @@ def run_request_with_cancellation_watch(
     watcher = threading.Thread(target=watch_for_cancellation, args=(done, max_wait_seconds), daemon=True)
     watcher.start()
     try:
-        return run_request(request, history=history)
+        return run_request(
+            request, history=history, on_state_created=on_state_created,
+        )
     finally:
         done.set()
         watcher.join(timeout=2)

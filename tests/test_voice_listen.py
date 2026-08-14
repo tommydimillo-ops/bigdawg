@@ -40,6 +40,27 @@ class TestStripWakeWord(unittest.TestCase):
         self.assertEqual(listen.strip_wake_word("jarvis, stop."), "stop")
 
 
+class TestTranscriptCleaning(unittest.TestCase):
+
+    def test_rejects_real_prompt_echo_hallucinations(self):
+        for value in (
+            "context:",
+            "context: ### Casual spoken request to a personal assistant named Jarvis.",
+            "###",
+            "May include American slang, filler words and informal phrasing.",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(listen.clean_transcript(value), "")
+
+    def test_preserves_real_short_replies_and_commands(self):
+        for value in (
+            "yes", "no", "quiet", "Jarvis.", "Hey Jarvis.",
+            "Jarvis, what's the weather?",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(listen.clean_transcript(value), value)
+
+
 class TestIsExitPhrase(unittest.TestCase):
 
     def test_wake_word_plus_stop_is_an_exit_phrase(self):
@@ -109,14 +130,28 @@ class TestListenForUtterance(unittest.TestCase):
 
     @patch("voice.listen.sd.InputStream")
     def test_detects_loud_speech_and_records_until_silence(self, mock_input_stream):
-        # calibration_chunks (3, given the 1.0s default / 0.2s chunk floor)
+        # calibration_chunks (5 for the 1.0s default / 0.2s chunks)
         # of quiet chunks, then loud chunks (speech), then enough quiet
         # chunks to cross silence_seconds and stop recording.
-        chunks = [_quiet_chunk()] * 3 + [_loud_chunk()] * 3 + [_quiet_chunk()] * 10
+        chunks = [_quiet_chunk()] * 5 + [_loud_chunk()] * 3 + [_quiet_chunk()] * 10
         mock_input_stream.return_value = _MockInputStream(chunks)
         audio, samplerate = listen.listen_for_utterance(silence_seconds=1.0)
         self.assertIsNotNone(audio)
         self.assertGreater(len(audio), 0)
+
+    @patch("voice.listen.sd.InputStream")
+    def test_single_noise_spike_does_not_trigger_recording(self, mock_input_stream):
+        stop_flag = threading.Event()
+        chunks = (
+            [_quiet_chunk()] * 5
+            + [_loud_chunk()]
+            + [_quiet_chunk()] * 8
+        )
+        mock_input_stream.return_value = _MockInputStream(chunks)
+        audio, _ = listen.listen_for_utterance(
+            stop_flag=stop_flag, max_wait_seconds=1.2,
+        )
+        self.assertIsNone(audio)
 
     @patch("voice.listen.sd.InputStream")
     def test_on_ready_is_called_after_calibration(self, mock_input_stream):
@@ -137,15 +172,17 @@ class TestListenForUtterance(unittest.TestCase):
         # throughout the voice code" (Phase 6 section 16) -- confirms the
         # timeout is genuinely read from settings, not a hardcoded literal,
         # by overriding it and confirming behavior changes accordingly.
-        chunks = [_quiet_chunk()] * 3 + [_loud_chunk()] * 3  # no silence after -- would run to max_seconds
+        chunks = [_quiet_chunk()] * 5 + [_loud_chunk()] * 3  # no silence after -- would run to max_seconds
         mock_input_stream.return_value = _MockInputStream(chunks + [_loud_chunk()] * 1000)
         with patch("voice.listen.settings") as mock_settings:
             mock_settings.voice_listen_timeout = 0.4  # tiny -- a handful of chunks
+            mock_settings.voice_min_signal_level = 250.0
+            mock_settings.voice_trigger_chunks = 2
             audio, _ = listen.listen_for_utterance(silence_seconds=999)  # never triggers on silence
         self.assertIsNotNone(audio)
-        # 0.4s / 0.2s chunk_duration = 2 recording chunks + the first
-        # speech chunk = 3 total frames, not hundreds.
-        self.assertLessEqual(len(audio), 3 * 800)
+        # 0.4s / 0.2s chunk_duration = 2 recording chunks plus the 2
+        # sustained trigger chunks, not hundreds.
+        self.assertLessEqual(len(audio), 4 * 800)
 
 
 class TestTranscribeSetsVoiceState(unittest.TestCase):
@@ -164,6 +201,45 @@ class TestTranscribeSetsVoiceState(unittest.TestCase):
 
         mock_voice_state.set_status.assert_any_call(VoiceState.TRANSCRIBING)
         self.assertEqual(result, "what's the weather")
+
+    @patch("voice.listen.os.remove")
+    @patch("voice.listen.wave.open")
+    @patch("voice.listen.openai_client")
+    @patch("voice.listen.voice_state")
+    def test_transcribe_filters_prompt_echo(self, mock_voice_state, mock_client, mock_wave, mock_remove):
+        mock_client.audio.transcriptions.create.return_value = MagicMock(
+            text="context: ### Casual spoken request to a personal assistant named Jarvis."
+        )
+        with patch("builtins.open", MagicMock()):
+            result = listen.transcribe(np.zeros((10, 1), dtype="int16"), 16000)
+        self.assertEqual(result, "")
+
+
+class TestWakeDispatchGuards(unittest.TestCase):
+
+    @patch("voice.listen.transcribe", return_value="Jarvis.")
+    @patch("voice.listen.listen_for_utterance", return_value=(MagicMock(), 16000))
+    def test_wake_word_alone_becomes_a_greeting(self, mock_listen, mock_transcribe):
+        self.assertEqual(listen.wait_for_command(), "hello")
+
+    @patch("voice.listen.transcribe")
+    @patch("voice.listen.listen_for_utterance")
+    def test_wake_word_alone_is_ignored_until_a_complete_command(self, mock_listen, mock_transcribe):
+        mock_listen.side_effect = [
+            (MagicMock(), 16000),
+            (MagicMock(), 16000),
+        ]
+        mock_transcribe.side_effect = ["", "Jarvis, what's the weather?"]
+
+        result = listen.wait_for_command()
+
+        self.assertEqual(result, "what's the weather?")
+        self.assertEqual(mock_listen.call_count, 2)
+
+    @patch("voice.listen.transcribe", return_value="")
+    @patch("voice.listen.listen_for_utterance", return_value=(MagicMock(), 16000))
+    def test_rejected_followup_drops_back_to_passive(self, mock_listen, mock_transcribe):
+        self.assertIsNone(listen.listen_for_followup())
 
 
 if __name__ == "__main__":

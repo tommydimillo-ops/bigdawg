@@ -134,5 +134,25 @@ class TestContextBudget(_IsolatedMemoryFile):
         self.assertLessEqual(len(context.retrieved), settings.context_memory_budget)
 
 
+class TestProfileContext(_IsolatedMemoryFile):
+
+    def test_profile_memories_are_bounded_and_separate_from_patterns(self):
+        from agent.context import build_profile_context
+        from agent.memory.manager import remember
+        from agent.memory.models import MemoryType
+
+        for index in range(5):
+            remember(
+                f"Profile detail {index}", type=MemoryType.PROFILE,
+                tags=[f"profile-{index}"],
+            )
+        remember("User asks about coffee", type=MemoryType.PATTERN)
+
+        context = build_profile_context(max_memories=2)
+
+        self.assertEqual(len(context.retrieved), 2)
+        self.assertTrue(all(r.memory.type == MemoryType.PROFILE for r in context.retrieved))
+
+
 if __name__ == "__main__":
     unittest.main()

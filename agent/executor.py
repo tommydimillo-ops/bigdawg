@@ -22,6 +22,27 @@ from tools import registry
 MAX_TOOL_ITERATIONS = settings.max_agent_steps
 
 
+def _bounded_model_history(history, limit=None):
+    """Keep provider context bounded while leaving stored/UI history intact.
+
+    Retains the most recent messages because they contain the current turn
+    and any immediately preceding confirmation exchange. A non-positive
+    limit intentionally disables truncation for diagnostics.
+    """
+    messages = list(history or [])
+    cap = settings.model_history_limit if limit is None else limit
+    if cap <= 0 or len(messages) <= cap:
+        return messages
+    bounded = messages[-cap:]
+    # Stored conversation normally alternates user/assistant and ends with
+    # the current user turn. An even-sized tail can therefore begin with an
+    # orphan assistant message, which some providers reject and which lacks
+    # the question it answered. Advance to the first complete user turn.
+    while bounded and bounded[0].get("role") != "user":
+        bounded.pop(0)
+    return bounded
+
+
 def _is_cancelled(state):
     """Synchronize a cross-process cancel marker into live request state."""
     if not state:
@@ -433,6 +454,7 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     # attached at all (state.plan stays None, exactly like before this
     # phase existed).
     if is_complex(request):
+        planning_started = time.perf_counter()
         state.transition_to(ExecutionStatus.PLANNING)
         jarvis_state.set_status(
             ExecutionStatus.PLANNING, active_request_id=context.request_id, current_task=preview(request),
@@ -441,6 +463,7 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
         log_event(
             "plan_created", request_id=context.request_id, component="planner",
             total_steps=state.plan.total, request_preview=preview(request),
+            duration_ms=round((time.perf_counter() - planning_started) * 1000, 1),
         )
 
     register_active(context.request_id, state)
@@ -468,7 +491,10 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
         current_task=preview(request), plan_progress=_plan_progress(state),
     )
 
-    messages = list(history) if history else [{"role": "user", "content": request}]
+    messages = (
+        _bounded_model_history(history)
+        if history else [{"role": "user", "content": request}]
+    )
     started = False
 
     try:

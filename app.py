@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from agent.conversation_store import load_conversation, save_conversation
+from agent import quiet_mode
+from agent.conversation_store import append_message, load_conversation
 from agent.executor import execute_task_stream
 from agent.tts_control import speak_interruptible, stop_speaking
 
@@ -33,6 +34,18 @@ if _voice_text and _voice_text != st.session_state.get("last_voice_text"):
     _pending_prompt = _voice_text
     if st.query_params.get("interrupt"):
         stop_speaking()
+
+# Quiet-mode commands are handled before messages render or reach the
+# executor. State is shared with the native menu-bar process, rather than
+# being trapped in this browser tab's session_state.
+if _pending_prompt:
+    _quiet_action = quiet_mode.classify(_pending_prompt)
+    if _quiet_action == quiet_mode.QuietAction.ENTER_QUIET:
+        stop_speaking()
+        st.session_state.conversation_active = False
+        _pending_prompt = None
+    elif _quiet_action == quiet_mode.QuietAction.IGNORE:
+        _pending_prompt = None
 
 if st.query_params.get("mode") or st.query_params.get("voice"):
     st.query_params.clear()
@@ -287,21 +300,29 @@ for message in st.session_state.messages:
 
 
 # Chat box
-prompt = st.chat_input(
-    "What do you need help with?"
-) or _pending_prompt
+_typed_prompt = st.chat_input("What do you need help with?")
+prompt = _typed_prompt or _pending_prompt
+_prompt_source = "chat" if _typed_prompt else "voice"
 
 
 if prompt:
 
+    # Typed messages need the same pre-model filter as browser voice.
+    # Avoid classifying _pending_prompt twice: WAKE has already disabled
+    # quiet mode and is intentionally passed through as a greeting.
+    if prompt != _pending_prompt:
+        _quiet_action = quiet_mode.classify(prompt)
+        if _quiet_action == quiet_mode.QuietAction.ENTER_QUIET:
+            stop_speaking()
+            st.session_state.conversation_active = False
+            st.stop()
+        if _quiet_action == quiet_mode.QuietAction.IGNORE:
+            st.stop()
+
     # Add user message
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": prompt
-        }
+    st.session_state.messages = append_message(
+        {"role": "user", "content": prompt}
     )
-    save_conversation(st.session_state.messages)
 
 
     with st.chat_message("user"):
@@ -311,17 +332,15 @@ if prompt:
     # Run agent, streaming text in as it's generated
     with st.chat_message("assistant"):
 
-        response = st.write_stream(execute_task_stream(prompt, st.session_state.messages))
+        response = st.write_stream(execute_task_stream(
+            prompt, st.session_state.messages, source=_prompt_source,
+        ))
 
         if speak_replies:
             speak_interruptible(response)
 
 
     # Save assistant response
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": response
-        }
+    st.session_state.messages = append_message(
+        {"role": "assistant", "content": response}
     )
-    save_conversation(st.session_state.messages)

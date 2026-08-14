@@ -158,8 +158,10 @@ def create_plan(request: str) -> Plan:
 
     try:
         response = anthropic_client.messages.create(
-            model=settings.default_model,
-            max_tokens=1024,
+            model=settings.planner_model,
+            # A plan is a short JSON array, not prose. Keeping this tight
+            # reduces generation latency and prevents over-planning.
+            max_tokens=512,
             system=_planner_system_prompt(),
             messages=[{"role": "user", "content": request}],
         )

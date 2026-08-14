@@ -105,6 +105,13 @@ def should_request_confirmation(
         # something the permission system doesn't even know about.
         return Decision.CONFIRM
 
+    # Speech recognition can occasionally turn background conversation
+    # into a plausible imperative. A reminder is persistent user-visible
+    # state, so voice must receive a deterministic confirmation even at
+    # the highest autonomy level. Typed chat keeps its existing behavior.
+    if execution_context.source == "voice" and tool_name == "add_reminder":
+        return Decision.CONFIRM
+
     threshold = _AUTONOMY_THRESHOLDS.get(
         autonomy_level, _AUTONOMY_THRESHOLDS[_MAX_DEFINED_LEVEL]
     )

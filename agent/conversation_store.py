@@ -1,30 +1,66 @@
+"""Process-safe shared conversation storage for browser clients."""
+import fcntl
 import json
 import os
+import tempfile
+from contextlib import contextmanager
 
-# Streamlit already serves this app on the local network (visible as
-# "Network URL" when it starts), so a phone on the same Wi-Fi can already
-# reach it — but by default each browser tab gets its own isolated
-# st.session_state, so a phone and a Mac hitting the same server would see
-# two disconnected conversations. Persisting the conversation here instead
-# of relying only on session_state makes it genuinely shared: whichever
-# device opens the page sees the real, current conversation, not a stale
-# per-device copy.
-CONVERSATION_FILE = os.path.expanduser("~/Library/Application Support/CampusPilot/conversation.json")
+
+CONVERSATION_FILE = os.path.expanduser(
+    "~/Library/Application Support/CampusPilot/conversation.json"
+)
+
+
+@contextmanager
+def _locked(exclusive: bool):
+    directory = os.path.dirname(CONVERSATION_FILE)
+    os.makedirs(directory, exist_ok=True)
+    with open(f"{CONVERSATION_FILE}.lock", "a+") as lock:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(lock.fileno(), mode)
+        yield
+
+
+def _load_unlocked():
+    try:
+        with open(CONVERSATION_FILE, "r") as file:
+            messages = json.load(file)
+        return messages if isinstance(messages, list) else []
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+
+
+def _save_unlocked(messages):
+    directory = os.path.dirname(CONVERSATION_FILE)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix="conversation-", suffix=".tmp", dir=directory,
+    )
+    try:
+        with os.fdopen(descriptor, "w") as file:
+            json.dump(messages, file, indent=2)
+        os.replace(temporary, CONVERSATION_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def load_conversation():
-    if not os.path.exists(CONVERSATION_FILE):
-        return []
-    with open(CONVERSATION_FILE, "r") as file:
-        return json.load(file)
+    with _locked(exclusive=False):
+        return _load_unlocked()
 
 
 def save_conversation(messages):
-    os.makedirs(os.path.dirname(CONVERSATION_FILE), exist_ok=True)
-    tmp_file = f"{CONVERSATION_FILE}.tmp"
-    with open(tmp_file, "w") as file:
-        json.dump(messages, file, indent=2)
-    os.replace(tmp_file, CONVERSATION_FILE)
+    with _locked(exclusive=True):
+        _save_unlocked(list(messages))
+
+
+def append_message(message):
+    """Atomically append one message and return the latest shared history."""
+    with _locked(exclusive=True):
+        messages = _load_unlocked()
+        messages.append(dict(message))
+        _save_unlocked(messages)
+        return messages
 
 
 def clear_conversation():

@@ -28,6 +28,17 @@ def track_pid(pid: int) -> None:
         file.write(str(pid))
 
 
+def untrack_pid(pid: int) -> None:
+    """Remove the playback marker only if it still belongs to ``pid``."""
+    try:
+        with open(TTS_PID_FILE) as file:
+            tracked_pid = int(file.read().strip())
+        if tracked_pid == pid:
+            os.remove(TTS_PID_FILE)
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+
 def _tracked_pid_and_command():
     """Returns (pid, comm) for whatever's currently tracked, or (None,
     None) if there's nothing tracked or the tracked process has already

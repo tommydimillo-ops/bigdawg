@@ -27,12 +27,11 @@ import concurrent.futures
 import os
 import queue
 import threading
-import time
 from datetime import datetime
 
 import rumps
 
-from agent import voice_session, voice_state
+from agent import quiet_mode, voice_session, voice_state
 from agent.audit import recent_actions_text
 from agent.computer_use_status import is_active as computer_use_active
 from agent.executor import execute_task
@@ -182,6 +181,17 @@ class CampusPilotApp(rumps.App):
         one is already running) and handles the confirmation-conversation
         round-trip (sections 6-7) around it."""
 
+        quiet_action = quiet_mode.classify(request)
+        if quiet_action == quiet_mode.QuietAction.ENTER_QUIET:
+            # The defining property of quiet mode: no acknowledgement,
+            # notification, conversation entry, or model request.
+            from agent.tts_control import stop_speaking
+            stop_speaking()
+            voice_state.reset_to_idle()
+            return
+        if quiet_action == quiet_mode.QuietAction.IGNORE:
+            return
+
         if voice_session.is_bare_stop_phrase(request) and not voice_state.is_busy():
             self._speak_and_notify(request, "I'm not currently running a task.")
             return
@@ -212,13 +222,32 @@ class CampusPilotApp(rumps.App):
         for _ in range(2):
 
             self.conversation.append({"role": "user", "content": pending_request})
+            state_holder = {}
+
+            def _capture_state(state):
+                state_holder["state"] = state
 
             try:
-                result = self.executor.submit(
+                future = self.executor.submit(
                     voice_session.run_request_with_cancellation_watch,
                     pending_request, self.conversation,
-                ).result(timeout=300)
+                    on_state_created=_capture_state,
+                )
+                result = future.result(timeout=300)
             except concurrent.futures.TimeoutError:
+                # Future.cancel() cannot stop a thread that is already
+                # running. Request cooperative cancellation through the
+                # same Phase 5 API as every other interface, then keep the
+                # voice busy lock held until the worker really exits. This
+                # prevents a second request from overlapping a timed-out
+                # one that is still finishing an in-flight tool safely.
+                state = state_holder.get("state")
+                if state is not None and state.request_id:
+                    voice_session.request_cancel(state.request_id)
+                try:
+                    future.result()
+                except Exception:
+                    pass
                 result = voice_session.VoiceRunResult(
                     text="That took too long, so I gave up on it. Try again?"
                 )
@@ -296,8 +325,11 @@ class CampusPilotApp(rumps.App):
             try:
                 result = execute_task(task["prompt"], source="scheduled")
                 mark_run(task["id"], today)
-                self.events.put(("response", task["prompt"], result))
-                self._speak(result)
+                # Scheduled work may still complete, but quiet mode means
+                # no unsolicited speech or notification is emitted.
+                if not quiet_mode.is_quiet():
+                    self.events.put(("response", task["prompt"], result))
+                    self._speak(result)
             finally:
                 voice_state.finish()
 
@@ -335,6 +367,9 @@ class CampusPilotApp(rumps.App):
 
                 self._run_and_report(request)
 
+                if quiet_mode.is_quiet():
+                    continue
+
                 # Active conversation mode: once woken, keep listening
                 # without requiring "Jarvis" again for every follow-up --
                 # mirrors app.py's browser passive/active split. Ends on
@@ -356,11 +391,14 @@ class CampusPilotApp(rumps.App):
 
                     self._run_and_report(followup)
 
+                    if quiet_mode.is_quiet():
+                        break
+
             except Exception as error:
 
                 voice_state.set_status(VoiceState.ERROR)
                 self.events.put(("error", str(error)))
-                time.sleep(5)
+                self.stop_flag.wait(5)
 
             finally:
 

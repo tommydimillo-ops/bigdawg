@@ -27,6 +27,18 @@ WAKE_WORD = settings.wake_word.lower()
 # these words mid-command doesn't accidentally end the conversation.
 EXIT_WORDS = re.compile(r"\b(bye|goodbye|stop|close|done|finished|that'?s all)\b", re.IGNORECASE)
 
+# Known empty-audio hallucinations from the transcription model. These
+# phrases have appeared verbatim in real menu-bar logs even when nobody
+# was speaking, including echoes of the transcription prompt itself.
+_HALLUCINATION_FRAGMENTS = (
+    "casual spoken request to a personal assistant",
+    "may include american slang",
+    "filler words and informal phrasing",
+)
+_HALLUCINATION_ONLY = {
+    "context", "context casual", "casual",
+}
+
 
 def is_exit_phrase(text):
     return WAKE_WORD in text.lower() and bool(EXIT_WORDS.search(text))
@@ -41,6 +53,25 @@ def strip_wake_word(text):
     # guaranteed regex-safe.
     command = re.sub(r"\b" + re.escape(WAKE_WORD) + r"\b", " ", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", command).strip(" ,.:")
+
+
+def clean_transcript(text):
+    """Return a usable transcript or an empty string for model noise.
+
+    Applied centrally so passive wake listening, active follow-ups,
+    cancellation listening, and speech interruption all get the same
+    protection.
+    """
+    value = (text or "").strip()
+    lowered = value.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+    if not normalized or normalized in _HALLUCINATION_ONLY:
+        return ""
+    if lowered.lstrip().startswith("context:") or "###" in value:
+        return ""
+    if any(fragment in lowered for fragment in _HALLUCINATION_FRAGMENTS):
+        return ""
+    return value
 
 
 def listen_for_utterance(
@@ -91,16 +122,20 @@ def listen_for_utterance(
         # assistant silently, permanently deaf until recalibration -- a far
         # worse failure mode than an occasional false trigger (which just
         # transcribes something that doesn't match "jarvis" and is ignored).
-        return float(np.median(levels)) * 1.8 + 40
+        adaptive = float(np.median(levels)) * 2.2 + 60
+        return max(settings.voice_min_signal_level, adaptive)
 
     with sd.InputStream(samplerate=samplerate, channels=1, dtype="int16") as stream:
 
+        # Opening/calibrating the microphone is already part of listening.
+        # Surface that immediately instead of leaving the menu icon looking
+        # idle for the whole calibration window.
+        voice_state.set_status(VoiceState.LISTENING)
         speech_threshold = _calibrate(stream)
         if on_ready is not None:
             on_ready()
-        voice_state.set_status(VoiceState.LISTENING)
 
-        first_block = None
+        trigger_blocks = []
         chunks_since_calibration = 0
         chunks_waited = 0
 
@@ -117,8 +152,11 @@ def listen_for_utterance(
             chunks_waited += 1
 
             if np.abs(block).mean() > speech_threshold:
-                first_block = block.copy()
-                break
+                trigger_blocks.append(block.copy())
+                if len(trigger_blocks) >= max(1, settings.voice_trigger_chunks):
+                    break
+            else:
+                trigger_blocks.clear()
 
             # Nothing's crossed the threshold in a while -- the initial
             # calibration may have been too high. Refresh it periodically
@@ -128,7 +166,7 @@ def listen_for_utterance(
                 speech_threshold = _calibrate(stream)
                 chunks_since_calibration = 0
 
-        frames = [first_block]
+        frames = list(trigger_blocks)
         silent_chunks = 0
 
         for _ in range(max_chunks):
@@ -150,15 +188,14 @@ def listen_for_utterance(
 def transcribe(audio, samplerate):
 
     voice_state.set_status(VoiceState.TRANSCRIBING)
-    path = tempfile.mktemp(suffix=".wav")
-
-    with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(samplerate)
-        wf.writeframes(audio.tobytes())
-
+    descriptor, path = tempfile.mkstemp(suffix=".wav")
+    os.close(descriptor)
     try:
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(samplerate)
+            wf.writeframes(audio.tobytes())
 
         with open(path, "rb") as f:
 
@@ -178,10 +215,13 @@ def transcribe(audio, samplerate):
                 timeout=20
             )
 
-        return response.text
+        return clean_transcript(response.text)
 
     finally:
-        os.remove(path)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
 
 def wait_for_command(stop_flag=None):
@@ -201,7 +241,7 @@ def wait_for_command(stop_flag=None):
         if audio is None:
             return None
 
-        text = transcribe(audio, samplerate).strip()
+        text = transcribe(audio, samplerate)
 
         if not text or WAKE_WORD not in text.lower():
             continue
@@ -211,13 +251,11 @@ def wait_for_command(stop_flag=None):
         if command:
             return command
 
-        # Wake word said alone -- listen again for the actual request.
-        audio2, samplerate2 = listen_for_utterance(stop_flag=stop_flag)
-
-        if audio2 is None:
-            return None
-
-        return transcribe(audio2, samplerate2).strip()
+        # Treat a deliberate wake word as a greeting. VAD already requires
+        # sustained microphone signal and all non-wake transcripts remain
+        # ignored, so deleting "Jarvis" here made the most natural way to
+        # wake the assistant look completely broken.
+        return "hello"
 
     return None
 
@@ -244,4 +282,5 @@ def listen_for_followup(stop_flag=None, max_wait_seconds=120):
     if audio is None:
         return None
 
-    return transcribe(audio, samplerate).strip()
+    text = transcribe(audio, samplerate)
+    return text or None

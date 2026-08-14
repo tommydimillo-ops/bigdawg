@@ -95,3 +95,35 @@ def build_context(
             )
 
     return Context(retrieved=retrieved)
+
+
+def build_profile_context(
+    max_memories: int = 4,
+    request_id: Optional[str] = None,
+    state=None,
+) -> Context:
+    """Return a tiny, separately bounded set of stable user-profile facts.
+
+    Profile memories are always potentially useful background, unlike
+    request-specific communication patterns. Their separate cap prevents a
+    file scan or future import from flooding every prompt.
+    """
+    if max_memories <= 0:
+        return Context()
+
+    matches = search_scored(query="", type=MemoryType.PROFILE, limit=max_memories)
+    retrieved = []
+    for memory, score in matches:
+        reason = "stable user profile context"
+        retrieved.append(RetrievedMemory(memory=memory, reason=reason, score=score))
+        log_event(
+            "memory_retrieved", request_id=request_id, component="context",
+            memory_id=memory.id, memory_type=memory.type.value,
+            score=round(score, 2), reason=reason, included=True,
+        )
+        if state is not None:
+            state.record_memory_retrieval(
+                memory_id=memory.id, memory_type=memory.type.value,
+                reason=reason, score=score, included=True,
+            )
+    return Context(retrieved=retrieved)

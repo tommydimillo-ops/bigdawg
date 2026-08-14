@@ -88,9 +88,16 @@ class Settings:
     vision_fallback_model: str = "claude-haiku-4-5-20251001"
     transcription_model: str = "gpt-4o-transcribe"
     tts_model: str = "gpt-4o-mini-tts"
+    # Fast, low-cost decomposition only; the main executor still uses the
+    # default model for actual reasoning and tool decisions.
+    planner_model: str = "claude-haiku-4-5-20251001"
 
     # --- Agent loop ---
     max_agent_steps: int = 8
+    # Only this many recent chat messages are sent to a provider. The full
+    # conversation remains on disk/UI, but unbounded old turns no longer
+    # inflate every request's latency and token count.
+    model_history_limit: int = 24
 
     # --- Autonomy / permissions ---
     # IS wired (agent/autonomy.py): controls which tools run instantly vs.
@@ -130,6 +137,10 @@ class Settings:
     voice_enabled: bool = True
     wake_word: str = "jarvis"
     voice_sample_rate: int = 16000
+    # Native microphone VAD guardrails. A single click/bump must not be
+    # treated as speech and sent to transcription.
+    voice_min_signal_level: float = 100.0
+    voice_trigger_chunks: int = 2
     user_name: str = "Tommy"
     # IS wired (voice/speak.py): if False, speak_natural() is a no-op --
     # useful for a silent/text-only run without touching every call site.
@@ -176,7 +187,9 @@ class Settings:
             vision_fallback_model=_env_str("VISION_FALLBACK_MODEL", cls.vision_fallback_model),
             transcription_model=_env_str("TRANSCRIPTION_MODEL", cls.transcription_model),
             tts_model=_env_str("TTS_MODEL", cls.tts_model),
+            planner_model=_env_str("PLANNER_MODEL", cls.planner_model),
             max_agent_steps=_env_int("MAX_AGENT_STEPS", cls.max_agent_steps),
+            model_history_limit=_env_int("MODEL_HISTORY_LIMIT", cls.model_history_limit),
             autonomy_level=_env_int("AUTONOMY_LEVEL", cls.autonomy_level),
             memory_enabled=_env_bool("MEMORY_ENABLED", cls.memory_enabled),
             context_memory_budget=_env_int("CONTEXT_MEMORY_BUDGET", cls.context_memory_budget),
@@ -184,6 +197,8 @@ class Settings:
             voice_enabled=_env_bool("VOICE_ENABLED", cls.voice_enabled),
             wake_word=_env_str("WAKE_WORD", cls.wake_word),
             voice_sample_rate=_env_int("VOICE_SAMPLE_RATE", cls.voice_sample_rate),
+            voice_min_signal_level=_env_float("VOICE_MIN_SIGNAL_LEVEL", cls.voice_min_signal_level),
+            voice_trigger_chunks=_env_int("VOICE_TRIGGER_CHUNKS", cls.voice_trigger_chunks),
             user_name=_env_str("JARVIS_USER_NAME", cls.user_name),
             tts_enabled=_env_bool("TTS_ENABLED", cls.tts_enabled),
             voice_listen_timeout=_env_float("LISTEN_TIMEOUT", cls.voice_listen_timeout),

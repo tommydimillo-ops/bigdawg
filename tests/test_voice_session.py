@@ -101,24 +101,24 @@ class TestRunRequest(IsolatedExecutorTestCase):
 
     @patch("agent.executor.claude_client")
     def test_source_is_chat_not_scheduled(self, mock_client):
-        # Voice input is untrusted input, held to the same rules as a
-        # typed chat message (section 18) -- not the more permissive
-        # "scheduled" source, and definitely not something new.
+        # Voice has its own source marker so persistent actions can add a
+        # speech-recognition safety gate without weakening chat/scheduled
+        # permissions.
         response = MagicMock(stop_reason="end_turn")
         mock_client.messages.stream.return_value = _MockStream(["ok"], response)
         result = voice_session.run_request("do something")
         self.assertEqual(result.state.tools_executed, [])  # sanity: request completed
         # source is only observable indirectly here (no tool call was made
         # to inspect); the structural test below confirms the literal
-        # source="chat" argument.
+        # source="voice" argument.
 
-    def test_source_argument_is_literally_chat(self):
+    def test_source_argument_is_literally_voice(self):
         source = inspect.signature(voice_session.run_request)
         tree = ast.parse(inspect.getsource(voice_session.run_request))
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
         execute_call = next(c for c in calls if getattr(c.func, "attr", getattr(c.func, "id", None)) == "execute_task_stream")
         source_kwarg = next(kw for kw in execute_call.keywords if kw.arg == "source")
-        self.assertEqual(source_kwarg.value.value, "chat")
+        self.assertEqual(source_kwarg.value.value, "voice")
 
     @patch("agent.voice_session.execute_task_stream")
     def test_captures_its_state_explicitly_not_from_global_active_order(self, mock_execute):
@@ -139,6 +139,24 @@ class TestRunRequest(IsolatedExecutorTestCase):
 
         self.assertIs(result.state, own_state)
         self.assertIsNot(result.state, unrelated)
+
+    @patch("agent.voice_session.execute_task_stream")
+    def test_forwards_state_to_interface_observer(self, mock_execute):
+        own_state = ExecutionState(max_iterations=8)
+        observed = []
+
+        def _stream(*args, **kwargs):
+            kwargs["on_state_created"](own_state)
+            yield "done"
+
+        mock_execute.side_effect = _stream
+
+        result = voice_session.run_request(
+            "test", on_state_created=observed.append,
+        )
+
+        self.assertIs(result.state, own_state)
+        self.assertEqual(observed, [own_state])
 
 
 class TestWatchForCancellation(unittest.TestCase):
