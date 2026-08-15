@@ -78,11 +78,12 @@ if os.environ.get("__CFBundleIdentifier") == "com.tommy.campuspilot.jarvis":
 
 import rumps
 
-from agent import quiet_mode, voice_session, voice_state
+from agent import quiet_mode, scheduler_lock, voice_session, voice_state
 from agent.audit import recent_actions_text
 from agent.computer_use_status import is_active as computer_use_active
 from agent.executor import execute_task
 from agent.memory_agent import recall
+from agent.observability import log_event
 from agent.scheduled_tasks import list_tasks, mark_run
 from agent.usage import cost_today
 from agent.voice_state import VoiceState
@@ -209,9 +210,9 @@ class CampusPilotApp(rumps.App):
         # just a silent notification banner from a separate script the
         # user would have to remember to start (agent/scheduler_daemon.py
         # still exists standalone, but this makes that a non-requirement).
-        # Don't run scheduler_daemon.py at the same time as this app --
-        # see the lifecycle note at the top of that file for why (each
-        # scheduled task would fire twice).
+        # Safe to run alongside scheduler_daemon.py now too -- each tick
+        # goes through agent.scheduler_lock (see _scheduler_tick below),
+        # so only one of the two ever actually executes a due task.
         self.scheduler_thread = threading.Thread(
             target=self._scheduler_loop,
             daemon=True
@@ -367,13 +368,30 @@ class CampusPilotApp(rumps.App):
         while not self.stop_flag.is_set():
 
             try:
-                self._run_due_scheduled_tasks()
+                self._scheduler_tick()
             except Exception as error:
                 self.events.put(("error", f"[scheduler] {error}"))
 
             # wait() (not sleep()) so quitting the app doesn't have to sit
             # through a stale poll interval first.
             self.stop_flag.wait(SCHEDULER_POLL_SECONDS)
+
+
+    def _scheduler_tick(self):
+        # Only actually run due tasks if this process wins agent.
+        # scheduler_lock's non-blocking, cross-process lock for this tick
+        # -- agent/scheduler_daemon.py polls the same scheduled_tasks
+        # store and would otherwise double-fire every task whenever both
+        # are running (the menu-bar app, via its LaunchAgent, effectively
+        # always is). The losing side skips straight past
+        # _run_due_scheduled_tasks entirely -- no mark_run, no
+        # voice_state touch, no UI event -- so losing a tick is a true
+        # no-op, not a partial run.
+        with scheduler_lock.try_acquire() as acquired:
+            if acquired:
+                self._run_due_scheduled_tasks()
+            else:
+                log_event("scheduler_lock_deferred", component="menu_bar")
 
 
     def _run_due_scheduled_tasks(self):

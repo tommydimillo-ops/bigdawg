@@ -17,19 +17,25 @@ Three guarantees this covers, specific to voice:
 
 Run with: python -m unittest tests.test_phase6_security -v
 """
+import fcntl
 import os
 import signal
 import tempfile
 import threading
+import types
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import tools.schemas  # noqa: F401 -- populates the registry
 import agent.execution_history as execution_history
 import agent.jarvis_state as jarvis_state
 import agent.quiet_mode as quiet_mode
+import agent.scheduled_tasks as scheduled_tasks
+import agent.scheduler_lock as scheduler_lock
 import agent.usage as usage
 import agent.voice_session as voice_session
+import agent.voice_state as voice_state
 import ui.menu_bar as menu_bar
 from tools import registry
 
@@ -424,6 +430,190 @@ class TestMenuBarCostReadout(unittest.TestCase):
         app._run_conversation_turn.assert_not_called()
         app._speak_and_notify.assert_not_called()
         app._speak.assert_not_called()
+
+
+class TestMenuBarSchedulerLock(unittest.TestCase):
+    """ui/menu_bar.py's built-in scheduler poller (_scheduler_tick)
+    integrating with agent/scheduler_lock.py -- the cross-process fix for
+    the duplicate-scheduler lifecycle risk (agent/scheduler_daemon.py and
+    this poller independently execute the same due tasks if both run at
+    once; see CHANGELOG.md). Contention is proven here against the real
+    lock file via a second open() call from this same test process --
+    tests/test_scheduler_lock.py separately proves the underlying
+    primitive against a genuine second OS process, including a hard
+    SIGKILL."""
+
+    def setUp(self):
+        self._real_tasks_file = scheduled_tasks.TASKS_FILE
+        self._real_lock_file = scheduler_lock.SCHEDULER_LOCK_FILE
+        scheduled_tasks.TASKS_FILE = tempfile.mktemp(suffix=".json")
+        scheduler_lock.SCHEDULER_LOCK_FILE = tempfile.mktemp(suffix=".lock")
+        self._now = datetime(2026, 1, 1, 8, 0)
+        voice_state.finish()
+
+    def tearDown(self):
+        voice_state.finish()
+        for path in (
+            scheduled_tasks.TASKS_FILE, f"{scheduled_tasks.TASKS_FILE}.lock",
+            scheduler_lock.SCHEDULER_LOCK_FILE,
+        ):
+            if os.path.exists(path):
+                os.remove(path)
+        scheduled_tasks.TASKS_FILE = self._real_tasks_file
+        scheduler_lock.SCHEDULER_LOCK_FILE = self._real_lock_file
+
+    def _add_due_task(self, prompt="unittest: say hi"):
+        task, error = scheduled_tasks.add_task(prompt, self._now.strftime("%H:%M"))
+        self.assertIsNone(error)
+        return task
+
+    def _hold_lock_from_elsewhere(self):
+        os.makedirs(os.path.dirname(scheduler_lock.SCHEDULER_LOCK_FILE), exist_ok=True)
+        held = open(scheduler_lock.SCHEDULER_LOCK_FILE, "a+")
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        return held
+
+    # --- _scheduler_tick: the lock-arbitration wrapper itself ----------
+    #
+    # With a bare MagicMock() standing in for `self` (this file's
+    # established pattern for testing CampusPilotApp methods without a
+    # real rumps/AppKit instance), `self._run_due_scheduled_tasks()`
+    # resolves to an auto-stubbed mock attribute, not the real method
+    # body -- exactly what these tests want, since they're only proving
+    # _scheduler_tick's own branching (call through vs. defer), not
+    # re-testing _run_due_scheduled_tasks's internals.
+
+    @patch("ui.menu_bar.datetime")
+    def test_tick_calls_run_due_scheduled_tasks_when_lock_uncontested(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._scheduler_tick(app)
+
+        app._run_due_scheduled_tasks.assert_called_once()
+
+    @patch("ui.menu_bar.datetime")
+    def test_tick_defers_and_never_calls_run_due_tasks_when_lock_held_elsewhere(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        task = self._add_due_task()
+        app = MagicMock()
+
+        held = self._hold_lock_from_elsewhere()
+        try:
+            with patch("ui.menu_bar.log_event") as mock_log_event:
+                menu_bar.CampusPilotApp._scheduler_tick(app)
+        finally:
+            held.close()
+
+        app._run_due_scheduled_tasks.assert_not_called()
+        mock_log_event.assert_called_once_with("scheduler_lock_deferred", component="menu_bar")
+        marked = next(t for t in scheduled_tasks.list_tasks() if t["id"] == task["id"])
+        self.assertIsNone(marked["last_run_date"])
+
+    @patch("ui.menu_bar.datetime")
+    def test_tick_does_not_touch_voice_state_when_lock_held_elsewhere(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        self._add_due_task()
+        app = MagicMock()
+
+        held = self._hold_lock_from_elsewhere()
+        try:
+            with patch("ui.menu_bar.log_event"):
+                menu_bar.CampusPilotApp._scheduler_tick(app)
+        finally:
+            held.close()
+
+        self.assertFalse(voice_state.is_busy())
+
+    @patch("ui.menu_bar.datetime")
+    def test_lock_released_after_tick_so_next_tick_can_run(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._scheduler_tick(app)
+
+        with scheduler_lock.try_acquire() as acquired:
+            self.assertTrue(acquired)
+
+    @patch("ui.menu_bar.datetime")
+    def test_scheduler_tick_end_to_end_executes_real_due_task_when_uncontested(self, mock_datetime):
+        # _scheduler_tick's own body only ever calls self._run_due_
+        # scheduled_tasks() -- with a bare MagicMock as self (as the
+        # tests above use), that call is itself a no-op stub, which
+        # would let a real wiring bug (e.g. calling the wrong method, or
+        # never calling one at all) go completely unnoticed. Binding the
+        # *real* _run_due_scheduled_tasks method to the mock instance
+        # here instead proves the actual production call path
+        # (_scheduler_loop -> _scheduler_tick -> _run_due_scheduled_
+        # tasks) genuinely executes a due task end to end when the lock
+        # is uncontested.
+        mock_datetime.now.return_value = self._now
+        task = self._add_due_task()
+        app = MagicMock()
+        app._run_due_scheduled_tasks = types.MethodType(
+            menu_bar.CampusPilotApp._run_due_scheduled_tasks, app
+        )
+
+        with patch("ui.menu_bar.execute_task", return_value="done") as mock_execute:
+            menu_bar.CampusPilotApp._scheduler_tick(app)
+
+        mock_execute.assert_called_once_with(task["prompt"], source="scheduled")
+        marked = next(t for t in scheduled_tasks.list_tasks() if t["id"] == task["id"])
+        self.assertEqual(marked["last_run_date"], self._now.strftime("%Y-%m-%d"))
+
+    # --- _run_due_scheduled_tasks: unchanged by this fix, called ------
+    # --- directly to prove its pre-existing behavior still holds ------
+
+    @patch("ui.menu_bar.datetime")
+    def test_run_due_scheduled_tasks_executes_a_due_task(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        task = self._add_due_task()
+        app = MagicMock()
+
+        with patch("ui.menu_bar.execute_task", return_value="done") as mock_execute:
+            menu_bar.CampusPilotApp._run_due_scheduled_tasks(app)
+
+        mock_execute.assert_called_once_with(task["prompt"], source="scheduled")
+        marked = next(t for t in scheduled_tasks.list_tasks() if t["id"] == task["id"])
+        self.assertEqual(marked["last_run_date"], self._now.strftime("%Y-%m-%d"))
+
+    @patch("ui.menu_bar.datetime")
+    def test_run_due_scheduled_tasks_handles_multiple_due_tasks(self, mock_datetime):
+        mock_datetime.now.return_value = self._now
+        first = self._add_due_task("unittest: task one")
+        second = self._add_due_task("unittest: task two")
+        app = MagicMock()
+
+        with patch("ui.menu_bar.execute_task", return_value="done") as mock_execute:
+            menu_bar.CampusPilotApp._run_due_scheduled_tasks(app)
+
+        self.assertEqual(mock_execute.call_count, 2)
+        called_prompts = {call.args[0] for call in mock_execute.call_args_list}
+        self.assertEqual(called_prompts, {first["prompt"], second["prompt"]})
+        for task in scheduled_tasks.list_tasks():
+            self.assertEqual(task["last_run_date"], self._now.strftime("%Y-%m-%d"))
+
+    @patch("ui.menu_bar.datetime")
+    def test_existing_voice_state_gate_still_skips_and_retries_when_busy(self, mock_datetime):
+        # Pre-existing ui/menu_bar.py behavior (agent/voice_state.py's
+        # busy lock), unrelated to the new scheduler lock and must not
+        # change: a due task found while a voice conversation (or another
+        # scheduled run) is already active is left un-marked, so it's
+        # retried on the next tick instead of silently skipped all day.
+        mock_datetime.now.return_value = self._now
+        task = self._add_due_task()
+        app = MagicMock()
+
+        self.assertTrue(voice_state.try_start())
+        try:
+            with patch("ui.menu_bar.execute_task") as mock_execute:
+                menu_bar.CampusPilotApp._run_due_scheduled_tasks(app)
+        finally:
+            voice_state.finish()
+
+        mock_execute.assert_not_called()
+        marked = next(t for t in scheduled_tasks.list_tasks() if t["id"] == task["id"])
+        self.assertIsNone(marked["last_run_date"])
 
 
 if __name__ == "__main__":

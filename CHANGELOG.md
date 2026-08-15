@@ -7,7 +7,135 @@ needed.
 
 ---
 
-## 2026-08-15 (later) — Commits landed, tool-count fix, menu-bar cost readout
+## 2026-08-15 (newest) — Duplicate-scheduler fix (cross-process lock)
+
+**What**: Fixed the duplicate-scheduler lifecycle risk documented since
+the Phase 2 lifecycle review: `agent/scheduler_daemon.py` (standalone,
+manually started) and `ui/menu_bar.py`'s built-in poller (a background
+thread, running whenever the menu-bar app is — effectively always, via
+its LaunchAgent) each independently poll the same `scheduled_tasks.json`
+and used to both execute every due task if run at the same time.
+
+Added `agent/scheduler_lock.py`: a non-blocking, kernel-managed
+`fcntl.flock(LOCK_EX | LOCK_NB)` on a dedicated lock file
+(`~/Library/Application Support/CampusPilot/scheduler.lock`), re-attempted
+on every poll tick. Whichever process wins the lock for that tick may
+process due tasks; the loser skips the tick entirely (no execution, no
+`mark_run`, no UI/voice-state interaction) and logs a
+`scheduler_lock_deferred` diagnostic. `fcntl.flock` ties the lock to the
+open file description, so it's released automatically the instant the
+holding process exits or is killed — unlike `ui/menu_bar.py`'s own
+PID-file single-instance lock, no stale-lock detection logic was needed.
+
+**Why**: User-approved after a dedicated investigation phase (traced
+task registration, every scheduler entry point, how each is started,
+confirmed both pollers are an intentional design for different
+deployment modes — not an oversight — and evaluated three fix options:
+this cross-process lock, a static config-driven ownership flag, and
+consolidating into one canonical process). The lock was chosen over the
+other two for the best failure/recovery behavior (self-heals within one
+poll interval if the lock-holder dies, vs. the static-flag approach's
+silent-starvation risk) and the smallest, most conservative change (vs.
+consolidating the two pollers into one, which would have contradicted
+this project's "don't rewrite a working subsystem to add one feature"
+rule and removed `scheduler_daemon.py`'s documented, deliberate role as
+a headless fallback).
+
+**Key decisions**:
+- The lock lives in its own new module and its own lock file, not
+  extended onto `agent/scheduled_tasks.py`'s existing `TASKS_FILE.lock`
+  — that lock is a *blocking* shared/exclusive lock for safe JSON
+  read/modify/write, a different concept from a *non-blocking* per-tick
+  ownership-arbitration lock; combining the two purposes on one file
+  risked subtle deadlocks.
+- Neither poller's own due-task/mark_run logic was touched —
+  `agent/scheduler_daemon.py`'s `_run_due_tasks()` and
+  `ui/menu_bar.py`'s `_run_due_scheduled_tasks()` are byte-for-byte
+  unchanged, including their pre-existing behavioral difference (the
+  daemon marks a task run even after an execution error; the menu-bar
+  poller does not, so it retries next tick instead). The lock only wraps
+  each poller's outer per-tick call site (`scheduler_daemon.py`'s new
+  `_poll_once()`; `ui/menu_bar.py`'s new `_scheduler_tick()`).
+
+**Files affected**: `agent/scheduler_lock.py` (new),
+`agent/scheduler_daemon.py`, `ui/menu_bar.py`,
+`tests/test_scheduler_lock.py` (new), `tests/test_scheduler_daemon.py`
+(new), `tests/test_phase6_security.py` (new `TestMenuBarSchedulerLock`
+class).
+
+**Tests**: 22 new (775 total, up from 753), full suite passing, no
+regressions. Cross-process contention specifically proved with a real
+subprocess (not threads or same-process file handles standing in for
+it): `tests/test_scheduler_lock.py`'s `TestCrossProcessContention` spawns
+an actual child OS process that acquires the lock, confirms the parent
+process's own attempt fails while the child holds it, then `SIGKILL`s
+the child (not a graceful exit) and confirms the parent can immediately
+acquire it afterward — proving the release is genuinely kernel-managed,
+not dependent on any application-level cleanup code running. One test in
+`tests/test_phase6_security.py` binds the real `_run_due_scheduled_tasks`
+method to a mock instance via `types.MethodType` specifically to prove
+the actual production call path (`_scheduler_loop` ->
+`_scheduler_tick` -> `_run_due_scheduled_tasks`) executes a due task end
+to end, after an initial version of these tests was found (during this
+same session) to be silently vacuous — a bare `MagicMock` standing in
+for `self` turns `self._run_due_scheduled_tasks()` into a no-op stub
+call, not a real invocation.
+
+**Note**: these changes are staged but intentionally **not committed**
+— per this project's "only commit when explicitly asked" convention.
+
+---
+
+## 2026-08-15 (later) — HANDOFF sync fix, repository cleanup
+
+**What**: Two pieces of work at the start of a new session, done in
+order:
+1. Corrected `HANDOFF.md`, which still described the menu-bar cost
+   readout as uncommitted and "awaiting approval" even though it had
+   already landed as `1a15ac0` in the prior session — the working tree
+   was clean and `git log` showed the commit, but the prose hadn't been
+   reconciled after the commit happened. Fixed throughout (status
+   summary, file list, outstanding-work list, recommended next steps).
+2. Repository cleanup: removed three files/directories after verifying
+   each was genuinely unreferenced (code, launch agents, scripts, tests,
+   docs) rather than deleting on the assumption that "old-looking" meant
+   safe:
+   - Root `memory.json` — `database/memory.py` hardcodes an absolute
+     `~/Library/Application Support/CampusPilot/`-based path; nothing
+     references the relative repo-root filename. Git-tracked, removed
+     via `git rm`.
+   - `CampusPilotAgent.app.old-handbuilt/` — a pre-py2app, hand-built
+     `.app` bundle. The live LaunchAgent
+     (`~/Library/LaunchAgents/com.tommy.campuspilot.plist`) points at
+     the current py2app-built `CampusPilotAgent.app`, never this one.
+     Not git-tracked, removed via `rm -rf`.
+   - `docs/old-launchagent-backups/com.tommy.campuspilot.v3.bak.plist` —
+     a backup LaunchAgent config pointing at a defunct prior-project
+     path (`~/CampusPilot_v3`, Python 3.9). The "ported from
+     CampusPilot_v3" comments in `voice/listen.py`/`voice/speak.py`/
+     `ui/menu_bar.py` are attribution prose only, not a dependency on
+     this file. Git-tracked, removed via `git rm`.
+
+**Why**: (1) is a documentation-accuracy fix — this project's own
+protocol requires trusting the code over stale docs and fixing the docs
+to match. (2) was `ROADMAP.md`'s "Next" → Cleanup item.
+
+**Files affected**: `HANDOFF.md`, `ARCHITECTURE.md`, `ROADMAP.md`
+(documentation); `memory.json`,
+`CampusPilotAgent.app.old-handbuilt/`,
+`docs/old-launchagent-backups/` (removed).
+
+**Tests**: 753 passing both before and after the cleanup — none of the
+removed files were exercised by the test suite. No new tests needed
+(deletion of genuinely dead files, not a behavior change).
+
+**Note**: the git-tracked deletions (`memory.json`, the backup plist)
+are staged but intentionally **not committed** — per this project's
+"only commit when explicitly asked" convention.
+
+---
+
+## 2026-08-15 (earlier) — Commits landed, tool-count fix, menu-bar cost readout
 
 **What**: Three pieces of follow-up work in a new session, done in order:
 1. Committed the two batches of prior-session work that had sat
@@ -57,7 +185,7 @@ aggregation instead of each reimplementing it.
 
 ---
 
-## 2026-08-15 (earlier) — Persistent session/handoff documentation system
+## 2026-08-15 (earliest) — Persistent session/handoff documentation system
 
 **What**: Added `CLAUDE.md`, `HANDOFF.md`, `ARCHITECTURE.md` (root,
 supersedes `docs/ARCHITECTURE.md`), `ROADMAP.md`, `CHANGELOG.md`,

@@ -56,6 +56,19 @@ crash-safety and cross-process concurrency — there is **no database
 server**, this is deliberate (see `docs/ARCHITECTURE.md`'s original
 note: "no vector database or external database server").
 
+`agent/scheduler_daemon.py` and `ui/menu_bar.py`'s built-in poller both
+run the same scheduled-task logic independently (the diagram's
+"redundant with menu-bar's own scheduler" label describes the mechanism,
+not a bug) — each used to execute every due task if both processes ran
+at once, a real, previously-documented lifecycle risk. `agent/
+scheduler_lock.py` now arbitrates: a non-blocking, kernel-managed
+`fcntl.flock` on a dedicated lock file, re-attempted every poll tick, so
+only the tick's lock-winner executes due tasks; the other skips that
+tick entirely (no execution, no `mark_run`, no UI/voice-state touch) and
+logs a `scheduler_lock_deferred` diagnostic. Both deployment modes
+(menu-bar always-on, `scheduler_daemon.py` headless fallback) still
+exist and may now run together safely.
+
 ## 2. Main application flow
 
 All four entry points converge on one function:
@@ -226,12 +239,11 @@ nothing that already imports them needed to change): `agent/lessons.py`
 - `agent/execution_history.py` — bounded metadata about past *requests*
   (status, duration, tools used), not personal facts.
 
-**Known legacy artifact**: `memory.json` at the repo root is a dead file
-from before the storage path was fixed to an absolute,
-`~/Library/Application Support/CampusPilot/`-based location (see
-`database/memory.py`'s own comment). The real, live memory store is at
-that absolute path, never the repo-root file. Not cleaned up — harmless,
-just unused.
+The real, live memory store is the absolute,
+`~/Library/Application Support/CampusPilot/`-based path in
+`database/memory.py`; a dead repo-root `memory.json` fossil from before
+that path fix was removed in a repository cleanup pass (see
+`CHANGELOG.md`).
 
 ## 7. Tools
 

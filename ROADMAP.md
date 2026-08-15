@@ -60,6 +60,25 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   Fails safely (an "unavailable" alert, never a wrong number) if
   `usage_history.json` can't be read/parsed. See "Next" below — Option A
   (always-visible title) was considered and explicitly not chosen.
+- **Repository cleanup**: removed root `memory.json` (dead, superseded by
+  the absolute-path store), `CampusPilotAgent.app.old-handbuilt/`
+  (superseded by the py2app-built bundle; the live LaunchAgent plist
+  never pointed at it), and `docs/old-launchagent-backups/` (a backup
+  config for a defunct prior-project path) — each verified unreferenced
+  by code, launch agents, scripts, tests, or documentation before
+  removal.
+- **Duplicate-scheduler fix**: `agent/scheduler_lock.py` (new) — a
+  non-blocking, kernel-managed `fcntl.flock(LOCK_EX | LOCK_NB)` on a
+  dedicated lock file, re-attempted every poll tick by both
+  `agent/scheduler_daemon.py` and `ui/menu_bar.py`'s built-in scheduler.
+  Only the tick's lock-winner executes due tasks; the loser skips the
+  tick entirely (no execution, no `mark_run`, no UI/voice-state touch)
+  and logs a `scheduler_lock_deferred` diagnostic. Released automatically
+  by the kernel if the holding process crashes or is killed — no
+  PID-file/stale-lock detection code involved. Both deployment modes
+  (menu-bar always-on, `scheduler_daemon.py` headless fallback) are
+  preserved; they may now run together safely. See "Known lifecycle
+  risks" below — this was previously listed there as unfixed.
 
 ## In progress
 
@@ -80,9 +99,6 @@ discussed most recently:
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
 - **Known lifecycle risks** (documented, not yet fixed):
-  - Duplicate scheduler: `agent/scheduler_daemon.py` and
-    `ui/menu_bar.py`'s built-in loop both execute the same scheduled
-    tasks independently if run together.
   - Playwright profile contention: the Streamlit and menu-bar processes
     each hold their own browser context pointed at the same on-disk
     Chrome profile; no locking/coordination if both drive a browser at
@@ -96,10 +112,6 @@ discussed most recently:
   underlying `agent/usage.py` aggregation (`cost_since()`/`cost_today()`)
   is already shared and reusable, so this would not need new aggregation
   logic, only a new display path.
-- **Cleanup**: `memory.json` at the repo root (dead legacy file, real
-  store is elsewhere), `CampusPilotAgent.app.old-handbuilt` (superseded
-  by the py2app-built bundle), `docs/old-launchagent-backups/` — none
-  currently causing harm, all candidates for a future tidy-up pass.
 
 ## Future
 
