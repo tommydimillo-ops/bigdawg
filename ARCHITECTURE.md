@@ -319,7 +319,12 @@ Three separate processes, all calling the same orchestrator:
   (`setup_app.py`, py2app alias mode) specifically so it has its own TCC
   identity for microphone/Speech-framework permissions — the shared
   system Python launcher has no way to declare mic usage without editing
-  (and breaking the signature of) an Apple-signed file.
+  (and breaking the signature of) an Apple-signed file. Its dropdown also
+  has an "Estimated Cost" item (alongside Recent Notes/Tasks/Actions),
+  read lazily via `agent/usage.py`'s `cost_today()` only when clicked —
+  no background timer, and the always-on title/state icon is untouched.
+  Fails safely (an "unavailable" alert, not a wrong number) if
+  `usage_history.json` can't be read or parsed.
 
 ## 11. Backend
 
@@ -445,11 +450,19 @@ Three deliberately separate logs, different questions each:
 - **`agent/usage.py`** — "what did this cost": per-call provider/model/
   operation/token/cost records, correlated by `request_id` and `agent`.
   Estimated cost only (`_PRICING` is a maintained snapshot, not a live
-  pricing API) — see the module's own docstring.
+  pricing API) — see the module's own docstring. `cost_since(cutoff)`/
+  `cost_today()` are the shared aggregation primitive behind any
+  "at a glance" cost figure — returns `None` (not `0.0`) if
+  `usage_history.json` can't be read/parsed, so a caller can distinguish
+  "no usage yet" from "data unavailable" and fail safely; currently used
+  by `ui/menu_bar.py`'s cost dropdown item, intended to also back
+  `pages/1_Dashboard.py`'s equivalent figures and any future always-
+  visible menu-bar title indicator rather than each reimplementing the
+  same sum-over-`get_since()` logic.
 
 ## 18. Testing
 
-`tests/` — 742 tests as of this writing (`python -m unittest discover -s
+`tests/` — 753 tests as of this writing (`python -m unittest discover -s
 tests`), organized roughly by phase/module (`test_agents_*`,
 `test_phase4_security.py` through `test_phase7_security.py`, `test_usage*`,
 `test_voice_*`, `test_skills_*`, etc.). Established policy: mock at the

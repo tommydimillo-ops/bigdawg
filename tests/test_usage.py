@@ -185,6 +185,59 @@ class TestQueryHelpers(IsolatedUsageTestCase):
         self.assertEqual(len(usage.get_since(0)), 3)
 
 
+class TestCostSince(IsolatedUsageTestCase):
+    """cost_since/cost_today back the menu-bar's "Estimated Cost" item --
+    None must mean "couldn't read usage data" specifically, never confused
+    with a genuine $0.00 day, since the menu bar treats them differently
+    (an alert saying data isn't available vs. a real zero-cost figure)."""
+
+    def test_sums_multiple_records(self):
+        usage.record_llm_usage(
+            provider="anthropic", model="claude-sonnet-5", operation="chat",
+            request_id="req-1", input_tokens=1_000_000, output_tokens=0,
+        )
+        usage.record_llm_usage(
+            provider="anthropic", model="claude-sonnet-5", operation="chat",
+            request_id="req-2", input_tokens=0, output_tokens=1_000_000,
+        )
+        cost = usage.cost_since(0)
+        self.assertAlmostEqual(cost, 3.00 + 15.00)
+
+    def test_empty_usage_history_is_zero_not_none(self):
+        self.assertEqual(usage.cost_since(0), 0.0)
+        self.assertEqual(usage.cost_today(), 0.0)
+
+    def test_missing_usage_file_is_zero_not_none(self):
+        self.assertFalse(os.path.exists(usage.USAGE_FILE))
+        self.assertEqual(usage.cost_today(), 0.0)
+
+    def test_corrupt_json_returns_none(self):
+        os.makedirs(os.path.dirname(usage.USAGE_FILE), exist_ok=True)
+        with open(usage.USAGE_FILE, "w") as f:
+            f.write("{not valid json")
+        self.assertIsNone(usage.cost_since(0))
+        self.assertIsNone(usage.cost_today())
+
+    def test_malformed_record_shape_returns_none(self):
+        import json
+        os.makedirs(os.path.dirname(usage.USAGE_FILE), exist_ok=True)
+        with open(usage.USAGE_FILE, "w") as f:
+            json.dump(["not a record dict"], f)
+        self.assertIsNone(usage.cost_since(0))
+
+    def test_cost_today_excludes_records_before_midnight(self):
+        import time
+        yesterday = time.time() - 86400
+        usage.record_llm_usage(
+            provider="anthropic", model="claude-sonnet-5", operation="chat",
+            request_id="req-old", input_tokens=1_000_000, output_tokens=0,
+        )
+        recorded = usage.get_recent()[0]
+        recorded.timestamp = yesterday
+        usage._save_raw([recorded.to_dict()])
+        self.assertEqual(usage.cost_today(), 0.0)
+
+
 class TestCheckRequestLimits(IsolatedUsageTestCase):
 
     def setUp(self):

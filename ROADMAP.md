@@ -44,9 +44,22 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   time-to-first-audio on a 3-sentence reply); timed quiet modes
   ("sleep" = 10 min, "off" = 30 min, auto-expiring, wake-phrase-
   cancellable).
-- **Documentation system** (this work): `CLAUDE.md`, `HANDOFF.md`,
-  `ARCHITECTURE.md`, `ROADMAP.md`, `CHANGELOG.md`, `SESSION_LOG.md` —
-  session-to-session continuity without relying on conversational memory.
+- **Documentation system** (committed `262bf2b`): `CLAUDE.md`,
+  `HANDOFF.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `CHANGELOG.md`,
+  `SESSION_LOG.md` — session-to-session continuity without relying on
+  conversational memory.
+- **Doc accuracy fix** (committed `f3fd416`): corrected the documented
+  tool count (was a stale "~45", actual registered count is 53) across
+  `CLAUDE.md`/`ARCHITECTURE.md`/`ROADMAP.md`. `CHANGELOG.md`'s Phase 1
+  entry deliberately left as `~45` — it's a historical record of that
+  phase, not current state.
+- **Menu-bar cost readout, Option B** (dropdown item, not an always-on
+  title): "Estimated Cost" item in `ui/menu_bar.py`'s dropdown, read
+  lazily via `agent/usage.py`'s new `cost_since()`/`cost_today()` on
+  click — no background timer, no change to the title/state-icon system.
+  Fails safely (an "unavailable" alert, never a wrong number) if
+  `usage_history.json` can't be read/parsed. See "Next" below — Option A
+  (always-visible title) was considered and explicitly not chosen.
 
 ## In progress
 
@@ -74,11 +87,15 @@ discussed most recently:
     each hold their own browser context pointed at the same on-disk
     Chrome profile; no locking/coordination if both drive a browser at
     once.
-- **Menu-bar cost readout** — user asked about a persistent, always-
-  visible usage summary in the menu bar (not the full Streamlit
-  dashboard); discussed, not yet built. Two shapes discussed: a live-
-  updating menu-bar title (e.g. `🤖 $0.02 today`) vs. a dropdown item —
-  needs a decision before building.
+- **Menu-bar cost readout, Option A** (always-visible title, e.g.
+  `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
+  now built — see "Completed"), not chosen: it would need a recurring
+  update path (timer or per-record refresh) and would contend with the
+  title's existing job of reflecting live voice/task state. Revisit only
+  if the dropdown item proves insufficiently glanceable in practice; the
+  underlying `agent/usage.py` aggregation (`cost_since()`/`cost_today()`)
+  is already shared and reusable, so this would not need new aggregation
+  logic, only a new display path.
 - **Cleanup**: `memory.json` at the repo root (dead legacy file, real
   store is elsewhere), `CampusPilotAgent.app.old-handbuilt` (superseded
   by the py2app-built bundle), `docs/old-launchagent-backups/` — none

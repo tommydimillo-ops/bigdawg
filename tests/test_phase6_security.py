@@ -349,5 +349,82 @@ class TestMenuBarQuietMode(unittest.TestCase):
         app._speak.assert_not_called()
 
 
+class TestMenuBarCostReadout(unittest.TestCase):
+    """The "Estimated Cost" dropdown item (agent/usage.py's cost_today(),
+    read lazily on click -- see ROADMAP.md for why an always-visible
+    title figure was passed over in favor of this)."""
+
+    def setUp(self):
+        self._real_usage_file = usage.USAGE_FILE
+        usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
+
+    def tearDown(self):
+        for path in (usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock"):
+            if os.path.exists(path):
+                os.remove(path)
+        usage.USAGE_FILE = self._real_usage_file
+
+    @patch("rumps.alert")
+    def test_shows_todays_estimated_cost(self, mock_alert):
+        usage.record_llm_usage(
+            provider="anthropic", model="claude-sonnet-5", operation="chat",
+            request_id="req-1", input_tokens=1_000_000, output_tokens=0,
+        )
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_cost(app, None)
+
+        mock_alert.assert_called_once_with("Estimated Cost", "$3.00 estimated today.")
+
+    @patch("rumps.alert")
+    def test_multiple_records_are_summed(self, mock_alert):
+        for i in range(3):
+            usage.record_llm_usage(
+                provider="anthropic", model="claude-sonnet-5", operation="chat",
+                request_id=f"req-{i}", input_tokens=1_000_000, output_tokens=0,
+            )
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_cost(app, None)
+
+        mock_alert.assert_called_once_with("Estimated Cost", "$9.00 estimated today.")
+
+    @patch("rumps.alert")
+    def test_empty_usage_history_shows_zero_not_an_error(self, mock_alert):
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_cost(app, None)
+
+        mock_alert.assert_called_once_with("Estimated Cost", "$0.00 estimated today.")
+
+    @patch("rumps.alert")
+    def test_corrupt_usage_data_fails_safely_without_a_misleading_number(self, mock_alert):
+        os.makedirs(os.path.dirname(usage.USAGE_FILE), exist_ok=True)
+        with open(usage.USAGE_FILE, "w") as f:
+            f.write("{not valid json")
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_cost(app, None)
+
+        mock_alert.assert_called_once()
+        title, message = mock_alert.call_args.args
+        self.assertEqual(title, "Estimated Cost")
+        self.assertNotIn("$", message)
+
+    def test_does_not_touch_conversation_or_voice_machinery(self):
+        # Confirms the new item behaves like the existing Recent Notes/
+        # Tasks/Actions items (an isolated, click-to-reveal alert) and
+        # doesn't reach into the conversation/voice-state paths those
+        # items -- and quiet/sleep/off handling above -- also never touch.
+        app = MagicMock()
+
+        with patch("rumps.alert"):
+            menu_bar.CampusPilotApp.show_cost(app, None)
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
+        app._speak.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

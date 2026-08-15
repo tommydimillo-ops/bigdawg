@@ -84,6 +84,7 @@ from agent.computer_use_status import is_active as computer_use_active
 from agent.executor import execute_task
 from agent.memory_agent import recall
 from agent.scheduled_tasks import list_tasks, mark_run
+from agent.usage import cost_today
 from agent.voice_state import VoiceState
 from config.settings import settings
 from voice import local_transcribe
@@ -166,6 +167,7 @@ class CampusPilotApp(rumps.App):
             "Recent Notes",
             "Recent Tasks",
             "Recent Actions",
+            "Estimated Cost",
         ]
 
         # Background thread -> main thread handoff, so AppKit calls
@@ -534,6 +536,21 @@ class CampusPilotApp(rumps.App):
     def show_actions(self, _):
 
         rumps.alert("Recent Actions", recent_actions_text(10))
+
+
+    @rumps.clicked("Estimated Cost")
+    def show_cost(self, _):
+        # Read lazily on click rather than kept live in a polling timer or
+        # the always-on title -- this is a glance-on-demand figure, not a
+        # persistent indicator (see ROADMAP.md's menu-bar cost readout item
+        # for why the always-visible-title option was passed over).
+        cost = cost_today()
+
+        if cost is None:
+            rumps.alert("Estimated Cost", "Usage data isn't available right now.")
+            return
+
+        rumps.alert("Estimated Cost", f"${cost:.2f} estimated today.")
 
 
 def _handle_termination_signal(signum, frame):

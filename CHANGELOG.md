@@ -7,7 +7,57 @@ needed.
 
 ---
 
-## 2026-08-15 — Persistent session/handoff documentation system
+## 2026-08-15 (later) — Commits landed, tool-count fix, menu-bar cost readout
+
+**What**: Three pieces of follow-up work in a new session, done in order:
+1. Committed the two batches of prior-session work that had sat
+   uncommitted: `602bd03` (Phase 8 post-release hardening — voice-
+   confirmation gating, sentence-chunked TTS, timed quiet/sleep/off
+   modes, their tests, the `config/settings.py` comment fix) and
+   `262bf2b` (the persistent documentation system itself).
+2. Fixed a doc-accuracy gap found during review: `CLAUDE.md`,
+   `ARCHITECTURE.md`, and `ROADMAP.md` all said "~45 tools" — the real
+   registered count (`tools.registry._REGISTRY` after `tools.schemas`
+   import) is 53. Committed as `f3fd416`. `CHANGELOG.md`'s own Phase 1
+   entry (below) keeps its original `~45` — that's a historical record
+   of tool count *at Phase 1*, not current state, and correcting it
+   would misstate history rather than fix a stale fact.
+3. Built the menu-bar cost readout (`ROADMAP.md`'s "Next" item),
+   Option B: a lazily-computed "Estimated Cost" item in `ui/menu_bar.py`'s
+   existing dropdown (alongside Recent Notes/Tasks/Actions), not an
+   always-visible title figure (Option A, considered and explicitly not
+   chosen — see `ROADMAP.md`).
+
+**Why**: (1)-(2) were a clean-baseline pass requested before starting
+new roadmap work. (3) directly extends Phase 8's cost-visibility
+priority using data that already existed (`usage_history.json`) —
+no new provider/API integration.
+
+**Files affected**: `agent/usage.py` (new `cost_since(cutoff)`/
+`cost_today()` — returns `None`, not `0.0`, if usage data can't be
+read/parsed, so a caller can tell "no usage yet" apart from "data
+unavailable" and fail safely), `ui/menu_bar.py` (new "Estimated Cost"
+menu item + `show_cost` handler, following the same click-to-`rumps.
+alert` pattern as the existing Recent Notes/Tasks/Actions items —
+computed on click, no polling timer, title/state-icon system untouched),
+`tests/test_usage.py` (+6 tests: multi-record sum, empty history,
+missing file, corrupt JSON, malformed record shape, midnight cutoff),
+`tests/test_phase6_security.py` (+5 tests: correct display, multi-record
+sum, empty-history display, corrupt-data fail-safe display, no
+interference with conversation/voice-state machinery).
+
+**Decisions**: `cost_since()`/`cost_today()` deliberately live in
+`agent/usage.py`, not inline in `ui/menu_bar.py`, specifically so
+`pages/1_Dashboard.py` (which already sums the same `get_since()`
+records for its own today/by-provider/by-operation breakdowns) and any
+future always-visible title indicator can reuse the identical
+aggregation instead of each reimplementing it.
+
+**Tests**: 753 passing (742 + 11 new), full suite, no regressions.
+
+---
+
+## 2026-08-15 (earlier) — Persistent session/handoff documentation system
 
 **What**: Added `CLAUDE.md`, `HANDOFF.md`, `ARCHITECTURE.md` (root,
 supersedes `docs/ARCHITECTURE.md`), `ROADMAP.md`, `CHANGELOG.md`,

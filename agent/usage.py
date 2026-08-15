@@ -34,6 +34,7 @@ import tempfile
 import time
 import fcntl
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import List, Optional
 
 from agent.observability import log_event
@@ -215,6 +216,29 @@ def get_recent(limit: Optional[int] = None) -> List[UsageRecord]:
 
 def get_since(cutoff_timestamp: float) -> List[UsageRecord]:
     return [r for r in get_recent() if r.timestamp >= cutoff_timestamp]
+
+
+def cost_since(cutoff_timestamp: float) -> Optional[float]:
+    """Total estimated_cost_usd recorded since cutoff_timestamp, or None if
+    usage_history.json can't be read/parsed at all -- distinct from a
+    genuine 0.0 (a real period with no usage yet), so a caller like the
+    menu-bar cost item can fail safely by omitting the figure rather than
+    ever showing a wrong-looking number for corrupt data. The one shared
+    primitive behind any "at a glance" cost figure -- pages/1_Dashboard.py's
+    own today/by-provider/by-operation breakdowns are already sums over
+    these same get_since() records, and a future always-visible menu-bar
+    title indicator would read from here too."""
+    try:
+        return sum(r.estimated_cost_usd for r in get_since(cutoff_timestamp))
+    except Exception:
+        return None
+
+
+def cost_today() -> Optional[float]:
+    """Convenience wrapper for the common "since local midnight" case --
+    what the menu-bar's cost item shows."""
+    midnight = datetime.combine(datetime.now().date(), datetime.min.time()).timestamp()
+    return cost_since(midnight)
 
 
 def total_cost_for_request(request_id: str) -> float:
