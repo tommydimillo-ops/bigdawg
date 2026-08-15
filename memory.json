@@ -1,5 +1,0 @@
-{
-    "patterns": [
-        "User repeatedly asks to be reminded to call Mom (multiple times across the conversation) with vague timing like 'later', 'today', 'tomorrow', 'this evening' \u2014 likely worth checking for existing duplicate reminders before adding new ones."
-    ]
-}
