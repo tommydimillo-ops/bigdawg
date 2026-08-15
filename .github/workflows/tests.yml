@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Placeholders only -- never real credentials. agent/chat.py
+      # constructs the Anthropic/OpenAI SDK clients at import time, and
+      # the OpenAI SDK raises immediately if no key is present at all.
+      # No test in this suite makes a real network call through either
+      # client (mocked at the boundary per this project's test policy),
+      # so these values are never used to authenticate anything.
+      ANTHROPIC_API_KEY: "sk-ci-placeholder-not-a-real-key"
+      OPENAI_API_KEY: "sk-ci-placeholder-not-a-real-key"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
