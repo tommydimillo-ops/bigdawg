@@ -37,7 +37,7 @@ See `ROADMAP.md` for the actual prioritized backlog.
 One orchestrator (`agent/executor.py`'s `execute_task_stream`), called by
 three entry points (`app.py` Streamlit, `ui/menu_bar.py` native voice app,
 `agent/scheduler_daemon.py`). Claude primary / OpenAI fallback
-(`agent/model_router.py`, currently static, not task-routed). ~45 tools in
+(`agent/model_router.py`, currently static, not task-routed). 53 tools in
 one registry (`tools/registry.py`), permission-leveled 0-5. Structured
 memory (`agent/memory/`). Skills = data-only prompt-context bundles
 (`agent/skills/`, `SKILL.md` files). Coworker agents run in real,

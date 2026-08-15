@@ -10,7 +10,7 @@ this file is the planning side of the same line.
 
 Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 
-- **Foundation**: Streamlit chat, ~45 tools, single registry
+- **Foundation**: Streamlit chat, 53 tools, single registry
   (`tools/registry.py`), Claude-primary/OpenAI-fallback loop.
 - **Phase 1-2**: Tool registry extraction, typed config
   (`config/settings.py`), request context, structured observability

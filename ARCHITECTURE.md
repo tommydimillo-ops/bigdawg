@@ -36,7 +36,7 @@ frameworks.
         ┌────────────────────┼────────────────────────┐
         ▼                    ▼                         ▼
   agent/model_router   tools/registry.py         agent/agents/
-  (Claude primary,     (~45 tools, permission     manager.py
+  (Claude primary,     (53 tools, permission     manager.py
    OpenAI fallback)     levels, dispatch)         (coworker agents,
                                                     subprocess-isolated)
                              │
@@ -238,7 +238,7 @@ just unused.
 **`tools/registry.py`** is the single source of truth for every tool: name,
 description, JSON schema, `permission_level` (0-5), and four gating flags
 (`requires_live_confirmation`, `unattended_allowed`, `side_effect`,
-`parallel_safe`). ~45 tools, grouped by theme into `tools/schemas/*.py`
+`parallel_safe`). 53 tools, grouped by theme into `tools/schemas/*.py`
 (`browsing`, `computer_use`, `execution_control`, `logins_and_email`,
 `memory_and_learning`, `productivity`, `reasoning`, `scheduling`, `skills`,
 `system`, `agents`) — each calls `register(ToolSpec(...))` at import time.
