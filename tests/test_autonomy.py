@@ -74,6 +74,29 @@ class TestVoiceSourceSafety(unittest.TestCase):
             Decision.CONFIRM,
         )
 
+    def test_voice_open_browser_always_confirms_at_max_autonomy(self):
+        # A misheard wake word must not be able to launch a real browser
+        # against a real (possibly attacker- or ad-influenced, if the
+        # transcript came from a video) destination unconfirmed -- see
+        # agent/autonomy.py's _VOICE_ALWAYS_CONFIRMS docstring for the
+        # live incident this was added for.
+        ctx = ExecutionContext(source="voice")
+        self.assertEqual(
+            should_request_confirmation("open_browser", 4, ctx),
+            Decision.CONFIRM,
+        )
+
+    def test_voice_consult_coworker_agent_always_confirms_at_max_autonomy(self):
+        # consult_coworker_agent is the entry point into ResearchAgent's
+        # own internal tool loop, which dispatches open_browser directly
+        # without going through this permission system at all -- gating
+        # the entry point is what actually protects that path.
+        ctx = ExecutionContext(source="voice")
+        self.assertEqual(
+            should_request_confirmation("consult_coworker_agent", 4, ctx),
+            Decision.CONFIRM,
+        )
+
     def test_voice_read_only_tool_still_runs_normally(self):
         ctx = ExecutionContext(source="voice")
         self.assertEqual(
@@ -85,6 +108,20 @@ class TestVoiceSourceSafety(unittest.TestCase):
         ctx = ExecutionContext(source="chat")
         self.assertEqual(
             should_request_confirmation("add_reminder", 4, ctx),
+            Decision.ALLOW,
+        )
+
+    def test_typed_chat_open_browser_keeps_existing_behavior(self):
+        ctx = ExecutionContext(source="chat")
+        self.assertEqual(
+            should_request_confirmation("open_browser", 4, ctx),
+            Decision.ALLOW,
+        )
+
+    def test_typed_chat_consult_coworker_agent_keeps_existing_behavior(self):
+        ctx = ExecutionContext(source="chat")
+        self.assertEqual(
+            should_request_confirmation("consult_coworker_agent", 4, ctx),
             Decision.ALLOW,
         )
 

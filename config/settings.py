@@ -192,11 +192,13 @@ class Settings:
     # investigation), not one record per request the way execution
     # history is.
     usage_history_limit: int = 5000
-    # IS wired (agent/usage_limits.py): safety ceilings a single
-    # request's total usage can't exceed before later calls within that
-    # SAME request are refused -- a circuit breaker, not a permission
-    # check. Already-made calls can't be undone, but nothing further
-    # compounds. None disables the corresponding check.
+    # IS wired (agent/usage.py's check_request_limits, called from
+    # agent/executor.py's two loops and agent/research_agent.py's loop):
+    # safety ceilings a single request's total usage can't exceed before
+    # later calls within that SAME request are refused -- a circuit
+    # breaker, not a permission check. Already-made calls can't be
+    # undone, but nothing further compounds. None disables the
+    # corresponding check.
     max_requests_per_execution: Optional[int] = 25
     max_agent_iterations: int = 6  # ResearchAgent's own internal loop cap
     max_tokens_per_request: Optional[int] = 200_000

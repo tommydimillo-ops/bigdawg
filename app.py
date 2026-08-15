@@ -40,7 +40,11 @@ if _voice_text and _voice_text != st.session_state.get("last_voice_text"):
 # being trapped in this browser tab's session_state.
 if _pending_prompt:
     _quiet_action = quiet_mode.classify(_pending_prompt)
-    if _quiet_action == quiet_mode.QuietAction.ENTER_QUIET:
+    if _quiet_action in (
+        quiet_mode.QuietAction.ENTER_QUIET,
+        quiet_mode.QuietAction.ENTER_SLEEP,
+        quiet_mode.QuietAction.ENTER_OFF,
+    ):
         stop_speaking()
         st.session_state.conversation_active = False
         _pending_prompt = None
@@ -312,7 +316,11 @@ if prompt:
     # quiet mode and is intentionally passed through as a greeting.
     if prompt != _pending_prompt:
         _quiet_action = quiet_mode.classify(prompt)
-        if _quiet_action == quiet_mode.QuietAction.ENTER_QUIET:
+        if _quiet_action in (
+            quiet_mode.QuietAction.ENTER_QUIET,
+            quiet_mode.QuietAction.ENTER_SLEEP,
+            quiet_mode.QuietAction.ENTER_OFF,
+        ):
             stop_speaking()
             st.session_state.conversation_active = False
             st.stop()

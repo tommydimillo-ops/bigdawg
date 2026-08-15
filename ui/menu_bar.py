@@ -248,6 +248,21 @@ class CampusPilotApp(rumps.App):
             stop_speaking()
             voice_state.reset_to_idle()
             return
+        if quiet_action in (quiet_mode.QuietAction.ENTER_SLEEP, quiet_mode.QuietAction.ENTER_OFF):
+            # Unlike indefinite quiet mode, a timed sleep/off period gets
+            # one short spoken confirmation -- the user needs to know it
+            # actually heard the request and roughly when it'll resume,
+            # since (unlike quiet mode) there's no expectation they'll
+            # remember to say a wake phrase themselves.
+            from agent.tts_control import stop_speaking
+            stop_speaking()
+            if quiet_action == quiet_mode.QuietAction.ENTER_SLEEP:
+                minutes, verb = quiet_mode.SLEEP_DURATION_SECONDS // 60, "Sleeping"
+            else:
+                minutes, verb = quiet_mode.OFF_DURATION_SECONDS // 60, "Turning off"
+            self._speak(f"{verb} for {int(minutes)} minutes.")
+            voice_state.reset_to_idle()
+            return
         if quiet_action == quiet_mode.QuietAction.IGNORE:
             return
 

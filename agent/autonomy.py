@@ -49,6 +49,19 @@ from tools import registry
 
 CONFIRMATION_WINDOW_SECONDS = 120
 
+# Speech recognition can occasionally turn background conversation (a TV,
+# a video, someone else's conversation) into a plausible-sounding
+# imperative -- confirmed live: a wake-word listener repeatedly
+# transcribed ambient audio as things like "call mom" and "grab me a
+# coffee." A reminder is persistent, user-visible state; open_browser
+# launches a real browser against a real destination; consult_coworker_
+# agent is the entry point into a coworker agent's own tool loop
+# (currently ResearchAgent's un-gated internal browsing, and in the
+# future CodingAgent). All three need a deterministic confirmation from
+# voice specifically, regardless of autonomy level, because voice input
+# didn't come from deliberate keystrokes the way typed chat did.
+_VOICE_ALWAYS_CONFIRMS = frozenset({"add_reminder", "open_browser", "consult_coworker_agent"})
+
 _AUTONOMY_THRESHOLDS = {
     0: -1,
     1: 0,
@@ -105,11 +118,7 @@ def should_request_confirmation(
         # something the permission system doesn't even know about.
         return Decision.CONFIRM
 
-    # Speech recognition can occasionally turn background conversation
-    # into a plausible imperative. A reminder is persistent user-visible
-    # state, so voice must receive a deterministic confirmation even at
-    # the highest autonomy level. Typed chat keeps its existing behavior.
-    if execution_context.source == "voice" and tool_name == "add_reminder":
+    if execution_context.source == "voice" and tool_name in _VOICE_ALWAYS_CONFIRMS:
         return Decision.CONFIRM
 
     threshold = _AUTONOMY_THRESHOLDS.get(

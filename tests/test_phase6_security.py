@@ -308,6 +308,46 @@ class TestMenuBarQuietMode(unittest.TestCase):
         app._run_conversation_turn.assert_not_called()
         app._speak_and_notify.assert_not_called()
 
+    @patch("agent.tts_control.stop_speaking")
+    def test_sleep_command_confirms_and_sets_a_10_minute_timer(self, mock_stop):
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._run_and_report(app, "sleep")
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
+        mock_stop.assert_called_once()
+        app._speak.assert_called_once_with("Sleeping for 10 minutes.")
+        self.assertTrue(quiet_mode.is_quiet())
+        remaining = quiet_mode.remaining_seconds()
+        self.assertIsNotNone(remaining)
+        self.assertLessEqual(remaining, quiet_mode.SLEEP_DURATION_SECONDS)
+
+    @patch("agent.tts_control.stop_speaking")
+    def test_off_command_confirms_and_sets_a_30_minute_timer(self, mock_stop):
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._run_and_report(app, "off")
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
+        mock_stop.assert_called_once()
+        app._speak.assert_called_once_with("Turning off for 30 minutes.")
+        self.assertTrue(quiet_mode.is_quiet())
+        remaining = quiet_mode.remaining_seconds()
+        self.assertIsNotNone(remaining)
+        self.assertLessEqual(remaining, quiet_mode.OFF_DURATION_SECONDS)
+
+    def test_non_wake_command_is_silently_ignored_while_sleeping(self):
+        quiet_mode.set_quiet(True, duration_seconds=quiet_mode.SLEEP_DURATION_SECONDS)
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp._run_and_report(app, "what time is it")
+
+        app._run_conversation_turn.assert_not_called()
+        app._speak_and_notify.assert_not_called()
+        app._speak.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
