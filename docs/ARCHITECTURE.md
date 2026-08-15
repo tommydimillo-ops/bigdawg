@@ -1,4 +1,10 @@
-# CampusPilot / Jarvis — Current Architecture
+> **Superseded.** This file is accurate through roughly Phase 6 and is
+> kept for history only — it predates Phase 6.5 (Skills), Phase 7
+> (coworker agents), and Phase 8 (usage/cost tracking, subprocess agent
+> isolation). See `/ARCHITECTURE.md` at the project root for the current,
+> maintained architecture doc.
+
+# CampusPilot / Jarvis — Current Architecture (historical, Phase 2-6)
 
 This describes the system as it actually exists today. It does not describe
 planned or hypothetical future modules (vector memory, multi-agent
