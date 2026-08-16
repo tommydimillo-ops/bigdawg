@@ -7,7 +7,152 @@ needed.
 
 ---
 
-## 2026-08-15 (newest) — Duplicate-scheduler fix (cross-process lock)
+## 2026-08-15 (most recent) — Phase 9 Milestone 2: task-aware, multi-provider model routing
+
+**What**: Replaced the original static Claude-primary/OpenAI-fallback
+routing with task-aware, multi-provider routing. `agent/task_classifier.py`
+(new) deterministically classifies each request (task type, vision/
+current-web/large-context/tool needs, latency/quality/cost priority) with
+no model call — keyword/pattern matching only, consistent with this
+project's "never let a model decide a routing outcome" rule.
+`agent/model_router.py`'s new `build_fallback_chain()` filters candidate
+providers through a fixed, load-bearing order — capability, then
+configured/health (`agent/provider_health.py`'s new `xai_configured()`/
+`perplexity_configured()` plus an in-memory per-provider failure-cooldown
+tracker), then daily budget (`agent/provider_budget.py`, new — same-day
+per-provider and global spend ceilings, reusing `agent/usage.py`'s
+existing `cost_since()`/`cost_today()` aggregation) — before ranking by
+cost/quality and returning an ordered candidate list.
+`agent/executor.py`'s `execute_task_stream` was generalized from a
+hardcoded two-tier cascade into a real loop over however many candidates
+the router returns, trying each in order and falling through to the next
+on failure (never calling multiple providers simultaneously). Two new
+working (not scaffolded) optional providers: xAI (OpenAI-API-compatible,
+`agent/chat.py`'s new `xai_client`) and Perplexity, via its Agent API
+rather than Chat Completions (a narrow, dedicated single-shot call path,
+`agent/executor.py`'s `_call_perplexity_agent`/`_run_perplexity_agent_loop`
+— Perplexity is never handed Jarvis's tool registry, so it can't become a
+second orchestrator).
+
+Immediately before this milestone's commit, a dedicated pre-commit
+currency/cost review re-checked every router provider default against
+current official documentation (rather than trusting names chosen
+earlier in the same implementation) and found real, dated problems:
+Perplexity's Sonar Chat Completions endpoint (M2's original integration
+target) is officially deprecated with support ending 2026-09-27, so the
+integration was migrated to the Agent API before ever shipping; OpenAI's
+`gpt-5` default was stale, superseded by the GPT-5.6 family, and replaced
+with three tiers (`openai_economy_model` = `gpt-5.6-luna`, `fallback_model`
+= `gpt-5.6-terra`, `openai_quality_model` = `gpt-5.6-sol`); xAI's `grok-4`
+placeholder wasn't a real model ID and was replaced with
+`xai_economy_model` (`grok-4.3`) and `xai_quality_model` (`grok-4.6`);
+`agent/usage.py`'s `_PRICING` table had genuinely stale, billing-relevant
+entries (Sonnet 5 priced at Sonnet 4.6's old rate, Haiku 4.5 at Haiku
+3.5's) and was rebuilt against each provider's official rate card. A
+second, narrower follow-up pass then caught `vision_model`
+(`tools/vision.py`'s separate, hardcoded, non-routed OpenAI vision
+assignment) still on the same stale `gpt-5` default the router tiers had
+already been fixed away from, and updated it to `gpt-5.6-terra` — the
+balanced GPT-5.6 tier, confirmed image-input-capable and already
+confirmed callable via `chat.completions.create()`. `transcription_model`/
+`tts_model` (a different OpenAI product line entirely) were not part of
+either review pass and remain untouched, hardcoded per-call-site
+assignments outside this milestone's scope.
+
+**Why**: `agent/model_router.py`'s `select()` had reserved an unused
+`context` parameter since Phase 2 specifically for this. Real API cost
+has been a standing, previously-painful concern for this project (Phase 8
+exists because of a real, confusing cost overrun) — the pre-commit
+currency review existed specifically so this milestone didn't ship any
+stale/mispriced model default, checked against official docs rather than
+assumption, with zero live/paid API calls made anywhere in the process
+(every provider call in every test is mocked at the client/`httpx.post`
+boundary).
+
+**Key decisions**: Filter order (capability → configured/healthy →
+budget → cost/quality ranking) is fixed and never reordered, so routing
+can't discover mid-call that the cheapest candidate simply can't do the
+task. Falls back to the original static `[anthropic, openai]` chain if
+`task_aware_routing_enabled` is off or every candidate gets filtered out
+— never an empty list. The original Phase 1 interface
+(`primary_choice()`/`fallback_choice()`/`select()`) is untouched.
+Perplexity's `perplexity_model` setting holds an Agent API *preset*
+string (`"low"`), not a flat-rate model ID — the one settings field that
+differs in kind from every sibling `*_model` field, documented inline as
+such. `agent/chat.py`'s `perplexity_client` is kept (not removed as dead
+code) despite the live call bypassing it entirely, because it still
+supplies `agent/provider_health.py`'s `check_providers()` diagnostic
+`initialized` field, kept structurally uniform with the other three
+providers' identical role there.
+
+**Files affected**: `agent/task_classifier.py` (new),
+`agent/provider_budget.py` (new), `agent/provider_health.py`,
+`agent/model_router.py`, `agent/executor.py`, `agent/chat.py`,
+`agent/usage.py`, `config/settings.py`, `tests/test_task_classifier.py`
+(new), `tests/test_provider_budget.py` (new), `tests/test_chat_providers.py`
+(new), `tests/test_executor_multi_provider_fallback.py` (new),
+`tests/test_model_router.py`, `tests/test_provider_health.py`,
+`tests/test_settings.py`, `tests/test_usage.py`,
+`tests/test_phase6_security.py`.
+
+**Tests**: 96 new (928 total, up from 832), full suite passing, no
+regressions, zero live/paid API calls (confirmed by code inspection and
+by the suite's ~8-second total runtime). Verified via a real
+(unmocked-router) end-to-end test that behavior with only Anthropic/
+OpenAI configured — this project's original, and still the default,
+state — is byte-for-byte unchanged from before this milestone.
+
+---
+
+## 2026-08-15 (before that) — Phase 9 Milestone 1: Playwright browser-profile ownership hardening
+
+**What**: Fixed a previously-documented lifecycle risk — Streamlit, the
+menu-bar app, and a scheduled task could each independently try to launch
+Chrome against the same shared, persistent on-disk profile directory
+(`tools/browser.py`'s `PROFILE_DIR`), with nothing on Jarvis's side
+coordinating across processes; only Chrome's own internal profile lock
+would have arbitrated, with no clean handling on Jarvis's side. Added
+`agent/browser_lock.py` (new): a non-blocking, kernel-managed
+`fcntl.flock(LOCK_EX | LOCK_NB)` on a dedicated lock file
+(`~/Library/Application Support/CampusPilot/chrome-profile.lock`) — the
+same primitive `agent/scheduler_lock.py` already uses for the analogous
+scheduler race, adapted for a different lifetime: acquired once when the
+browser context is first created and held open for as long as that
+context is alive, rather than reacquired every poll tick.
+`tools/browser.py` now acquires the lock before launching a persistent
+context and releases it on shutdown/dead-context discard; a process that
+loses the race gets a new, clean `BrowserBusyError` ("Another Jarvis
+process is already using the browser. Try again in a moment.") instead
+of racing Chrome's own profile lock or getting an opaque Playwright/
+Chrome error.
+
+**Why**: A real, previously-documented risk (`ROADMAP.md`'s "Known
+lifecycle risks") with no coordination mechanism at all before this.
+
+**Key decisions**: An additional in-process `threading.Lock` (the same
+pattern `agent/voice_state.py`'s `_busy_lock` already uses) closes a
+narrower race the scheduler lock never had to worry about — two threads
+in the same process both finding no context yet and both racing to
+open+flock the lock file before either one's ownership is recorded.
+Kernel-managed release either way — a crash or `SIGKILL` releases the
+lock automatically, no stale-lock detection needed, the same reasoning
+already applied to `agent/scheduler_lock.py`.
+
+**Files affected**: `agent/browser_lock.py` (new), `tools/browser.py`,
+`tools/autofill.py`, `tests/test_browser_lock.py` (new),
+`tests/test_browser.py` (new).
+
+**Tests**: 25 new, full suite passing. Cross-process contention proved
+with a real subprocess and a hard `SIGKILL`, the same rigor
+`agent/scheduler_lock.py`'s own test suite established for the analogous
+case.
+
+**Note**: Closes the "Playwright profile contention" item previously
+listed under `ROADMAP.md`'s "Next" section.
+
+---
+
+## 2026-08-15 — Duplicate-scheduler fix (cross-process lock)
 
 **What**: Fixed the duplicate-scheduler lifecycle risk documented since
 the Phase 2 lifecycle review: `agent/scheduler_daemon.py` (standalone,

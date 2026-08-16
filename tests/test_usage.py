@@ -75,7 +75,7 @@ class TestEstimateCost(unittest.TestCase):
 
     def test_token_priced_model(self):
         cost = usage._estimate_cost("anthropic", "claude-sonnet-5", 1_000_000, 1_000_000, None, None)
-        self.assertAlmostEqual(cost, 3.00 + 15.00)
+        self.assertAlmostEqual(cost, 2.00 + 10.00)
 
     def test_per_minute_audio_model(self):
         cost = usage._estimate_cost("openai", "gpt-4o-transcribe", 0, 0, 120.0, None)
@@ -201,7 +201,7 @@ class TestCostSince(IsolatedUsageTestCase):
             request_id="req-2", input_tokens=0, output_tokens=1_000_000,
         )
         cost = usage.cost_since(0)
-        self.assertAlmostEqual(cost, 3.00 + 15.00)
+        self.assertAlmostEqual(cost, 2.00 + 10.00)
 
     def test_empty_usage_history_is_zero_not_none(self):
         self.assertEqual(usage.cost_since(0), 0.0)

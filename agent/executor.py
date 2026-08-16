@@ -2,6 +2,8 @@ import concurrent.futures
 import json
 import time
 
+import httpx
+
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent import execution_history, jarvis_state
 import agent.agents  # noqa: F401 -- populates agent.agents.manager's registry as a side effect
@@ -9,15 +11,18 @@ from agent.agents.router import route as route_agent_task
 from agent.audit import log_action
 from agent.autonomy import Decision, ExecutionContext as AutonomyContext, is_confirmed, request_confirmation, should_request_confirmation
 from agent.brain import build_system_prompt, TOOLS, client as claude_client
-from agent.chat import openai_client
+from agent.chat import openai_client, xai_client
 from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from agent.cancellation import cancellation_requested, clear_cancellation
 from agent.delegation import decide as decide_delegation
-from agent.model_router import select as select_model
+from agent import provider_health
+from agent.model_router import build_fallback_chain, select as select_model
 from agent.observability import log_event, preview
 from agent.planner import create_plan, is_complex
 from agent.request_context import RequestContext, bind_current_request_id, unbind_current_request_id
 from agent.retry_policy import retry_delay_seconds, should_retry
+from agent.secrets import get_secret
+from agent.task_classifier import classify as classify_task
 from agent.usage import check_request_limits, record_llm_usage
 from agent.verification import verify
 from config.settings import settings
@@ -237,13 +242,19 @@ def _run_tool_batch(tool_calls, source="chat", context=None, state=None):
     return results
 
 
-def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
+def _run_claude_loop_stream(messages, source="chat", context=None, state=None, model_choice=None, task_type=None, fallback_position=0):
     """Yields response text as it's generated (including any text a model
     emits alongside a tool call, e.g. "Let me check that..."), so the UI can
-    show it immediately instead of waiting for the whole multi-step loop."""
+    show it immediately instead of waiting for the whole multi-step loop.
+
+    model_choice defaults to the original static select_model(attempt=0)
+    outcome when not given, so any existing caller (or test) that
+    doesn't know about Phase 9 Milestone 2's router keeps getting
+    exactly the same model it always did."""
 
     request_id = context.request_id if context else None
-    model_choice = select_model(attempt=0, context=context)
+    if model_choice is None:
+        model_choice = select_model(attempt=0, context=context)
     if state:
         state.record_model(model_choice.provider, model_choice.model)
     log_event(
@@ -325,15 +336,19 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
                     request_id=request_id, agent=state.active_agent if state else None,
                     input_tokens=getattr(usage, "input_tokens", 0), output_tokens=getattr(usage, "output_tokens", 0),
                     duration_seconds=time.time() - _call_started,
+                    task_type=task_type, fallback_position=fallback_position,
                 )
         except Exception as error:
             log_event(
                 "model_call_failed", request_id=request_id, component="executor",
                 level="warning", provider="anthropic", error_type=type(error).__name__,
             )
+            provider_health.record_failure("anthropic")
             if committed:
                 raise PartialToolExecution from error
             raise
+
+        provider_health.clear_failure("anthropic")
 
         if response.stop_reason != "tool_use":
             if not yielded_any:
@@ -366,15 +381,32 @@ def _run_claude_loop_stream(messages, source="chat", context=None, state=None):
     yield "That took more steps than expected — could you rephrase your request?"
 
 
-def _run_openai_loop(messages, source="chat", context=None, state=None):
+def _client_for_provider(provider):
+    """Looks up the shared client by NAME each call (not a dict captured
+    once at import time), so a test's @patch("agent.executor.openai_client",
+    ...) -- the existing pattern for claude_client -- works identically
+    for xai_client too. Perplexity is deliberately absent: its Agent API
+    call (_call_perplexity_agent below) never goes through this generic
+    chat.completions.create dispatch -- see _run_perplexity_agent_loop."""
+    return {"openai": openai_client, "xai": xai_client}.get(provider)
+
+
+def _run_openai_compatible_loop(model_choice, messages, source="chat", context=None, state=None, task_type=None, fallback_position=1):
+    """The shared loop for every OpenAI-API-compatible provider (OpenAI
+    itself, xAI, Perplexity -- confirmed against each provider's current
+    docs that the request/response shape is identical, just a different
+    base_url/api_key, see agent/chat.py) -- one implementation instead of
+    three near-identical ones. Only Anthropic gets its own loop
+    (_run_claude_loop_stream): a genuinely different SDK and native
+    streaming, not just a different provider name."""
 
     request_id = context.request_id if context else None
-    model_choice = select_model(attempt=1, context=context)
+    client = _client_for_provider(model_choice.provider)
     if state:
         state.record_model(model_choice.provider, model_choice.model)
     log_event(
         "model_selected", request_id=request_id, component="executor",
-        provider=model_choice.provider, model=model_choice.model,
+        provider=model_choice.provider, model=model_choice.model, fallback_position=fallback_position,
     )
 
     messages = [{"role": "system", "content": build_system_prompt(context.user_input if context else "", request_id=request_id, state=state)}] + list(messages)
@@ -404,12 +436,12 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
         )
         log_event(
             "agent_iteration", request_id=request_id, component="executor",
-            iteration=state.iteration if state else None, provider="openai",
+            iteration=state.iteration if state else None, provider=model_choice.provider,
         )
 
         try:
             _call_started = time.time()
-            response = openai_client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=model_choice.model,
                 messages=messages,
                 tools=OPENAI_TOOLS,
@@ -417,19 +449,23 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
         except Exception as error:
             log_event(
                 "model_call_failed", request_id=request_id, component="executor",
-                level="warning", provider="openai", error_type=type(error).__name__,
+                level="warning", provider=model_choice.provider, error_type=type(error).__name__,
             )
+            provider_health.record_failure(model_choice.provider)
             if committed:
                 raise PartialToolExecution from error
             raise
 
+        provider_health.clear_failure(model_choice.provider)
+
         usage = getattr(response, "usage", None)
         if usage is not None:
             record_llm_usage(
-                provider="openai", model=model_choice.model, operation="fallback",
+                provider=model_choice.provider, model=model_choice.model, operation="fallback",
                 request_id=request_id, agent=state.active_agent if state else None,
                 input_tokens=getattr(usage, "prompt_tokens", 0), output_tokens=getattr(usage, "completion_tokens", 0),
                 duration_seconds=time.time() - _call_started,
+                task_type=task_type, fallback_position=fallback_position,
             )
 
         choice = response.choices[0].message
@@ -461,11 +497,147 @@ def _run_openai_loop(messages, source="chat", context=None, state=None):
     return "That took more steps than expected — could you rephrase your request?"
 
 
-def _run_openai_loop_stream(messages, source="chat", context=None, state=None):
-    # OpenAI is only an emergency fallback (Claude is unreachable), so it's
-    # not worth the added complexity of accumulating streamed tool-call
-    # deltas here — it just yields its one final answer at once.
-    yield _run_openai_loop(messages, source=source, context=context, state=state)
+def _run_openai_compatible_loop_stream(model_choice, messages, source="chat", context=None, state=None, task_type=None, fallback_position=1):
+    # None of OpenAI/xAI get real incremental streaming in this project
+    # (see ModelChoice.CAPABILITIES' supports_streaming note) -- not
+    # worth the added complexity of accumulating streamed tool-call
+    # deltas for what's always a fallback tier, so this just yields the
+    # one final answer at once.
+    yield _run_openai_compatible_loop(
+        model_choice, messages, source=source, context=context, state=state,
+        task_type=task_type, fallback_position=fallback_position,
+    )
+
+
+PERPLEXITY_AGENT_API_URL = "https://api.perplexity.ai/v1/agent"
+
+
+def _extract_agent_api_text(data):
+    """Walks the Agent API's output[] array (a step-per-item list, not a
+    single choices[0].message.content the way OpenAI-style responses
+    are) for the "message" item holding the final answer text. See
+    config.settings.Settings.perplexity_model's docstring for why this
+    provider's response shape genuinely differs from every other one
+    here."""
+    for item in data.get("output", []) or []:
+        if item.get("type") == "message":
+            for block in item.get("content", []) or []:
+                if block.get("type") == "output_text":
+                    return block.get("text", "")
+    return ""
+
+
+def _call_perplexity_agent(preset, input_text, instructions):
+    """One direct, non-streaming call to Perplexity's Agent API (POST
+    /v1/agent) -- NOT routed through _client_for_provider/the openai
+    package, because the request/response shape genuinely differs from
+    every OpenAI-compatible provider (input/output, not messages/
+    choices; see agent/chat.py's comment on perplexity_client for why).
+    `preset` is the Agent API preset string (config.settings.Settings.
+    perplexity_model's actual value, e.g. "low"), not a flat-rate model
+    ID -- see that field's own docstring."""
+    key = get_secret("PERPLEXITY_API_KEY")
+    body = {"input": input_text, "preset": preset}
+    if instructions:
+        body["instructions"] = instructions
+    response = httpx.post(
+        PERPLEXITY_AGENT_API_URL,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=httpx.Timeout(
+            connect=settings.api_connect_timeout, read=settings.api_read_timeout,
+            write=settings.api_write_timeout, pool=settings.api_pool_timeout,
+        ),
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _run_perplexity_agent_loop(model_choice, messages, source="chat", context=None, state=None, task_type=None, fallback_position=1):
+    """Perplexity is used narrowly and single-shot: one grounded research
+    query in, one grounded answer back -- Jarvis stays the only
+    orchestrator (Task -> route -> Perplexity -> grounded research
+    result -> Jarvis), never a multi-step tool-calling loop the way
+    OpenAI/xAI get via _run_openai_compatible_loop against Jarvis's own
+    53-tool registry. This deliberately means a request routed to
+    Perplexity can't also perform a Jarvis tool action (e.g. saving a
+    reminder) in the same turn -- an accepted scope limit of a research-
+    only provider, not an oversight: Perplexity never receives Jarvis's
+    tool schemas, so it can never be handed the ability to call back into
+    them either."""
+
+    request_id = context.request_id if context else None
+    if state:
+        state.record_model(model_choice.provider, model_choice.model)
+    log_event(
+        "model_selected", request_id=request_id, component="executor",
+        provider=model_choice.provider, model=model_choice.model, fallback_position=fallback_position,
+    )
+
+    if _is_cancelled(state):
+        log_event("request_cancelled", request_id=request_id, component="executor")
+        return "Stopped, as requested."
+
+    limit_check = check_request_limits(request_id)
+    if limit_check.exceeded:
+        log_event(
+            "request_limit_exceeded", request_id=request_id, component="executor",
+            reason=limit_check.reason,
+        )
+        return f"Stopping here — {limit_check.reason}."
+
+    if state:
+        state.record_iteration()
+        state.transition_to(ExecutionStatus.THINKING)
+    jarvis_state.set_status(
+        ExecutionStatus.THINKING, active_request_id=request_id,
+        current_task=context.user_input if context else None,
+        plan_progress=_plan_progress(state),
+    )
+    log_event(
+        "agent_iteration", request_id=request_id, component="executor",
+        iteration=state.iteration if state else None, provider="perplexity",
+    )
+
+    latest_user_text = next(
+        (m.get("content") for m in reversed(messages) if m.get("role") == "user" and isinstance(m.get("content"), str)),
+        context.user_input if context else "",
+    )
+    instructions = build_system_prompt(context.user_input if context else "", request_id=request_id, state=state)
+
+    try:
+        _call_started = time.time()
+        data = _call_perplexity_agent(model_choice.model, latest_user_text, instructions)
+    except Exception as error:
+        log_event(
+            "model_call_failed", request_id=request_id, component="executor",
+            level="warning", provider="perplexity", error_type=type(error).__name__,
+        )
+        provider_health.record_failure("perplexity")
+        raise
+
+    provider_health.clear_failure("perplexity")
+
+    usage = data.get("usage") or {}
+    if usage:
+        record_llm_usage(
+            provider="perplexity", model=model_choice.model, operation="fallback",
+            request_id=request_id, agent=state.active_agent if state else None,
+            input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
+            duration_seconds=time.time() - _call_started,
+            task_type=task_type, fallback_position=fallback_position,
+        )
+
+    return _extract_agent_api_text(data) or "I couldn't find a grounded answer to that."
+
+
+def _run_perplexity_agent_loop_stream(model_choice, messages, source="chat", context=None, state=None, task_type=None, fallback_position=1):
+    # Single-shot, same as _run_openai_compatible_loop_stream -- yields
+    # the one final answer at once, no incremental streaming.
+    yield _run_perplexity_agent_loop(
+        model_choice, messages, source=source, context=context, state=state,
+        task_type=task_type, fallback_position=fallback_position,
+    )
 
 
 PARTIAL_EXECUTION_MESSAGE = (
@@ -587,84 +759,116 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     )
     started = False
 
+    # Phase 9 Milestone 2: task-aware, ordered, N-provider candidate list
+    # replaces the original hardcoded two-tier Claude-then-OpenAI cascade
+    # below -- same "try this candidate, on failure (without partial
+    # output) move to the next" shape as before, just generalized from
+    # exactly 2 hardcoded blocks to a loop over however many candidates
+    # the router actually returned. With only Anthropic/OpenAI configured
+    # (this project's original, and still the default, state),
+    # build_fallback_chain() returns exactly [anthropic, openai] in that
+    # order, so this loop's observable behavior is unchanged from before.
+    task_requirements = classify_task(request, source=source)
+    fallback_chain = build_fallback_chain(task_requirements)
+    log_event(
+        "model_route_selected", request_id=context.request_id, component="executor",
+        task_type=task_requirements.task_type.value,
+        chain=[f"{c.provider}:{c.model}" for c in fallback_chain],
+    )
+
     try:
-        try:
-            for chunk in _run_claude_loop_stream(messages, source=source, context=context, state=state):
-                started = True
-                yield chunk
-            if _is_cancelled(state):
-                state.finish(result="cancelled")
-                execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
+        for position, model_choice in enumerate(fallback_chain):
+            is_last_candidate = position == len(fallback_chain) - 1
+
+            if position > 0:
                 log_event(
-                    "request_cancelled", request_id=context.request_id, component="executor",
-                    duration=time.time() - request_start,
+                    "model_fallback_started", request_id=context.request_id, component="executor",
+                    provider=model_choice.provider, model=model_choice.model, fallback_position=position,
                 )
-            else:
-                state.finish(result="ok")
-                execution_history.record_completed(context.request_id, request, state, autonomy_level=context.autonomy_level)
-                log_event(
-                    "request_completed", request_id=context.request_id, component="executor",
-                    duration=time.time() - request_start, provider="anthropic",
-                )
-            return
-        except PartialToolExecution:
-            state.finish(failed=True, error="partial_tool_execution")
-            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
-            log_event(
-                "request_failed", request_id=context.request_id, component="executor", level="error",
-                duration=time.time() - request_start, reason="partial_tool_execution",
-            )
-            yield PARTIAL_EXECUTION_MESSAGE
-            return
-        except Exception as error:
-            if started:
-                # Can't retract text already shown, so don't risk splicing a
-                # second, unrelated fallback response onto it.
-                state.finish(failed=True, error="connection_dropped")
+
+            try:
+                if model_choice.provider == "anthropic":
+                    loop_iter = _run_claude_loop_stream(
+                        messages, source=source, context=context, state=state,
+                        model_choice=model_choice, task_type=task_requirements.task_type.value,
+                        fallback_position=position,
+                    )
+                elif model_choice.provider == "perplexity":
+                    loop_iter = _run_perplexity_agent_loop_stream(
+                        model_choice, messages, source=source, context=context, state=state,
+                        task_type=task_requirements.task_type.value, fallback_position=position,
+                    )
+                else:
+                    loop_iter = _run_openai_compatible_loop_stream(
+                        model_choice, messages, source=source, context=context, state=state,
+                        task_type=task_requirements.task_type.value, fallback_position=position,
+                    )
+
+                for chunk in loop_iter:
+                    started = True
+                    yield chunk
+
+                if position > 0:
+                    log_event(
+                        "model_fallback_succeeded", request_id=context.request_id, component="executor",
+                        provider=model_choice.provider, fallback_position=position,
+                    )
+
+                if _is_cancelled(state):
+                    state.finish(result="cancelled")
+                    execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                    log_event(
+                        "request_cancelled", request_id=context.request_id, component="executor",
+                        duration=time.time() - request_start,
+                    )
+                else:
+                    state.finish(result="ok")
+                    execution_history.record_completed(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                    log_event(
+                        "request_completed", request_id=context.request_id, component="executor",
+                        duration=time.time() - request_start, provider=model_choice.provider,
+                    )
+                return
+
+            except PartialToolExecution:
+                state.finish(failed=True, error="partial_tool_execution")
                 execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
                 log_event(
                     "request_failed", request_id=context.request_id, component="executor", level="error",
-                    duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
+                    duration=time.time() - request_start, reason="partial_tool_execution",
                 )
-                yield "\n\n[Connection dropped before finishing — please try again.]"
+                yield PARTIAL_EXECUTION_MESSAGE
                 return
-            log_event(
-                "primary_provider_failed", request_id=context.request_id, component="executor",
-                level="warning", error_type=type(error).__name__,
-            )
 
-        try:
-            yield from _run_openai_loop_stream(messages, source=source, context=context, state=state)
-            if _is_cancelled(state):
-                state.finish(result="cancelled")
-                execution_history.record_cancelled(context.request_id, request, state, autonomy_level=context.autonomy_level)
+            except Exception as error:
+                if started:
+                    # Can't retract text already shown, so don't risk
+                    # splicing a second, unrelated fallback response onto it.
+                    state.finish(failed=True, error="connection_dropped")
+                    execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                    log_event(
+                        "request_failed", request_id=context.request_id, component="executor", level="error",
+                        duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
+                    )
+                    yield "\n\n[Connection dropped before finishing — please try again.]"
+                    return
+
                 log_event(
-                    "request_cancelled", request_id=context.request_id, component="executor",
-                    duration=time.time() - request_start,
+                    "primary_provider_failed" if position == 0 else "model_provider_failed",
+                    request_id=context.request_id, component="executor",
+                    level="warning", provider=model_choice.provider, error_type=type(error).__name__,
                 )
-            else:
-                state.finish(result="ok")
-                execution_history.record_completed(context.request_id, request, state, autonomy_level=context.autonomy_level)
-                log_event(
-                    "request_completed", request_id=context.request_id, component="executor",
-                    duration=time.time() - request_start, provider="openai",
-                )
-        except PartialToolExecution:
-            state.finish(failed=True, error="partial_tool_execution")
-            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
-            log_event(
-                "request_failed", request_id=context.request_id, component="executor", level="error",
-                duration=time.time() - request_start, reason="partial_tool_execution",
-            )
-            yield PARTIAL_EXECUTION_MESSAGE
-        except Exception as error:
-            state.finish(failed=True, error=type(error).__name__)
-            execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
-            log_event(
-                "request_failed", request_id=context.request_id, component="executor", level="error",
-                duration=time.time() - request_start, error_type=type(error).__name__,
-            )
-            yield f"Agent error: {error}"
+
+                if is_last_candidate:
+                    state.finish(failed=True, error=type(error).__name__)
+                    execution_history.record_failed(context.request_id, request, state, autonomy_level=context.autonomy_level)
+                    log_event(
+                        "request_failed", request_id=context.request_id, component="executor", level="error",
+                        duration=time.time() - request_start, error_type=type(error).__name__,
+                    )
+                    yield f"Agent error: {error}"
+                    return
+                # else: fall through the for loop to the next candidate
     finally:
         unregister_active(context.request_id)
         clear_cancellation(context.request_id)

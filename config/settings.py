@@ -89,14 +89,85 @@ class Settings:
     # default_model is the primary (Claude) model; fallback_model is only
     # ever used if a live call to the primary provider fails mid-request.
     default_model: str = "claude-sonnet-5"
-    fallback_model: str = "gpt-5"
-    vision_model: str = "gpt-5"
+    # fallback_model is the OpenAI "balanced" tier -- the original static
+    # fallback_choice()/select() interface's OpenAI model, and the
+    # task-aware router's default OpenAI candidate when a task is neither
+    # cost- nor quality-priority. Currency verified 2026-08-15 against
+    # OpenAI's official model/pricing pages: the GPT-5 family was
+    # superseded by GPT-5.6 (Sol/Terra/Luna) -- gpt-5 itself is stale.
+    fallback_model: str = "gpt-5.6-terra"
+    # Hardcoded per-call-site assignment, not part of task-aware routing
+    # (see agent/model_router.py's candidates) -- was left on the stale
+    # gpt-5 default when the router tiers were currency-reviewed
+    # 2026-08-15; caught and fixed separately since gpt-5 is the same
+    # superseded family as fallback_model above. gpt-5.6-terra (the
+    # balanced tier) supports image input per OpenAI's official docs and
+    # is a stronger general default for screenshot/document/UI analysis
+    # than defaulting to the cheapest tier.
+    vision_model: str = "gpt-5.6-terra"
     vision_fallback_model: str = "claude-haiku-4-5-20251001"
     transcription_model: str = "gpt-4o-transcribe"
     tts_model: str = "gpt-4o-mini-tts"
     # Fast, low-cost decomposition only; the main executor still uses the
     # default model for actual reasoning and tool decisions.
     planner_model: str = "claude-haiku-4-5-20251001"
+
+    # --- Phase 9 Milestone 2: task-aware routing, optional providers ---
+    # OpenAI's cost-priority and quality-priority tiers (agent/model_router.
+    # py's _model_for()) -- fallback_model above remains the "balanced"
+    # middle tier. All three currency-verified 2026-08-15 against OpenAI's
+    # official pricing page; still Chat-Completions-compatible, no
+    # Responses API migration required for these model IDs.
+    openai_economy_model: str = "gpt-5.6-luna"
+    openai_quality_model: str = "gpt-5.6-sol"
+    # xai_economy_model/xai_quality_model are only ever used if XAI_API_KEY
+    # is actually configured (agent/chat.py's xai_client). Currency
+    # verified 2026-08-15 against docs.x.ai/docs/models: grok-4.3 is
+    # general-purpose and materially cheaper than the grok-4.6 flagship,
+    # so routing shouldn't pay flagship prices for every xAI call -- only
+    # requirements.quality_priority tasks get grok-4.6.
+    xai_economy_model: str = "grok-4.3"
+    xai_quality_model: str = "grok-4.6"
+    # perplexity_model is only ever used if PERPLEXITY_API_KEY is actually
+    # configured (agent/chat.py's perplexity_client). UNLIKE every other
+    # *_model field above, this is a Perplexity Agent API *preset* string
+    # (sent as the request's "preset" field), not a flat per-token-priced
+    # model ID -- Perplexity deprecated Sonar Chat Completions in 2026-07
+    # (support ends 2026-09-27) in favor of the Agent API, whose
+    # request/response shape genuinely differs from OpenAI-style chat.
+    # completions (input/output, not messages/choices -- see agent/
+    # executor.py's _call_perplexity_agent). "low" is Perplexity's own
+    # documented replacement for the old sonar-pro model (multi-step
+    # reasoning + web search), confirmed against docs.perplexity.ai's
+    # migration guide 2026-08-15.
+    perplexity_model: str = "low"
+    # IS wired (agent/model_router.py): the whole task-aware, multi-
+    # provider candidate-ranking path can be switched off in one place,
+    # falling straight back to the original static Claude-then-OpenAI
+    # behavior -- a deliberate, cheap rollback lever for a change this
+    # central, not a "maybe someday" toggle.
+    task_aware_routing_enabled: bool = True
+    # IS wired (agent/provider_health.py): how long a provider that just
+    # failed a live call is deprioritized before the router will
+    # consider it again -- soft, in-memory, reset on process restart.
+    provider_failure_cooldown_seconds: float = 120.0
+
+    # --- Phase 9 Milestone 2: budget controls ---
+    # Minimal foundation only (see ROADMAP.md/CHANGELOG.md for what's
+    # deferred): a same-day spend ceiling checked against
+    # agent/usage.py's existing cost_today()/cost_since() aggregation --
+    # no new persistent accounting store. None disables the
+    # corresponding check, the same convention Phase 8's
+    # max_cost_per_request_usd already uses.
+    daily_budget_usd: Optional[float] = None
+    # A single ceiling applied uniformly per provider (not four separate
+    # dollar settings) -- simpler, and still satisfies "a provider budget
+    # exists" without a scattered per-provider config surface.
+    provider_daily_budget_usd: Optional[float] = None
+    # Fraction of the active budget at which routing starts preferring
+    # cheaper candidates (a soft nudge), before the hard stop at 1.0
+    # actually removes a provider from consideration.
+    budget_warning_threshold: float = 0.8
 
     # --- Agent loop ---
     max_agent_steps: int = 8
@@ -247,6 +318,18 @@ class Settings:
             transcription_model=_env_str("TRANSCRIPTION_MODEL", cls.transcription_model),
             tts_model=_env_str("TTS_MODEL", cls.tts_model),
             planner_model=_env_str("PLANNER_MODEL", cls.planner_model),
+            openai_economy_model=_env_str("OPENAI_ECONOMY_MODEL", cls.openai_economy_model),
+            openai_quality_model=_env_str("OPENAI_QUALITY_MODEL", cls.openai_quality_model),
+            xai_economy_model=_env_str("XAI_ECONOMY_MODEL", cls.xai_economy_model),
+            xai_quality_model=_env_str("XAI_QUALITY_MODEL", cls.xai_quality_model),
+            perplexity_model=_env_str("PERPLEXITY_MODEL", cls.perplexity_model),
+            task_aware_routing_enabled=_env_bool("TASK_AWARE_ROUTING_ENABLED", cls.task_aware_routing_enabled),
+            provider_failure_cooldown_seconds=_env_float(
+                "PROVIDER_FAILURE_COOLDOWN_SECONDS", cls.provider_failure_cooldown_seconds,
+            ),
+            daily_budget_usd=_env_float("DAILY_BUDGET_USD", cls.daily_budget_usd),
+            provider_daily_budget_usd=_env_float("PROVIDER_DAILY_BUDGET_USD", cls.provider_daily_budget_usd),
+            budget_warning_threshold=_env_float("BUDGET_WARNING_THRESHOLD", cls.budget_warning_threshold),
             max_agent_steps=_env_int("MAX_AGENT_STEPS", cls.max_agent_steps),
             model_history_limit=_env_int("MODEL_HISTORY_LIMIT", cls.model_history_limit),
             autonomy_level=_env_int("AUTONOMY_LEVEL", cls.autonomy_level),

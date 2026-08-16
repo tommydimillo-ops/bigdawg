@@ -49,3 +49,48 @@ openai_client = OpenAI(
     timeout=_TIMEOUT,
     max_retries=settings.api_max_retries,
 )
+
+# xAI is OpenAI-API-compatible (same request/response shape, just a
+# different base_url) -- confirmed against its current published docs
+# rather than assumed, since guessing wrong here would mean silently
+# mis-routed requests, not just a wrong string constant. No new SDK
+# dependency needed: the same `openai` package already required for
+# openai_client above works unchanged, just pointed elsewhere.
+#
+# Perplexity is NOT OpenAI-compatible as of this project's Phase 9
+# Milestone 2 currency review (2026-08-15) -- its Sonar Chat Completions
+# surface (which WAS OpenAI-compatible, and is what this client used to
+# call) is deprecated as of 2026-07, with support ending 2026-09-27, in
+# favor of the Agent API. The Agent API's request/response shape genuinely
+# differs (an `input`/`output` shape, not `messages`/`choices`), so
+# agent/executor.py's _call_perplexity_agent makes its own direct HTTP
+# call instead of going through this client's .chat.completions.create --
+# perplexity_client below is kept only as this provider's configured/
+# initialized indicator (agent/provider_health.py's check_providers()),
+# matching xai_client/anthropic_client/openai_client's same role there.
+#
+# Unlike anthropic_client/openai_client above (required providers -- this
+# project has always assumed at least these two are configured), xAI and
+# Perplexity are optional (Phase 9 Milestone 2). The OpenAI SDK raises
+# immediately if constructed with api_key=None (confirmed empirically,
+# see CHANGELOG.md's CI-setup entry for the same discovery on
+# openai_client itself), so these are only constructed when a key is
+# actually present -- None otherwise, never a raised exception, so
+# importing this module never depends on either being configured.
+_xai_key = get_secret("XAI_API_KEY")
+xai_client = OpenAI(
+    api_key=_xai_key,
+    base_url="https://api.x.ai/v1",
+    http_client=_resilient_http_client(),
+    timeout=_TIMEOUT,
+    max_retries=settings.api_max_retries,
+) if _xai_key else None
+
+_perplexity_key = get_secret("PERPLEXITY_API_KEY")
+perplexity_client = OpenAI(
+    api_key=_perplexity_key,
+    base_url="https://api.perplexity.ai/v1",
+    http_client=_resilient_http_client(),
+    timeout=_TIMEOUT,
+    max_retries=settings.api_max_retries,
+) if _perplexity_key else None

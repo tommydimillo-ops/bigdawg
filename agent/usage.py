@@ -47,16 +47,45 @@ USAGE_FILE = os.path.expanduser("~/Library/Application Support/CampusPilot/usage
 # {"per_1k_chars": $/1K characters} for TTS. Unrecognized models fall back
 # to _DEFAULT_TOKEN_PRICE so a cost still gets *estimated* (clearly an
 # estimate, never silently zero) rather than a KeyError.
+#
+# Pricing last verified: 2026-08-15, against each provider's own official
+# rate card/pricing page (Phase 9 Milestone 2's pre-commit currency
+# review). Not fetched live (see this table's own module docstring for
+# why not) -- re-verify before trusting these numbers if this date is
+# more than a few months old, and update this comment's date whenever
+# they're re-checked.
 _PRICING = {
     "anthropic": {
-        "claude-sonnet-5": {"input": 3.00, "output": 15.00},
-        "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-        "claude-opus-5": {"input": 15.00, "output": 75.00},
+        "claude-sonnet-5": {"input": 2.00, "output": 10.00},
+        "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+        "claude-opus-5": {"input": 5.00, "output": 25.00},
     },
     "openai": {
-        "gpt-5": {"input": 2.50, "output": 10.00},
+        "gpt-5.6-sol": {"input": 5.00, "output": 30.00},
+        "gpt-5.6-terra": {"input": 2.00, "output": 12.00},
+        "gpt-5.6-luna": {"input": 0.20, "output": 1.20},
         "gpt-4o-transcribe": {"per_minute": 0.006},
         "gpt-4o-mini-tts": {"per_1k_chars": 0.015},
+    },
+    # Phase 9 Milestone 2 -- both providers are optional; these entries
+    # only ever get used if a real XAI_API_KEY/PERPLEXITY_API_KEY is
+    # configured.
+    "xai": {
+        "grok-4.6": {"input": 2.00, "output": 6.00},
+        "grok-4.3": {"input": 1.25, "output": 2.50},
+    },
+    "perplexity": {
+        # config.settings.Settings.perplexity_model's actual default is
+        # the Agent API *preset* "low" (Perplexity's own documented
+        # replacement for the old sonar-pro model), not a flat per-token
+        # -priced model ID -- a preset's underlying multi-step research
+        # cost isn't a fixed per-token rate, so it's deliberately left
+        # unpriced here and falls through to _DEFAULT_TOKEN_PRICE below,
+        # a conservative (never-zero) estimate, exactly like any other
+        # unrecognized model. This entry is kept for the case where
+        # PERPLEXITY_MODEL is manually overridden to the raw, flat-rate
+        # "perplexity/sonar" model instead of a preset.
+        "perplexity/sonar": {"input": 0.25, "output": 2.50},
     },
 }
 _DEFAULT_TOKEN_PRICE = {"input": 3.00, "output": 15.00}
@@ -76,6 +105,14 @@ class UsageRecord:
     estimated_cost_usd: float = 0.0
     duration_seconds: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    # Phase 9 Milestone 2 -- optional, so every pre-existing call site
+    # (research_agent.py, planner.py, deep_reasoning.py, tools/vision.py,
+    # tools/computer_use.py, voice/listen.py, voice/speak.py) keeps
+    # working unchanged; only agent/executor.py's routed calls populate
+    # these, to eventually answer "which provider costs the most per
+    # task type" / "how often did a given provider fail over".
+    task_type: Optional[str] = None
+    fallback_position: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -121,6 +158,7 @@ def record_llm_usage(
     input_tokens: int = 0, output_tokens: int = 0,
     audio_seconds: Optional[float] = None, character_count: Optional[int] = None,
     duration_seconds: float = 0.0,
+    task_type: Optional[str] = None, fallback_position: Optional[int] = None,
 ) -> UsageRecord:
     """The one entry point every call site above uses. Never raises --
     a bug in cost estimation must not be able to break the real request
@@ -150,6 +188,7 @@ def record_llm_usage(
         input_tokens=input_tokens, output_tokens=output_tokens,
         audio_seconds=audio_seconds, character_count=character_count,
         estimated_cost_usd=round(cost, 6), duration_seconds=round(duration_seconds, 3),
+        task_type=task_type, fallback_position=fallback_position,
     )
 
     try:

@@ -380,7 +380,7 @@ class TestMenuBarCostReadout(unittest.TestCase):
 
         menu_bar.CampusPilotApp.show_cost(app, None)
 
-        mock_alert.assert_called_once_with("Estimated Cost", "$3.00 estimated today.")
+        mock_alert.assert_called_once_with("Estimated Cost", "$2.00 estimated today.")
 
     @patch("rumps.alert")
     def test_multiple_records_are_summed(self, mock_alert):
@@ -393,7 +393,7 @@ class TestMenuBarCostReadout(unittest.TestCase):
 
         menu_bar.CampusPilotApp.show_cost(app, None)
 
-        mock_alert.assert_called_once_with("Estimated Cost", "$9.00 estimated today.")
+        mock_alert.assert_called_once_with("Estimated Cost", "$6.00 estimated today.")
 
     @patch("rumps.alert")
     def test_empty_usage_history_shows_zero_not_an_error(self, mock_alert):

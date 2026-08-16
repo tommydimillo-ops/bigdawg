@@ -79,6 +79,38 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   (menu-bar always-on, `scheduler_daemon.py` headless fallback) are
   preserved; they may now run together safely. See "Known lifecycle
   risks" below — this was previously listed there as unfixed.
+- **Phase 9 — Task-Aware Routing & Verification Hardening** (milestones
+  tracked individually below; the phase overall is still in progress —
+  Milestone 3 has not started):
+  - **Milestone 0 — GitHub Actions CI** (`d3481fc`) ✅: added
+    `.github/workflows/tests.yml`, running the full suite
+    (`python -m unittest discover -s tests -v`) on every push/PR against
+    placeholder (non-functional) API key env vars — no real network calls
+    in CI, consistent with this project's mocked-external-call-boundary
+    test policy.
+  - **Milestone 1 — Playwright browser-profile ownership hardening**
+    (`7b67bf0`) ✅: closes the "Playwright profile contention" risk
+    previously listed under "Next" below. `agent/browser_lock.py` adds a
+    non-blocking, cross-process `fcntl.flock` (same primitive as
+    `agent/scheduler_lock.py`, held for the browser context's lifetime
+    rather than reacquired per-tick) so Streamlit/menu-bar/scheduled-task
+    processes no longer race Chrome's own profile lock when opening the
+    shared persistent profile; a losing process gets a clean
+    `BrowserBusyError` message instead. See `CHANGELOG.md`.
+  - **Milestone 2 — Task-aware, multi-provider model routing + layered
+    fallback** ✅: deterministic task classification
+    (`agent/task_classifier.py`), capability/health/budget-filtered
+    cost-aware provider ranking (`agent/model_router.py`'s
+    `build_fallback_chain()`), a generalized N-provider fallback loop
+    (`agent/executor.py`), and two new working (not scaffolded) optional
+    providers — xAI and Perplexity, the latter via its Agent API rather
+    than Chat Completions (see `ARCHITECTURE.md` §5). Currency-reviewed
+    against official provider documentation immediately pre-commit
+    (model IDs, the pricing catalogue, and `vision_model`, which had been
+    missed by the router-scoped pass and was caught in a narrow
+    follow-up). This satisfies the "Task-based model routing" item
+    previously listed under "Future" below — removed from there as
+    superseded. See `CHANGELOG.md` for full detail.
 
 ## In progress
 
@@ -98,11 +130,14 @@ discussed most recently:
   `agent/usage.py`'s *estimated* costs against actual billed amounts.
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
-- **Known lifecycle risks** (documented, not yet fixed):
-  - Playwright profile contention: the Streamlit and menu-bar processes
-    each hold their own browser context pointed at the same on-disk
-    Chrome profile; no locking/coordination if both drive a browser at
-    once.
+- **Phase 9 Milestone 3 — QAAgent / verification expansion + bounded
+  parallel coworker delegation** — not started; the next Phase 9 item.
+  Builds on `agent/verification.py`'s existing narrow capability (see
+  "Future" below) and Phase 7's coworker-agent framework. "Bounded
+  parallel" means a capped number of concurrent coworker delegations for
+  independent subtasks — it does not touch `MAX_AGENT_DEPTH = 1` (an
+  agent still can never consult another agent; this is about breadth of
+  concurrent delegation from the main loop, not depth).
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring
@@ -118,34 +153,47 @@ discussed most recently:
 Larger, not-yet-started capabilities, matching the long-term architecture
 this project is meant to grow into:
 
-- **Task-based model routing** — `agent/model_router.py`'s `select()`
-  already reserves a `context` parameter for this. Intended shape: a
-  strong coding model for software-engineering work, a strong reasoning
-  model for planning/hard logic, a vision-capable model for visual
-  understanding, a voice-capable model for speech interaction, a cheap/
-  fast model for simple classification and routing subtasks — chosen per
-  task rather than one fixed primary/fallback pair. The system should
-  stay model-agnostic where practical.
-- **CodingAgent real capability** — currently a stub
+- **Phase 9 Milestone 4 — FTS5 conversation/history search** — later in
+  Phase 9, after Milestone 3. Not started, not designed in detail yet;
+  intended to give full-text search over conversation/execution history
+  (see `agent/conversation_store.py`/`agent/execution_history.py` for the
+  current, non-searchable stores this would index) using SQLite's FTS5
+  extension rather than a new external search dependency.
+- **Phase 10 — Real CodingAgent capability + checkpoint/rollback** —
+  CodingAgent is currently a stub
   (`metadata={"deferred_to_executor": True}` for everything). Real
   code-editing/execution capability needs to land *on top of* Phase 8's
   subprocess isolation and usage limits, not bypass them — this was an
   explicit design constraint when Phase 8 was built ("before we allow
   long-running coworker agents to do computer/code work, we should make
-  agent execution genuinely killable").
+  agent execution genuinely killable"). Checkpoint/rollback (the ability
+  to undo a CodingAgent's changes) is part of this same phase, not a
+  separate later item — real code-editing capability without a way back
+  out is not considered safe to ship on its own.
 - **QAAgent expansion** — today only runs this project's own test suite
   read-only; broader verification capability (checking arbitrary tool
   results, regression review) already has a narrow real capability via
-  `agent/verification.py` that a future QAAgent could build on.
-- **MCP integration** — no client/server exists yet. If built, tools
-  reached through MCP should register through the existing
-  `tools/registry.py`, not create a parallel dispatch path (same
+  `agent/verification.py` that a future QAAgent could build on. The near-
+  term slice of this is Phase 9 Milestone 3 above.
+- **MCP integration** — remains future/deferred; no client/server exists
+  yet. If built, tools reached through MCP should register through the
+  existing `tools/registry.py`, not create a parallel dispatch path (same
   principle already stated for a future Cowork integration).
 - **Cowork integration** — `agent/cowork_gateway.py` is an honest stub;
   there is no documented, programmatic Cowork API to integrate against
   yet. Wire it in when one exists, through the registry, keeping Jarvis
   as the orchestrator (any Cowork-originated action still flows through
   `tools.registry`/`agent.autonomy`/`agent.executor`).
+- **Hermes** — not integrated, and deliberately staying that way for now;
+  no client/adapter for it exists anywhere in this codebase. Revisit only
+  if a concrete need is identified — not a currently active line of
+  work.
+- **Progressive skill disclosure** (`agent/skills/`) — today's skill
+  matching is a flat keyword-overlap lookup over every registered
+  `SKILL.md`; a tiered/progressive disclosure model (e.g. surfacing a
+  short list before expanding full instructions) is deliberately deferred
+  until the skill library is substantially larger than it is today — not
+  worth the added complexity for the current, small skill set.
 - **Vector/embedding-based memory search** — deliberately not built;
   today's relevance retrieval is deterministic keyword overlap. Revisit
   only if keyword-overlap retrieval demonstrably stops being good enough,

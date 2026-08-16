@@ -14,7 +14,12 @@ class TestDefaults(unittest.TestCase):
     def test_defaults_used_when_nothing_set(self):
         settings = Settings()
         self.assertEqual(settings.default_model, "claude-sonnet-5")
-        self.assertEqual(settings.fallback_model, "gpt-5")
+        self.assertEqual(settings.fallback_model, "gpt-5.6-terra")
+        self.assertEqual(settings.openai_economy_model, "gpt-5.6-luna")
+        self.assertEqual(settings.openai_quality_model, "gpt-5.6-sol")
+        self.assertEqual(settings.xai_economy_model, "grok-4.3")
+        self.assertEqual(settings.xai_quality_model, "grok-4.6")
+        self.assertEqual(settings.perplexity_model, "low")
         self.assertEqual(settings.max_agent_steps, 8)
         self.assertEqual(settings.model_history_limit, 24)
         self.assertEqual(settings.planner_model, "claude-haiku-4-5-20251001")
@@ -46,6 +51,18 @@ class TestEnvironmentOverrides(unittest.TestCase):
     def test_string_override(self):
         self._set("DEFAULT_MODEL", "claude-opus-5")
         self.assertEqual(Settings.load().default_model, "claude-opus-5")
+
+    def test_openai_economy_model_override(self):
+        self._set("OPENAI_ECONOMY_MODEL", "gpt-5.6-mini-test")
+        self.assertEqual(Settings.load().openai_economy_model, "gpt-5.6-mini-test")
+
+    def test_xai_quality_model_override(self):
+        self._set("XAI_QUALITY_MODEL", "grok-test")
+        self.assertEqual(Settings.load().xai_quality_model, "grok-test")
+
+    def test_perplexity_model_override(self):
+        self._set("PERPLEXITY_MODEL", "medium")
+        self.assertEqual(Settings.load().perplexity_model, "medium")
 
     def test_int_override(self):
         self._set("MAX_AGENT_STEPS", "12")

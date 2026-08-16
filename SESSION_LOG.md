@@ -5,6 +5,52 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-15 — Phase 9 Milestone 2: task-aware multi-provider routing
+
+- **Objective**: Implement task-aware, multi-provider model routing
+  (`agent/model_router.py`'s `select()` had reserved an unused `context`
+  parameter for this since Phase 2), then, before allowing any commit,
+  currency-review every provider/model default against current official
+  documentation.
+- **Work completed**: Built `agent/task_classifier.py` (deterministic
+  task classification, no model call), `agent/provider_budget.py`
+  (same-day spend ceilings), extended `agent/provider_health.py` with
+  xAI/Perplexity config checks and a failure-cooldown tracker, and added
+  `agent/model_router.py`'s `build_fallback_chain()` (capability →
+  configured/healthy → budget → cost/quality ranking, in that fixed
+  order). Generalized `agent/executor.py`'s hardcoded two-tier cascade
+  into a real N-candidate fallback loop. Added working xAI and Perplexity
+  providers — Perplexity via its Agent API (a genuinely different
+  request/response shape), single-shot and never handed Jarvis's tool
+  registry. Then ran the requested pre-commit currency review: found and
+  fixed Perplexity's Sonar Chat Completions deprecation (migrated to the
+  Agent API before ever shipping), OpenAI's stale `gpt-5` default
+  (replaced with three real GPT-5.6 tiers), xAI's non-existent `grok-4`
+  placeholder, stale pricing-table entries for Sonnet 5/Haiku 4.5, and —
+  in a final narrow follow-up pass — `vision_model` (`tools/vision.py`'s
+  separate, non-routed OpenAI assignment), which the router-scoped review
+  had initially missed.
+- **Decisions**: Filter order (capability → configured/healthy → budget)
+  is fixed and never reordered. Falls back to the original static
+  `[anthropic, openai]` chain if task-aware routing is off or every
+  candidate is filtered out. `perplexity_client` (`agent/chat.py`) was
+  kept, not removed, despite the live Agent API call bypassing it
+  entirely — it still supplies `check_providers()`'s diagnostic
+  `initialized` field, kept uniform with the other three providers.
+- **Problems encountered**: The initial currency-review pass was scoped
+  to the router's own candidate tiers and missed `vision_model` (same
+  stale-`gpt-5` problem, different call site, not itself a router
+  candidate) — caught and fixed in a dedicated follow-up before the
+  commit, along with a documentation-accuracy pass across `HANDOFF.md`
+  that also caught a stale "Playwright profile contention" bug listed as
+  unfixed when Milestone 1 (`7b67bf0`) had already fixed it.
+- **Tests**: 96 new (928 total, up from 832 at the start of this
+  session), full suite passing, zero live/paid API calls (mocked at the
+  client/`httpx.post` boundary throughout).
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
 ### 2026-08-15 — Persistent session/handoff documentation system
 
 - **Objective**: Build `CLAUDE.md`, `HANDOFF.md`, `ARCHITECTURE.md`,

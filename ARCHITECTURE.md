@@ -16,8 +16,9 @@ Jarvis is a single Python backend (`agent/`, `tools/`, `voice/`, `config/`,
 `database/`) driven by three separate front-end processes that all funnel
 into the same core loop. There is no client/server split, no external
 database, and no message queue — everything is local processes talking to
-local JSON files plus outbound HTTPS calls to Anthropic/OpenAI/Apple
-frameworks.
+local JSON files plus outbound HTTPS calls to Anthropic/OpenAI/xAI/
+Perplexity/Apple frameworks (xAI/Perplexity optional, Phase 9 Milestone 2
+— see §5).
 
 ```
 ┌─────────────┐   ┌──────────────────┐   ┌───────────────────────┐
@@ -36,9 +37,10 @@ frameworks.
         ┌────────────────────┼────────────────────────┐
         ▼                    ▼                         ▼
   agent/model_router   tools/registry.py         agent/agents/
-  (Claude primary,     (53 tools, permission     manager.py
-   OpenAI fallback)     levels, dispatch)         (coworker agents,
-                                                    subprocess-isolated)
+  (task-aware, cost-   (53 tools, permission     manager.py
+   ranked, 4 providers: levels, dispatch)         (coworker agents,
+   Anthropic/OpenAI/                               subprocess-isolated)
+   xAI/Perplexity)
                              │
         ┌────────────────────┼────────────────────────┐
         ▼                    ▼                         ▼
@@ -88,21 +90,33 @@ execute_task_stream(request, history, source)
                                           only (dashboard/history) -- does
                                           NOT execute a coworker agent
   4. agent.planner.is_complex()       -- genuinely multi-step? create a Plan
-  5. _run_claude_loop_stream()        -- primary provider
-       loop (max_agent_steps, default 8):
-         check cancellation, check usage limits (agent.usage.
-           check_request_limits)
-         call Claude with the full tool list + system prompt
-         if tool_use: _run_tool_batch -> _run_tool (per tool)
-           -> permission/confirmation checks (agent.autonomy)
-           -> tools.registry.dispatch(name, input)
-           -> agent.audit.log_action (security record)
-           -> agent.observability.log_event (diagnostics)
-           -> agent.usage.record_llm_usage (if the tool itself made an
-              LLM/audio call, e.g. computer_locate, computer_see)
-         else: return the model's text answer
-  6. on primary failure (nothing streamed yet): _run_openai_loop_stream()
-     (same shape, gpt-5)
+  5. classify_task() + build_fallback_chain()   -- Phase 9 Milestone 2:
+     deterministic task classification, then an ordered N-provider
+     candidate list (agent/model_router.py, see §5) -- with only
+     Anthropic/OpenAI configured (the original, still-default state)
+     this returns exactly [anthropic, openai], so behavior is unchanged
+     from the pre-Milestone-2 hardcoded cascade in that common case
+  6. for each candidate in the chain, in order (never simultaneously):
+       anthropic  -> _run_claude_loop_stream()
+       perplexity -> _run_perplexity_agent_loop_stream() (single-shot,
+                     no tool registry -- see §5)
+       otherwise  -> _run_openai_compatible_loop_stream() (OpenAI, xAI)
+     each loop (max_agent_steps, default 8):
+       check cancellation, check usage limits (agent.usage.
+         check_request_limits)
+       call the provider with the full tool list + system prompt
+         (Perplexity: no tool list -- see §5)
+       if tool_use: _run_tool_batch -> _run_tool (per tool)
+         -> permission/confirmation checks (agent.autonomy)
+         -> tools.registry.dispatch(name, input)
+         -> agent.audit.log_action (security record)
+         -> agent.observability.log_event (diagnostics)
+         -> agent.usage.record_llm_usage (if the tool itself made an
+            LLM/audio call, e.g. computer_locate, computer_see)
+       else: return the model's text answer
+     on a candidate's failure (nothing streamed yet for this request):
+       advance to the next candidate in the chain; on the last
+       candidate's failure, return an error instead
   7. record_llm_usage() after every provider call that returns a real
      usage object
   8. execution_history.record_completed/failed/cancelled()
@@ -172,26 +186,105 @@ trigger another agent consultation; enforced structurally in
 
 ## 5. Model router
 
-**`agent/model_router.py`** — today this is intentionally simple:
-`select(attempt=0)` → Claude (`config.settings.default_model`),
-`select(attempt>=1)` → OpenAI (`config.settings.fallback_model`). The
-fallback fires only when a *live call to the primary provider actually
-fails* mid-request — there's no cost-based, task-based, or capability-based
-routing logic. The module's own docstring states this is intentional: a
-`context` parameter already exists on `select()`, unused, specifically so
-a future phase can add real routing without `executor.py` needing to
-change.
+**`agent/model_router.py`** implements Phase 9 Milestone 2's task-aware,
+multi-provider routing. The original static Phase 1 interface
+(`primary_choice()`/`fallback_choice()`/`select()`) still exists and is
+still used verbatim as the fallback behavior when task-aware routing is
+off or every candidate gets filtered out — but the real entry point
+`agent/executor.py` calls today is `build_fallback_chain()`, which
+returns an ordered list of `ModelChoice`s to try in sequence:
 
-**PLANNED, NOT IMPLEMENTED**: task-based routing to different models for
-different jobs (strong coding model → software engineering, strong
-reasoning model → planning, vision-capable model → visual understanding,
-voice-capable model → speech, cheap/fast model → simple
-classification/routing). See `ROADMAP.md`. The system today already
-approximates a narrow slice of this without a general router: `vision_model`/
+```
+Task
+ ↓
+Deterministic task classification (agent/task_classifier.py)
+ ↓
+TaskRequirements (task type + vision/current-web/large-context/tool
+                  needs + latency/quality/cost priority flags)
+ ↓
+Capability filter   — can this provider even do the task?
+ ↓
+Configured/health filter — is it configured, and not in a post-failure
+                            cooldown (agent/provider_health.py)?
+ ↓
+Budget filter        — is it within its daily spend ceiling
+                        (agent/provider_budget.py)?
+ ↓
+Cost/quality ranking — cheapest reliable candidate that still satisfies
+                        the task's priority flags
+ ↓
+Primary provider (call one, not several — never call multiple providers
+                   simultaneously to compare answers)
+ ↓
+Layered fallback chain — on failure, try the next candidate in order
+```
+
+This filter order is fixed and load-bearing, never reordered: capability
+→ configured/healthy → budget → cost/quality ranking. Routing can't
+discover mid-call that the cheapest candidate simply can't do the task,
+because incapable candidates are removed first. Task classification
+itself is deterministic (keyword/pattern matching, no model call) —
+consistent with this project's standing "never let a model decide a
+routing or permission outcome" rule (`agent/autonomy.py`,
+`agent/delegation.py`, `agent/skills/router.py`, `agent/agents/router.py`
+all follow the same rule).
+
+**Providers**: Anthropic and OpenAI are required (always configured);
+xAI and Perplexity are optional, degrading to `None`/filtered-out rather
+than raising when their API key is absent. Current default model tiers
+(`config/settings.py`, currency-reviewed against each provider's official
+documentation immediately before the Milestone 2 commit):
+
+| Provider | Tiers |
+|---|---|
+| Anthropic | `claude-sonnet-5` (primary), `claude-haiku-4-5-20251001` (planner/vision-fallback) |
+| OpenAI | `gpt-5.6-luna` (economy), `gpt-5.6-terra` (balanced/fallback), `gpt-5.6-sol` (quality) |
+| xAI | `grok-4.3` (economy/default), `grok-4.6` (quality, only for `quality_priority` tasks) |
+| Perplexity | Agent API preset `"low"` — not a flat-rate model ID; see below |
+
+**Perplexity is architecturally distinct from the other three providers**
+and this is deliberate, not a gap: its Agent API
+(`agent/executor.py`'s `_call_perplexity_agent`) has a genuinely
+different request/response shape (`input`/`output`, not
+`messages`/`choices`) and is called directly via `httpx.post`, not
+through `_run_openai_compatible_loop`. Perplexity is used narrowly and
+single-shot — one grounded research query in, one grounded answer back —
+and is **never handed Jarvis's tool registry**, so it can never become a
+second orchestrator; a request routed to Perplexity cannot also perform a
+Jarvis tool action in the same turn. This is the same
+"providers/skills/agents never bypass `tools.registry`/`agent.autonomy`"
+rule this file states elsewhere, applied to a provider whose own API
+happens to have its own (irrelevant, unused) tool-calling mechanism.
+
+**What routing does NOT change**: tool permission levels
+(`tools/registry.py`) and the confirmation-required decision
+(`agent/autonomy.py`) are completely independent of which provider
+answers a request — routing picks a model, never a permission. Every
+provider is independently replaceable (swapping a model ID or adding a
+fifth provider doesn't touch `tools.registry`/`agent.autonomy`). Jarvis
+itself remains the only orchestrator regardless of which provider is
+currently answering.
+
+**Cost controls** (`agent/usage.py`/`agent/provider_budget.py`): a small,
+centrally maintained, dated pricing catalogue (not a live pricing API —
+would add a network dependency to routing) with a conservative
+`_DEFAULT_TOKEN_PRICE` fallback for unpriced/unrecognized models, never a
+silent zero. `provider_budget.py` reuses `agent/usage.py`'s existing
+`cost_since()`/`cost_today()` aggregation for same-day per-provider and
+global spend ceilings rather than a new store.
+
+**Explicitly NOT part of this router**: `vision_model`,
 `vision_fallback_model`, `transcription_model`, `tts_model`, and
-`planner_model` are separate, purpose-specific model settings
-(`config/settings.py`) — but each is a hardcoded assignment per call site,
-not a routed decision.
+`planner_model` remain separate, hardcoded, purpose-specific per-call-site
+assignments (`config/settings.py`) — never routed candidates. Of these,
+`vision_model` (`gpt-5.6-terra`) was currency-reviewed alongside the
+router's own tiers (same stale-`gpt-5` problem, same fix, since it's the
+same OpenAI chat-model family), but that review didn't change its
+hardcoded-assignment status — `tools/vision.py` still reads
+`settings.vision_model` directly, with no capability/health/budget
+filtering. `transcription_model`/`tts_model` are audio-specific models in
+a different product line entirely and were not touched by the Milestone 2
+currency review.
 
 ## 6. Memory
 
@@ -396,8 +489,16 @@ flat JSON file under `~/Library/Application Support/CampusPilot/`:
 
 - **Anthropic** (`agent/chat.py`'s `anthropic_client`) — primary chat
   model, vision fallback, planner, deep reasoning, research agent.
-- **OpenAI** (`openai_client`) — fallback chat model, vision primary,
-  transcription (`gpt-4o-transcribe`), TTS (`gpt-4o-mini-tts`).
+- **OpenAI** (`openai_client`) — balanced/economy/quality chat tiers,
+  vision primary, transcription (`gpt-4o-transcribe`), TTS
+  (`gpt-4o-mini-tts`).
+- **xAI** (`xai_client`, Phase 9 Milestone 2) — optional, OpenAI-API-
+  compatible chat tiers, only configured/called if `XAI_API_KEY` is
+  present; degrades to filtered-out, never a raised exception, otherwise.
+- **Perplexity** (Phase 9 Milestone 2) — optional, grounded-research-only
+  via its Agent API (`POST /v1/agent`, called directly with `httpx`, not
+  through the `openai` SDK client — see §5); only configured/called if
+  `PERPLEXITY_API_KEY` is present.
 - **Apple frameworks**: `Speech` (on-device transcription fallback,
   `voice/local_transcribe.py`), AppleScript (Reminders, Calendar, Mail,
   Music, login-form autofill), Keychain (`keyring`), Photos (read-only
@@ -429,11 +530,14 @@ from consulting another agent).
   policy per tool-call failure; unrecognized error types default to *not*
   retrying (conservative — retrying an unrecognized failure mode might
   itself be unsafe).
-- **Provider fallback**: a live failure calling the primary provider
-  (not a tool failure) triggers the OpenAI fallback loop, *unless* a
-  side-effecting tool already ran this request (`PartialToolExecution` —
-  reported to the user instead of silently retried on the other
-  provider, since retrying risks repeating a real action).
+- **Provider fallback**: a live failure calling the current provider
+  (not a tool failure) advances to the next candidate in
+  `build_fallback_chain()`'s ordered list (§5) — as many providers as are
+  configured and passed filtering, tried one at a time, never
+  simultaneously — *unless* a side-effecting tool already ran this
+  request (`PartialToolExecution` — reported to the user instead of
+  silently retried on another provider, since retrying risks repeating a
+  real action).
 - **Cancellation**: `agent/cancellation.py` + `agent/execution_state.py`
   — cooperative, not preemptive. A cancellation request sets a flag
   checked at loop-iteration/tool-dispatch boundaries; a tool already in
