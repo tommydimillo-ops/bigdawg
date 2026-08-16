@@ -10,3 +10,5 @@ rumps==0.4.0
 sounddevice==0.5.5
 pyobjc-framework-Speech==12.2.1
 py2app==0.28.10
+websockets==16.1.1
+cryptography==50.0.0

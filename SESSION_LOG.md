@@ -5,6 +5,185 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-16 (latest) — OpenClaw M1 stable-compatibility pass: auth-field bug fixed for real, device-ID confirmed
+
+- **Objective**: Re-check the previous pass's own auth-field fix (which
+  sent Jarvis's shared token under `auth.bootstrapToken`, based on a
+  beta package's schema) against the actual current STABLE OpenClaw
+  release, per explicit instruction not to trust beta-only evidence as
+  the compatibility baseline; also make one more attempt to verify the
+  previously-unverified device-ID derivation algorithm.
+- **Work completed**: Discovered `@openclaw/gateway-client`/`@openclaw/
+  gateway-protocol` have no stable npm release at all (only an empty
+  `0.0.0` placeholder and beta prereleases) — the real stable source is
+  the main `openclaw` app package (`openclaw@2026.7.1-2`), which vendors
+  its own copy of this logic. Downloaded and inspected its ~87MB bundle
+  directly, including the Gateway SERVER's own connect-auth resolution
+  (the actually-authoritative source for wire-field meaning, not a
+  client-side schema). Found the previous pass's `auth.bootstrapToken`
+  fix was itself wrong — that field is a genuinely distinct device-
+  pairing/setup credential, verified server-side via a wholly separate
+  path from the shared Gateway secret. Corrected: shared token → always
+  `auth.token`; stored device token → always `auth.deviceToken`
+  (required, not just cleaner, since only that field's rejection reports
+  `AUTH_DEVICE_TOKEN_MISMATCH`, which the stale-token retry logic
+  depends on); `auth.bootstrapToken` never sent. Also confirmed
+  `signedAt` is safe as implemented despite a real stable/beta client
+  difference (stable uses plain wall-clock time; beta prefers the
+  challenge timestamp) because the server's own freshness check is a
+  wall-clock skew check, not an exact-match against the challenge — no
+  change needed there. And confirmed, no longer an assumption: the
+  device-ID derivation algorithm, via a literal `deriveDeviceIdFromPublicKey`
+  function found in the stable bundle plus the server's own independent
+  re-derivation-and-compare check on every connect.
+- **Decisions**: Removed all "unverified assumption" language about
+  device-ID derivation now that primary source confirms it exactly;
+  kept `DEVICE_AUTH_DEVICE_ID_MISMATCH` handling anyway as defense-in-
+  depth, not because of remaining doubt.
+- **Problems encountered**: The previous pass's own auth-field fix
+  (from checking only a beta client package's schema) turned out to be
+  a real bug — a lesson that a schema proving a field exists doesn't
+  prove what it means; the field's actual semantics live in the
+  server's own interpretation logic, which had to be read directly.
+- **Tests**: 3 new (1096 total, up from 1093), full suite passing, zero
+  live/paid API calls, no real OpenClaw installation used.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-16 — OpenClaw M1 re-verification: signedAt confirmed correct, auth-field bug fixed
+
+- **Objective**: Check a claimed `signedAt` bug (that it must always be
+  wall-clock time, never the `connect.challenge` event's own `ts`)
+  against current primary source before applying it, per this project's
+  standing verify-before-implementing rule.
+- **Work completed**: Re-pulled a newer npm release
+  (`@openclaw/gateway-client@2026.8.1-beta.2`) than the one inspected
+  during the prior auth-correction pass and read the real
+  `GatewayClient.buildConnectPlan` and
+  `GatewayBrowserDeviceAuthLifecycle.buildPlan` implementations
+  directly: both compute `signedAtMs = challengeTs ?? Date.now()` —
+  preferring the challenge's own timestamp, the opposite of the claim.
+  `agent/openclaw_gateway.py` already did this correctly, so no change
+  was made to `signedAt` handling; added two regression tests instead.
+  While re-checking auth-token/device-token selection against the same
+  source, found and fixed a real, separate, previously-unverified bug:
+  the real `ConnectParams.auth` object has distinct `token`/
+  `bootstrapToken`/`deviceToken` fields, and Jarvis was sending every
+  credential under the generic `token` field instead of the correct
+  one. Fixed `_connect_and_call` to send `bootstrapToken`/`deviceToken`
+  correctly; updated the fake Gateway test server and its device-token
+  tests to check the correct, now-distinct fields.
+- **Decisions**: Did not apply the requested `signedAt` change because
+  primary source directly contradicted it — reported the contradiction
+  with evidence rather than complying, then fixed the real bug the same
+  verification pass surfaced instead.
+- **Problems encountered**: None — this was a case of a claim not
+  matching reality, not a code defect in the claim's target area.
+- **Tests**: 3 new (1093 total, up from 1090), full suite passing, zero
+  live/paid API calls, no real OpenClaw installation used.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-16 — OpenClaw M1 correction: real Ed25519 device-identity auth
+
+- **Objective**: Fix M1's shared-token auth, which its own docstring
+  already flagged as an unverified assumption — current official
+  OpenClaw behavior turned out to actually require a persistent Ed25519
+  device identity and a challenge-signed handshake for normal
+  third-party operator clients, not just a shared secret.
+- **Work completed**: Since docs.openclaw.ai doesn't cover third-party
+  device auth and a related GitHub issue's own technical claims proved
+  partly stale (a "v1" payload-format claim vs. the real, current "v3"),
+  verified this directly against the actual published
+  `@openclaw/gateway-client`/`@openclaw/gateway-protocol` npm packages —
+  downloaded via `npm pack` and inspected as real compiled source, not
+  paraphrased. Confirmed the real V3 device-auth payload format, the
+  real `connect.challenge`-first handshake order, the complete real
+  error-code enum (`PAIRING_REQUIRED`, `AUTH_SCOPE_MISMATCH`,
+  `AUTH_DEVICE_TOKEN_MISMATCH`, every `DEVICE_AUTH_*` code), and the
+  real closed `client.id`/`client.mode` enums (confirming `"cli"` as the
+  correct non-reserved identity, since `"backend"`/`"gateway-client"`
+  are OpenClaw's own reserved internal identity). Rewrote
+  `agent/openclaw_gateway.py`: persistent Ed25519 device identity
+  (PEM, via `agent/secrets.py`), real payload signing, challenge-first
+  handshake, fail-closed `operator.read` scope verification, a new
+  `OpenClawPairingRequired` error (never auto-approved), and device-
+  token persistence/reuse with one bounded retry on a stale-token
+  mismatch. Added `cryptography==50.0.0` (verified Intel macOS +
+  Python 3.14 compatible). Rewrote the fake Gateway test server to
+  perform genuine Ed25519 signature verification against the real
+  client's actual output, not a stub check.
+- **Decisions**: One detail — the exact device-ID hash algorithm —
+  couldn't be confirmed against any primary source despite real effort
+  (it's genuinely not in either published package; the actual crypto
+  implementation lives in the main `openclaw` app's own unpublished
+  source). Used SHA-256 of the raw public key as a deliberately
+  low-risk, explicitly-flagged assumption (a real Gateway would reject
+  it cleanly via `DEVICE_AUTH_DEVICE_ID_MISMATCH`, never a crash) rather
+  than blocking the rest of an otherwise now-far-more-verified
+  implementation on it.
+- **Problems encountered**: The community GitHub issue initially found
+  during research cited a stale payload-format version ("v1" vs. the
+  real "v3"), caught only by cross-checking it against the actual
+  published package source — a reminder not to trust a single
+  secondary source for security-critical protocol details even when it
+  looks authoritative.
+- **Tests**: 15 new (1090 total, up from 1075), full suite passing, zero
+  live/paid API calls, no real OpenClaw installation used.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-16 (later) — OpenClaw M0 (audit) + M1 (read-only Gateway bridge)
+
+- **Objective**: Research OpenClaw (a separate, real open-source
+  personal-AI-assistant/messaging-gateway project) and, if the
+  architecture supported it safely, implement a narrow, read-only,
+  optional bridge — with Jarvis remaining the sole orchestrator
+  throughout, never ceding model-routing, permission, or tool-dispatch
+  authority to OpenClaw.
+- **Work completed**: M0 — researched OpenClaw's current official docs
+  (Gateway protocol, auth/scope model, node/channel capabilities, plugin
+  security model, Intel Mac support). Found real, current facts that
+  corrected earlier assumptions: current stable release
+  `openclaw 2026.7.1-2` (not the initially-cited "3.22"); the local
+  default transport is authenticated loopback WebSocket, not TLS; the
+  `websockets` package (not `httpx`, which has no native WebSocket
+  client) was already present as an incidental transitive dependency via
+  `streamlit` and was pinned explicitly rather than added as a new,
+  separately-justified dependency. M1 — built
+  `agent/openclaw_gateway.py` (connection/auth/protocol-negotiation
+  bridge, no Jarvis policy decisions of its own, a fixed
+  `{"health", "status", "node.list"}` RPC allowlist, five normalized
+  error types, strict node-data minimization) and two new tools
+  (`openclaw_status`/`openclaw_list_nodes`, both permission_level 0,
+  read-only). Disabled by default; every failure mode (not installed,
+  Gateway stopped, token absent, auth rejected, protocol mismatch)
+  degrades cleanly rather than breaking Jarvis startup.
+- **Decisions**: Used `websockets.sync.client` (not the async API) to
+  fit Jarvis's existing synchronous tool architecture with no asyncio
+  adapter. One-shot connections, no persistent connection manager, for
+  M1's low call volume. Used OpenClaw's simpler shared-token auth path
+  rather than its full cryptographic device-pairing flow — a documented
+  assumption, not verified against a real Gateway (none was installed or
+  required for this pass, per explicit instruction).
+- **Problems encountered**: An early fake-server test fixture design
+  caused the *test server* to log a spurious (harmless) exception
+  traceback when a client legitimately disconnected right after a
+  protocol-mismatch handshake, before ever sending a second frame —
+  fixed by having the fixture treat an early client disconnect as
+  expected server-side behavior, not an error, matching how a real
+  Gateway would also handle it.
+- **Tests**: 51 new (1075 total, up from 1024), full suite passing, zero
+  live/paid API calls, no real OpenClaw installation used (confirmed not
+  installed on this machine; not installed by this session either, per
+  explicit instruction).
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
 ### 2026-08-16 — Phase 9 Milestone 3: bounded parallel coworker delegation + verification
 
 - **Objective**: Give Jarvis bounded parallel coworker delegation

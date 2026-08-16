@@ -147,6 +147,73 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     budget filtering, cost-aware tiering, and cross-provider fallback
     instead of always calling Claude directly. See `CHANGELOG.md` for
     full detail.
+- **OpenClaw interoperability / gateway bridge** (a separate,
+  intermediate initiative, not a Phase 9 milestone — sequenced between
+  Phase 9 Milestone 3 and Milestone 4):
+  - **OpenClaw M0 — research/architecture audit** ✅: researched OpenClaw
+    (a real, separate, MIT-licensed open-source project —
+    github.com/openclaw/openclaw, docs.openclaw.ai) against its current
+    official documentation. Confirmed real, current findings: Intel
+    x86_64 macOS is supported (this development Mac's own architecture);
+    the Gateway's documented local default is an *authenticated loopback
+    WebSocket* (`ws://127.0.0.1:18789`), not TLS; current protocol
+    version 4; a 7-scope operator authorization model where
+    `health`/`status`/`node.list` need only the minimal `operator.read`
+    scope; plugins execute with full host privileges, no sandboxing
+    ("treat plugin installs like running code," per OpenClaw's own
+    docs) — a real reason M1 depends on zero third-party OpenClaw
+    plugins. No code changed in this pass.
+  - **OpenClaw M1 — read-only Gateway bridge, device-identity
+    authenticated** ✅: `agent/openclaw_gateway.py` (new) — a narrow,
+    optional bridge making no Jarvis policy decisions of its own.
+    One-shot connections (`websockets.sync.client`, fitting Jarvis's
+    existing synchronous tool architecture with no asyncio adapter
+    needed), a fixed, hard-coded RPC allowlist (`health`/`status`/
+    `node.list` only — every other method is structurally unreachable).
+    Auth was initially built on a shared-token assumption, then
+    corrected after a follow-up review found current official OpenClaw
+    docs actually require a persistent **Ed25519 device identity** with
+    a challenge-signed handshake for normal third-party operator
+    clients — verified directly against the real, published
+    `@openclaw/gateway-client`/`@openclaw/gateway-protocol` npm packages
+    (downloaded and inspected, not paraphrased, since this specific
+    flow is undocumented on docs.openclaw.ai and a related GitHub
+    issue's own technical claims were partly stale). Jarvis now holds
+    its own persistent Ed25519 identity (`OPENCLAW_DEVICE_PRIVATE_KEY`,
+    via `agent/secrets.py`), signs the real, verified V3 device-auth
+    payload against the Gateway's `connect.challenge`, verifies
+    `operator.read` was actually granted (fails closed if not), never
+    auto-approves a `PAIRING_REQUIRED` response (a human runs
+    `openclaw devices approve <requestId>`), and persists/reuses an
+    issued device token with one bounded fallback-to-bootstrap-token
+    retry on `AUTH_DEVICE_TOKEN_MISMATCH`. New dependency:
+    `cryptography==50.0.0` (Ed25519 key generation/signing; verified
+    Intel macOS + Python 3.14 compatible, though no pre-built wheel
+    existed yet for this exact combination — it compiles from source
+    cleanly). Two tools, `openclaw_status`/`openclaw_list_nodes`
+    (`tools/schemas/openclaw.py`), both permission_level 0, read-only,
+    unattended-allowed, flowing through the ordinary `tools/registry.py`
+    path — no second dispatch path. Disabled by default
+    (`openclaw_enabled = False`); every failure mode (not installed,
+    stopped, misconfigured, pairing required, wrong scope, stale device
+    token) degrades cleanly, never a Jarvis startup failure. Re-verified
+    twice more after the initial pass: first against a newer beta npm
+    release (a claimed `signedAt` bug was checked and found to contradict
+    real client source — no change made — while that same pass introduced
+    its own auth-field bug); then against the actual current STABLE
+    `openclaw` app package (`openclaw@2026.7.1-2`) rather than the
+    beta-only client/protocol packages, which turn out to have no stable
+    release at all. That final pass fixed the auth-field bug for real
+    (shared token → `auth.token`; stored device token → `auth.deviceToken`;
+    `auth.bootstrapToken` never used — confirmed against the Gateway
+    server's own connect-auth resolution, not just client-side schema
+    field existence) and fully CONFIRMED the device-ID derivation
+    algorithm (previously a documented low-risk assumption) against a
+    literal server-side function doing the exact same computation. All
+    of this is protocol-verified against a local fake Gateway server
+    (real Ed25519 signature verification, not a stub) — M1 has not yet
+    been exercised against a real, installed OpenClaw Gateway process.
+    See `CHANGELOG.md` for full detail.
 
 ## In progress
 
@@ -166,32 +233,23 @@ discussed most recently:
   `agent/usage.py`'s *estimated* costs against actual billed amounts.
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
-- **OpenClaw interoperability / gateway bridge** — PLANNED, not started,
-  not implemented. Intentionally sequenced between Phase 9 Milestone 3
-  (complete) and Milestone 4 (FTS5 search, still below in "Future").
-  Non-negotiable architectural constraint carried in from the start:
-  **Jarvis remains the sole orchestrator** — OpenClaw is an optional
-  *subordinate* gateway/adapter, never a peer decision-maker. Initial
-  planned scope, in order:
-  - An architecture/research audit of OpenClaw itself before any code.
-  - OpenClaw runs as its own separate runtime/process, not embedded in
-    Jarvis's own process.
-  - Localhost-only connection initially — no remote/network exposure.
-  - An explicit allowlist of gateway/RPC capabilities OpenClaw may
-    expose, not open-ended access.
-  - Jarvis reaches OpenClaw only through permission-gated wrapper tools
-    (through `tools/registry.py`, the same as every other tool — no
-    parallel dispatch path, matching this project's standing "one
-    registry per registerable thing" rule).
-  - OpenClaw gets no model-routing authority of its own — it never
-    chooses a provider/model on Jarvis's behalf.
-  - No arbitrary OpenClaw-initiated Jarvis tool execution — OpenClaw
-    cannot call back into Jarvis's own tool registry unprompted.
-  - No shared secrets store and no shared memory authority between the
-    two systems.
-  - The first capabilities wired, once the above is in place, will be
-    deliberately low-risk (status/list-nodes) — messaging/device-action
-    capabilities come later, not in the initial cut.
+- **OpenClaw M2 — messaging bridge** — PLANNED, not started, not
+  implemented. OpenClaw M0 (research audit) and M1 (read-only bridge:
+  `openclaw_status`/`openclaw_list_nodes`) are complete — see
+  "Completed" above. M2 is the next OpenClaw increment: sending a
+  message through an explicitly configured channel, requiring
+  `operator.write` scope (a real, deliberate scope increase over M1's
+  `operator.read`-only bridge), recipient validation, confirmation rules
+  (matching `send_email`'s existing permission_level=3 +
+  `requires_live_confirmation` treatment — sending a message to a real
+  person via a real channel is not a read), and full audit logging.
+  **Jarvis remains the sole orchestrator** throughout — this constraint
+  does not relax as OpenClaw gains capability. Still to hold for every
+  future OpenClaw milestone: no OpenClaw model-routing authority, no
+  arbitrary OpenClaw-initiated Jarvis tool execution, no shared secrets/
+  memory store between the two systems, no third-party OpenClaw plugin
+  dependency (OpenClaw plugins execute with full host privileges, no
+  sandboxing — confirmed in the M0 audit).
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring

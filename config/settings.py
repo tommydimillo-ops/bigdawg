@@ -319,6 +319,28 @@ class Settings:
     api_pool_timeout: float = 5.0
     api_max_retries: int = 3
 
+    # --- OpenClaw bridge (optional, read-only, Phase 9 OpenClaw M1) ---
+    # IS wired (agent/openclaw_gateway.py). OpenClaw is a separate,
+    # optional, subordinate local service Jarvis can query -- never a
+    # second orchestrator, never a source of model-routing/permission
+    # authority (see ARCHITECTURE.md's OpenClaw section). Disabled by
+    # default: a fresh install with no OpenClaw Gateway running must
+    # start and run identically to one that never heard of OpenClaw.
+    openclaw_enabled: bool = False
+    # Loopback only, matching OpenClaw's own documented default bind
+    # mode -- Jarvis is a CLIENT of a Gateway already running on this
+    # same machine, never a remote caller. Plain ws://, not wss://: the
+    # documented local default is an authenticated loopback WebSocket,
+    # not TLS (loopback traffic never leaves the machine, so there's
+    # nothing on the wire for TLS to protect against here).
+    openclaw_gateway_url: str = "ws://127.0.0.1:18789"
+    # Bounds the ENTIRE one-shot call (connect + handshake + one RPC +
+    # close) -- deliberately tighter than the Gateway protocol's own
+    # documented 30s per-RPC default, since every method M1 actually
+    # calls (health/status/node.list) is meant to be a fast, read-only
+    # query, not a long-running operation.
+    openclaw_timeout_seconds: float = 10.0
+
     # --- Debug / development mode ---
     # Wired to agent/observability.py's log level (DEBUG vs INFO).
     debug: bool = False
@@ -386,6 +408,9 @@ class Settings:
             api_write_timeout=_env_float("API_WRITE_TIMEOUT", cls.api_write_timeout),
             api_pool_timeout=_env_float("API_POOL_TIMEOUT", cls.api_pool_timeout),
             api_max_retries=_env_int("API_MAX_RETRIES", cls.api_max_retries),
+            openclaw_enabled=_env_bool("OPENCLAW_ENABLED", cls.openclaw_enabled),
+            openclaw_gateway_url=_env_str("OPENCLAW_GATEWAY_URL", cls.openclaw_gateway_url),
+            openclaw_timeout_seconds=_env_float("OPENCLAW_TIMEOUT_SECONDS", cls.openclaw_timeout_seconds),
             debug=_env_bool("DEBUG", cls.debug),
         )
 
