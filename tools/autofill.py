@@ -2,7 +2,7 @@ import re
 import time
 from urllib.parse import urlparse
 
-from tools.browser import get_current_page
+from tools.browser import BrowserBusyError, get_current_page
 from tools.credential_store import get_login
 
 USERNAME_SELECTORS = [
@@ -93,7 +93,10 @@ def fill_login(site):
             "a password in chat)."
         )
 
-    page = get_current_page()
+    try:
+        page = get_current_page()
+    except BrowserBusyError as error:
+        return f"{error} Try again in a moment."
 
     if not _domain_matches(page.url, credential["domain"]):
         return (
@@ -139,7 +142,10 @@ def confirm_login(site):
     if not credential:
         return f"'{site}' is no longer saved."
 
-    page = get_current_page()
+    try:
+        page = get_current_page()
+    except BrowserBusyError as error:
+        return f"{error} Try again in a moment."
 
     # Re-check domain: the page could have navigated away since the preview.
     if not _domain_matches(page.url, credential["domain"]):

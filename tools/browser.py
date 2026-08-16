@@ -6,6 +6,8 @@ from urllib.parse import quote, urlparse, parse_qs
 
 from playwright.sync_api import sync_playwright
 
+from agent import browser_lock
+
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 MAX_PAGE_TEXT = 4000
 
@@ -65,6 +67,14 @@ SEARCH_INPUT_SELECTORS = [
     "input[name*='search' i]",
 ]
 
+
+class BrowserBusyError(Exception):
+    """Raised when another Jarvis process already owns the shared,
+    persistent Chrome profile -- callers turn this into a clear, expected
+    result string instead of letting a raw Playwright/Chrome error
+    surface (see agent/browser_lock.py)."""
+
+
 _playwright = None
 _context = None
 _shutdown_registered = False
@@ -74,13 +84,24 @@ def _get_context():
     global _playwright, _context, _shutdown_registered
 
     if _context is None:
+        if not browser_lock.try_acquire():
+            raise BrowserBusyError("Another Jarvis process is already using the browser.")
+
         os.makedirs(PROFILE_DIR, exist_ok=True)
-        _playwright = sync_playwright().start()
-        _context = _playwright.chromium.launch_persistent_context(
-            PROFILE_DIR,
-            executable_path=CHROME_PATH,
-            headless=False,
-        )
+        try:
+            _playwright = sync_playwright().start()
+            _context = _playwright.chromium.launch_persistent_context(
+                PROFILE_DIR,
+                executable_path=CHROME_PATH,
+                headless=False,
+            )
+        except Exception:
+            # The launch itself failed -- release the lock so a later,
+            # healthy attempt (this process or another) isn't blocked by
+            # a lock this process never actually put to use.
+            browser_lock.release()
+            raise
+
         if not _shutdown_registered:
             atexit.register(_shutdown)
             _shutdown_registered = True
@@ -117,14 +138,20 @@ def _discard_dead_context():
             pass
     _context = None
     _playwright = None
+    browser_lock.release()
 
 
 def _get_live_page():
     """The one entry point every public function below uses to get a
     usable page -- retries once, from a clean slate, if the existing
-    context turns out to be dead."""
+    context turns out to be dead. BrowserBusyError means another process
+    owns the profile right now, not that our own context is stale, so
+    it's re-raised immediately rather than retried -- a retry here would
+    just re-attempt (and fail) the same lock acquisition."""
     try:
         return _get_page(_get_context())
+    except BrowserBusyError:
+        raise
     except Exception:
         _discard_dead_context()
         return _get_page(_get_context())
@@ -143,6 +170,7 @@ def _shutdown():
         _context.close()
     if _playwright:
         _playwright.stop()
+    browser_lock.release()
 
 
 def _settle(page):
@@ -236,7 +264,10 @@ def _extract_page_result(page, verb="Opened"):
 def open_and_read(target):
 
     target = target.strip()
-    page = _get_live_page()
+    try:
+        page = _get_live_page()
+    except BrowserBusyError as error:
+        return f"{error} Try again in a moment."
 
     try:
         if URL_LIKE.match(target):
@@ -261,7 +292,10 @@ def search_on_page(query):
     input[type='search'], Amazon uses input[type='text'] with a matching
     aria-label) and drives it directly."""
 
-    page = _get_live_page()
+    try:
+        page = _get_live_page()
+    except BrowserBusyError as error:
+        return f"{error} Try again in a moment."
 
     try:
         search_field = None
@@ -327,7 +361,10 @@ def click_on_page(text):
     coordinates) — it can't reach outside the one browser tab it already
     controls, same boundary as every other browser tool here."""
 
-    page = _get_live_page()
+    try:
+        page = _get_live_page()
+    except BrowserBusyError as error:
+        return f"{error} Try again in a moment."
 
     try:
         target = page.get_by_role("link", name=text, exact=False).first
