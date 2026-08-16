@@ -12,3 +12,9 @@ CampusPilotAgent.app.old-handbuilt/
 build/
 dist/
 logs/
+
+# Obsidian vault -- personal knowledge/notes, never belongs in version
+# control (this repo is public). The default project-relative location;
+# an externally-configured OBSIDIAN_VAULT_PATH lives outside the repo
+# entirely and is unaffected by this.
+/JarvisVault/

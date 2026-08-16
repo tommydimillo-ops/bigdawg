@@ -60,6 +60,11 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name}={raw!r} is not a valid float") from None
 
 
+def _env_optional_str(name: str) -> Optional[str]:
+    raw = os.getenv(name)
+    return raw if raw else None
+
+
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -124,6 +129,16 @@ class Settings:
     # memories injected into a given prompt, instead of dumping all of
     # them into every single request.
     context_memory_budget: int = 6
+
+    # --- Obsidian vault (optional human-readable knowledge layer) ---
+    # IS wired (agent/obsidian_vault.py). None means "not explicitly
+    # configured" -- that module still falls back to a project-relative
+    # ./JarvisVault convenience default before treating the integration
+    # as unavailable, so this deliberately isn't a hardcoded personal
+    # absolute path here. Distinct from agent/memory/ (Jarvis's own
+    # structured store, untouched by this) -- this is a separate,
+    # optional, human-readable layer the user can browse/edit directly.
+    obsidian_vault_path: Optional[str] = None
 
     # --- Execution history ---
     # IS wired (agent/execution_history.py): bounded retention -- oldest
@@ -237,6 +252,7 @@ class Settings:
             autonomy_level=_env_int("AUTONOMY_LEVEL", cls.autonomy_level),
             memory_enabled=_env_bool("MEMORY_ENABLED", cls.memory_enabled),
             context_memory_budget=_env_int("CONTEXT_MEMORY_BUDGET", cls.context_memory_budget),
+            obsidian_vault_path=_env_optional_str("OBSIDIAN_VAULT_PATH"),
             execution_history_limit=_env_int("EXECUTION_HISTORY_LIMIT", cls.execution_history_limit),
             voice_enabled=_env_bool("VOICE_ENABLED", cls.voice_enabled),
             wake_word=_env_str("WAKE_WORD", cls.wake_word),
