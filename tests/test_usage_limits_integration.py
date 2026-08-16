@@ -137,7 +137,7 @@ class TestResearchAgentStopsOnRequestLimit(unittest.TestCase):
         object.__setattr__(settings, "max_requests_per_execution", self._original_limit)
 
     @patch("agent.research_agent.get_current_request_id", return_value="req-research-limit")
-    @patch("agent.research_agent.client")
+    @patch("agent.research_agent.anthropic_client")
     def test_exceeding_max_requests_per_execution_stops_research_loop(self, mock_client, mock_request_id):
         tool_use_response = MagicMock(stop_reason="tool_use")
         tool_use_response.content = [_tool_use_block("tu", "open_browser", {"target": "test query"})]

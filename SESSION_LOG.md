@@ -5,6 +5,55 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-16 — Phase 9 Milestone 3: bounded parallel coworker delegation + verification
+
+- **Objective**: Give Jarvis bounded parallel coworker delegation
+  (decompose independent subtasks, run them concurrently, verify the
+  combined result, retry/repair only when justified) without weakening
+  `MAX_AGENT_DEPTH = 1`, subprocess isolation, or the timeout guarantee.
+- **Work completed**: Built `execute_agents_parallel()`
+  (`agent/agents/manager.py`) — bounded to `max_parallel_agents = 3`,
+  batches over that size rejected outright, every subtask still going
+  through the unmodified `execute_agent()`. New `delegate_parallel_tasks`
+  tool (not `parallel_safe`, by design). Required/optional subtask
+  semantics, bounded per-task retry, and `agent/verification.py`'s new
+  `verify_agent_result()` for evaluating coworker results objectively.
+  Then, in a dedicated review pass before calling the milestone done,
+  closed two real gaps found against the milestone's own goals: (1)
+  `agent/research_agent.py` was calling Anthropic directly, bypassing M2's
+  cost-aware routing entirely — rewired it through `classify_task()`/
+  `build_fallback_chain()`, with per-provider dispatch shapes (Anthropic
+  tool loop, OpenAI-compatible loop, single-shot Perplexity Agent API
+  call); (2) `execute_agent()`'s subprocess used `subprocess.run`, which
+  can't be interrupted mid-flight — rebuilt on `Popen` with a poll loop
+  supporting genuine SIGTERM-then-SIGKILL cancellation of an
+  already-running coworker subprocess, verified against a real, separate
+  OS process (not a mock). Also hardened `agent/audit.py`'s action log
+  with `fcntl.flock`, since parallel coworker subprocesses can now
+  genuinely write to it concurrently.
+- **Decisions**: Which subtasks are independent enough to batch stays the
+  model's judgment (constrained by the tool's own description); the
+  actual concurrency ceiling, depth guard, and budget pre-flight check
+  stay fully code-enforced. `_call_perplexity_agent`/`_client_for_provider`
+  were duplicated locally in `research_agent.py` rather than imported from
+  `agent/executor.py`, to avoid a real import cycle — documented as
+  intentional, not refactored during this pass.
+- **Problems encountered**: The initial M3 implementation, while
+  architecturally sound, didn't fully satisfy its own stated goal ("must
+  respect M2 cost-aware routing and budgets") — ResearchAgent's hardcoded
+  model call was a real gap caught only in review, not during initial
+  implementation. Cancellation was also initially cooperative-only
+  ("stop starting new work") rather than able to stop work already in
+  flight; investigated properly (per explicit instruction not to force an
+  unsafe fix) before confirming a narrowly-scoped `Popen`-based fix was
+  safe to build.
+- **Tests**: 96 new (1024 total, up from 928 before this milestone), full
+  suite passing, zero live/paid API calls. Mid-flight cancellation tested
+  against a real subprocess, not just a mock.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
 ### 2026-08-15 — Phase 9 Milestone 2: task-aware multi-provider routing
 
 - **Objective**: Implement task-aware, multi-provider model routing

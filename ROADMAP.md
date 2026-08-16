@@ -81,7 +81,8 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   risks" below — this was previously listed there as unfixed.
 - **Phase 9 — Task-Aware Routing & Verification Hardening** (milestones
   tracked individually below; the phase overall is still in progress —
-  Milestone 3 has not started):
+  Milestone 4 has not started; OpenClaw interoperability is planned to
+  land between Milestone 3 and Milestone 4, see "Next" below):
   - **Milestone 0 — GitHub Actions CI** (`d3481fc`) ✅: added
     `.github/workflows/tests.yml`, running the full suite
     (`python -m unittest discover -s tests -v`) on every push/PR against
@@ -111,6 +112,41 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     follow-up). This satisfies the "Task-based model routing" item
     previously listed under "Future" below — removed from there as
     superseded. See `CHANGELOG.md` for full detail.
+  - **Milestone 3 — QA / verification expansion + bounded parallel
+    coworker delegation** ✅: `agent/agents/manager.py`'s
+    `execute_agents_parallel()` runs 2+ genuinely independent coworker
+    subtasks concurrently, bounded to `settings.max_parallel_agents = 3`
+    — a batch larger than that is rejected outright (no subprocess
+    spawned), never silently truncated. Each subtask still goes through
+    the existing `execute_agent()` unchanged (same subprocess isolation,
+    same per-task depth/registered/enabled/cancellation checks — no
+    second dispatch path). `delegate_parallel_tasks` (new tool,
+    deliberately **not** `parallel_safe`) is the only entry point;
+    `consult_coworker_agent` (single-task) is untouched. Subtasks marked
+    `required=True` (the default) must succeed for the batch to count as
+    successful; a failed `required=False` subtask degrades the batch to
+    `PARTIAL` instead of `FAILED`. A failed subtask gets one bounded
+    retry (`settings.max_agent_batch_retries = 1`), never applied to an
+    already-cancelled task. `agent/verification.py`'s new
+    `verify_agent_result()` evaluates each coworker's actual result
+    (explicit failure, cancellation, or an agent-reported
+    `verification_status` of `"failed"` — e.g. QAAgent's own test-suite
+    check — all override a nominal `success=True`), plus a bounded,
+    objective source-evidence heuristic for ResearchAgent specifically.
+    `agent/agents/manager.py`'s `execute_agent()` gained genuine
+    mid-flight cancellation: a cancelled parent request now terminates
+    (`SIGTERM`, bounded grace period, `SIGKILL` fallback) an
+    already-running coworker subprocess instead of only refusing to
+    start new ones — verified against a real, separate OS process, not
+    just a mock. `agent/audit.py`'s action log gained an `fcntl.flock`
+    for cross-process write safety, since parallel coworker subprocesses
+    can now genuinely write to it at once. `agent/research_agent.py` —
+    the only coworker that directly makes an LLM call — now routes
+    through the same `classify_task()`/`build_fallback_chain()` M2
+    primitives the outer request uses, inheriting capability/health/
+    budget filtering, cost-aware tiering, and cross-provider fallback
+    instead of always calling Claude directly. See `CHANGELOG.md` for
+    full detail.
 
 ## In progress
 
@@ -130,14 +166,32 @@ discussed most recently:
   `agent/usage.py`'s *estimated* costs against actual billed amounts.
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
-- **Phase 9 Milestone 3 — QAAgent / verification expansion + bounded
-  parallel coworker delegation** — not started; the next Phase 9 item.
-  Builds on `agent/verification.py`'s existing narrow capability (see
-  "Future" below) and Phase 7's coworker-agent framework. "Bounded
-  parallel" means a capped number of concurrent coworker delegations for
-  independent subtasks — it does not touch `MAX_AGENT_DEPTH = 1` (an
-  agent still can never consult another agent; this is about breadth of
-  concurrent delegation from the main loop, not depth).
+- **OpenClaw interoperability / gateway bridge** — PLANNED, not started,
+  not implemented. Intentionally sequenced between Phase 9 Milestone 3
+  (complete) and Milestone 4 (FTS5 search, still below in "Future").
+  Non-negotiable architectural constraint carried in from the start:
+  **Jarvis remains the sole orchestrator** — OpenClaw is an optional
+  *subordinate* gateway/adapter, never a peer decision-maker. Initial
+  planned scope, in order:
+  - An architecture/research audit of OpenClaw itself before any code.
+  - OpenClaw runs as its own separate runtime/process, not embedded in
+    Jarvis's own process.
+  - Localhost-only connection initially — no remote/network exposure.
+  - An explicit allowlist of gateway/RPC capabilities OpenClaw may
+    expose, not open-ended access.
+  - Jarvis reaches OpenClaw only through permission-gated wrapper tools
+    (through `tools/registry.py`, the same as every other tool — no
+    parallel dispatch path, matching this project's standing "one
+    registry per registerable thing" rule).
+  - OpenClaw gets no model-routing authority of its own — it never
+    chooses a provider/model on Jarvis's behalf.
+  - No arbitrary OpenClaw-initiated Jarvis tool execution — OpenClaw
+    cannot call back into Jarvis's own tool registry unprompted.
+  - No shared secrets store and no shared memory authority between the
+    two systems.
+  - The first capabilities wired, once the above is in place, will be
+    deliberately low-risk (status/list-nodes) — messaging/device-action
+    capabilities come later, not in the initial cut.
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring
@@ -154,9 +208,11 @@ Larger, not-yet-started capabilities, matching the long-term architecture
 this project is meant to grow into:
 
 - **Phase 9 Milestone 4 — FTS5 conversation/history search** — later in
-  Phase 9, after Milestone 3. Not started, not designed in detail yet;
-  intended to give full-text search over conversation/execution history
-  (see `agent/conversation_store.py`/`agent/execution_history.py` for the
+  Phase 9, after Milestone 3 (complete) and after the OpenClaw
+  interoperability work now sequenced ahead of it (see "Next" above).
+  Not started, not designed in detail yet; intended to give full-text
+  search over conversation/execution history (see
+  `agent/conversation_store.py`/`agent/execution_history.py` for the
   current, non-searchable stores this would index) using SQLite's FTS5
   extension rather than a new external search dependency.
 - **Phase 10 — Real CodingAgent capability + checkpoint/rollback** —
@@ -170,11 +226,18 @@ this project is meant to grow into:
   to undo a CodingAgent's changes) is part of this same phase, not a
   separate later item — real code-editing capability without a way back
   out is not considered safe to ship on its own.
-- **QAAgent expansion** — today only runs this project's own test suite
-  read-only; broader verification capability (checking arbitrary tool
-  results, regression review) already has a narrow real capability via
-  `agent/verification.py` that a future QAAgent could build on. The near-
-  term slice of this is Phase 9 Milestone 3 above.
+- **QAAgent expansion beyond today's test-suite check and coworker-
+  result verification** — Milestone 3 (complete, see above) added
+  `agent/verification.py`'s `verify_agent_result()`, evaluating whether
+  a coworker's result actually holds up (explicit failure, cancellation,
+  agent-reported `verification_status`, plus a bounded source-evidence
+  heuristic for ResearchAgent). Deliberately NOT extended to FILES/
+  BROWSER-shaped checks (e.g. "does the expected file exist," "does the
+  resulting page show X") this milestone: no current coworker agent
+  produces that shape of result to check yet (CodingAgent still defers
+  entirely; QAAgent's non-test-suite path still defers too) — building
+  that verification now would be speculative, unused code. Revisit once
+  a coworker actually produces file/browser-state results to check.
 - **MCP integration** — remains future/deferred; no client/server exists
   yet. If built, tools reached through MCP should register through the
   existing `tools/registry.py`, not create a parallel dispatch path (same

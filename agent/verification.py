@@ -84,3 +84,69 @@ def verify(tool_name: str, tool_input: dict, result: str) -> VerificationResult:
         return verifier(tool_input, result)
 
     return _string_check(result, "no specific verification defined for this tool; checked its own result text for a failure marker")
+
+
+# --- Phase 9 Milestone 3: coworker-agent-result verification ------------
+#
+# A tool call succeeding is not the same claim as a coworker agent's work
+# actually being correct, either -- the same gap this module's docstring
+# already describes for individual tool calls, one level up. Bounded and
+# objective, matching this module's existing "cheap, meaningful check
+# only where one is actually possible" scope -- this deliberately does
+# NOT add a second model-based reasoning pass over an agent's result.
+
+# A cheap, deterministic heuristic for ResearchAgent specifically: a
+# synthesized answer that never names or links a source is a weaker
+# result than the SYSTEM_PROMPT it was built with actually asks for
+# ("mentions which sources/sites it came from" -- agent/research_agent.py).
+# Not proof the sources are real or the claim is correct (that would need
+# a second, expensive verification pass this milestone deliberately
+# avoids) -- only that the answer at least LOOKS sourced rather than
+# unsupported assertion, the same "objective evidence over trust" bar
+# the tool-level checks above apply.
+_SOURCE_EVIDENCE_PATTERN = re.compile(
+    r"https?://|according to|\bsource[sd]?\b|\bcites?\b|per \w+\.(com|org|net|gov|edu)",
+    re.IGNORECASE,
+)
+
+
+def _verify_research_result(result) -> VerificationResult:
+    if not _SOURCE_EVIDENCE_PATTERN.search(result.result or ""):
+        return VerificationResult(
+            ok=False,
+            note="research answer doesn't mention any source/link -- treat as unsupported until corroborated",
+        )
+    return VerificationResult(ok=True, note="research answer references at least one source")
+
+
+def verify_agent_result(result) -> VerificationResult:
+    """Checks whether a single coworker AgentResult (agent.agents.models.
+    AgentResult) represents trustworthy success -- reused by both a
+    single consult_coworker_agent call and Milestone 3's bounded-parallel
+    batches (agent.agents.manager.execute_agents_parallel), so "did this
+    agent's result actually hold up" is answered the same way regardless
+    of how many coworkers ran. Order matters: explicit failure signals
+    (success=False, a cancelled run, an explicit verification_status of
+    "failed" -- e.g. QAAgent's own test-suite check) are checked before
+    falling through to the generic failure-marker string check every
+    other tool result already gets, then any agent-specific check (today,
+    only ResearchAgent's source-evidence heuristic -- see module note on
+    why FILES/BROWSER-shaped checks aren't implemented yet: no current
+    agent in this phase produces that shape of result to check)."""
+    if result.cancelled:
+        return VerificationResult(ok=False, note="agent run was cancelled before completion")
+    if not result.success:
+        return VerificationResult(ok=False, note=result.error or "agent reported failure")
+    if result.verification_status == "failed":
+        return VerificationResult(ok=False, note="agent's own verification_status reported failure (e.g. a failing test suite)")
+    if result.metadata.get("deferred_to_executor"):
+        # Nothing to verify yet -- this agent didn't actually do the work
+        # itself (see agent/agents/coding.py, agent/agents/qa.py's
+        # deferred path); the ordinary executor's own tool-level
+        # verification (verify() above) covers whatever it does next.
+        return VerificationResult(ok=True, note="deferred to the ordinary executor; nothing agent-specific to verify yet")
+
+    if result.agent_name == "research":
+        return _verify_research_result(result)
+
+    return _string_check(result.result, "no agent-specific verification defined; checked its own result text for a failure marker")

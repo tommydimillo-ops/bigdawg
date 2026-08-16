@@ -10,7 +10,8 @@ import unittest
 
 import agent.scheduled_tasks as scheduled_tasks
 import database.memory as dbmem
-from agent.verification import verify
+from agent.agents.models import AgentResult
+from agent.verification import verify, verify_agent_result
 
 
 class TestGenericStringCheck(unittest.TestCase):
@@ -91,6 +92,76 @@ class TestScheduleTaskVerification(unittest.TestCase):
 
     def test_falls_back_to_string_check_if_no_id_in_result(self):
         result = verify("schedule_task", {}, "Could not schedule: bad time format")
+        self.assertFalse(result.ok)
+
+
+class TestVerifyAgentResult(unittest.TestCase):
+    """Phase 9 Milestone 3 -- verifying a coworker AgentResult, not just a
+    single tool call's result string."""
+
+    def _result(self, **overrides):
+        defaults = dict(
+            success=True, agent_name="memory", request_id="req-1", result="I'll remember that.",
+        )
+        defaults.update(overrides)
+        return AgentResult(**defaults)
+
+    def test_explicit_failure_is_not_ok(self):
+        result = verify_agent_result(self._result(success=False, error="RuntimeError: network down"))
+        self.assertFalse(result.ok)
+        self.assertIn("network down", result.note)
+
+    def test_cancelled_is_not_ok(self):
+        result = verify_agent_result(self._result(success=False, cancelled=True))
+        self.assertFalse(result.ok)
+        self.assertIn("cancelled", result.note)
+
+    def test_explicit_verification_status_failed_overrides_success_true(self):
+        result = verify_agent_result(self._result(
+            agent_name="qa", success=True, verification_status="failed", result="One or more tests failed.",
+        ))
+        self.assertFalse(result.ok)
+
+    def test_qa_passing_test_suite_is_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="qa", success=True, verification_status="passed", result="All tests passed.",
+        ))
+        self.assertTrue(result.ok)
+
+    def test_deferred_to_executor_is_ok_with_nothing_to_verify_yet(self):
+        result = verify_agent_result(self._result(
+            agent_name="coding", success=True, result="", metadata={"deferred_to_executor": True},
+        ))
+        self.assertTrue(result.ok)
+        self.assertIn("nothing agent-specific to verify", result.note)
+
+    def test_research_result_with_a_source_is_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="research", result="Prices range widely, according to reviews on cnet.com.",
+        ))
+        self.assertTrue(result.ok)
+
+    def test_research_result_with_a_url_is_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="research", result="See https://example.com/reviews for details.",
+        ))
+        self.assertTrue(result.ok)
+
+    def test_research_result_with_no_source_evidence_is_not_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="research", result="The best laptop is whatever one you like most.",
+        ))
+        self.assertFalse(result.ok)
+        self.assertIn("doesn't mention any source", result.note)
+
+    def test_memory_agent_generic_success_is_ok(self):
+        result = verify_agent_result(self._result(agent_name="memory", result="I'll remember that."))
+        self.assertTrue(result.ok)
+
+    def test_memory_agent_failure_marker_in_result_text_is_not_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="memory", result="Could not save that fact.",
+        ))
         self.assertFalse(result.ok)
 
 

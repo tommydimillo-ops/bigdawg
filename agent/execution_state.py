@@ -152,6 +152,24 @@ class ExecutionState:
     agent_task: Optional[str] = None
     agent_status: Optional[str] = None
     agents_used: List[str] = field(default_factory=list)
+    # Phase 9 Milestone 3: bounded-parallel delegation (agent.agents.
+    # manager.execute_agents_parallel) tracks MULTIPLE simultaneously
+    # active coworkers, which the singular active_agent/agent_task/
+    # agent_status fields above were never designed to represent.
+    # Deliberately additive, not a replacement: a batch leaves
+    # active_agent/agent_task/agent_status exactly as untouched as any
+    # ordinary (non-coworker) tool call already leaves them (None unless
+    # a single coworker is separately active via record_agent above), so
+    # code written against those fields before this milestone keeps
+    # seeing exactly what it always did. verification_status here is the
+    # BATCH's combined outcome (agent.verification.verify_agent_result
+    # applied across every subtask) -- distinct from AgentResult.
+    # verification_status, which is one subtask's own.
+    active_agents: List[str] = field(default_factory=list)
+    completed_agents: List[str] = field(default_factory=list)
+    failed_agents: List[str] = field(default_factory=list)
+    parallel_batch_size: Optional[int] = None
+    verification_status: Optional[str] = None
 
     def record_agent(self, agent_name: str, task_preview: str, status: str) -> None:
         self.active_agent = agent_name
@@ -164,6 +182,21 @@ class ExecutionState:
         self.active_agent = None
         self.agent_task = None
         self.agent_status = None
+
+    def record_agent_batch_started(self, agent_names: List[str]) -> None:
+        self.active_agents = list(agent_names)
+        self.parallel_batch_size = len(agent_names)
+
+    def record_agent_batch_finished(
+        self, completed: List[str], failed: List[str], verification_status: Optional[str] = None,
+    ) -> None:
+        self.completed_agents = list(completed)
+        self.failed_agents = list(failed)
+        self.verification_status = verification_status
+        self.active_agents = []
+        for name in completed + failed:
+            if name not in self.agents_used:
+                self.agents_used.append(name)
 
     def transition_to(self, new_status: ExecutionStatus) -> bool:
         """Returns True if the transition was applied. A rejected

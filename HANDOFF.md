@@ -6,367 +6,315 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-15, a session that implemented Phase 9 Milestone 2
-(task-aware, multi-provider model routing) end to end, then — at the
-user's explicit request, before allowing any commit — ran a narrow
-pre-commit currency/cost review of every provider default against
-current official documentation, and fixed what it found.
+Last updated: 2026-08-16, a session that continued directly from the
+previous session's Phase 9 Milestone 2 commit (`8d4da44` — complete,
+pushed, CI-verified) by implementing Phase 9 Milestone 3 (bounded
+parallel coworker delegation + verification) end to end. Before
+considering the milestone finished, a dedicated review pass checked the
+implementation against M3's own stated goals and found two real gaps —
+`ResearchAgent` bypassing Milestone 2's cost-aware routing entirely, and
+cancellation only able to stop *new* coworker work rather than a
+coworker subprocess already running — and closed both before this
+session's commit. This same commit also records `ROADMAP.md`'s next
+planned item (OpenClaw interoperability/gateway bridge) as **planned,
+not implemented** — nothing OpenClaw-related exists anywhere in this
+codebase; this session only documented the plan, per explicit
+instruction not to build it yet.
 
 ## Current project status
 
-**Phase 9 milestone structure**: Milestone 1 (cross-process Playwright
-browser-profile ownership locking) is **complete and committed** as
-`7b67bf0`. Milestone 2 (task-aware, multi-provider model routing) is
-implemented, currency-reviewed, and fully tested, but **uncommitted**.
-Milestone 3 has not been started.
+**Phase 9 milestone structure**: Milestone 0 (GitHub CI) and Milestone 1
+(browser-profile locking) complete and committed (`d3481fc`, `7b67bf0`).
+Milestone 2 (task-aware, multi-provider model routing) complete,
+committed, pushed, and CI-verified as `8d4da44`. **Milestone 3 (bounded
+parallel coworker delegation + verification) is complete and lands as
+this session's commit** — see "Files recently modified" below for the
+exact file list. Milestone 4 (FTS5 conversation/history search) has not
+started, and is now sequenced *after* the newly-planned OpenClaw
+interoperability work (see `ROADMAP.md`'s "Next" section) rather than
+immediately after Milestone 3.
 
-HEAD is at `7b67bf0` ("Harden Playwright browser profile ownership",
-Milestone 1). **The working tree is NOT clean**: `git status` shows 11
-modified files, 6 new untracked files, and this file (`HANDOFF.md`)
-itself modified — see "Files recently modified" below for the exact
-list. Nothing is staged. Nothing from Milestone 2 (or this file's own
-edits) has been committed or pushed. `ROADMAP.md`/`ARCHITECTURE.md`/
-`CHANGELOG.md`/`SESSION_LOG.md` still describe the pre-Phase-9 state;
-they were deliberately NOT updated this session because the user's
-instructions were explicit: implement, review, **do not commit, do not
-push, do not start Milestone 3**. Update those four docs as part of
-whatever commit eventually lands this work, not before.
+This session's commit is the direct child of `8d4da44` — check `git log
+--oneline -3` to confirm the exact SHA and that it matches
+`origin/main`, since this file can't self-reference its own commit hash
+at the time it was written. If `git status` shows anything uncommitted
+beyond this, trust the code over this paragraph (per this file's own
+opening instruction).
 
-The working tree contains a complete, tested, currency-reviewed Phase 9
-Milestone 2: deterministic task classification, capability/health/budget
-filtering, cost-aware provider ranking, a generalized N-provider fallback
-loop, and working (not just scaffolded) optional xAI and Perplexity
-providers. **928 tests pass, 0 failures** (re-confirmed this pass), no
-live/paid API calls made anywhere in the test suite (everything is
-mocked at the client/HTTP boundary).
+The working tree (as committed) contains: `execute_agents_parallel()`
+(bounded to `max_parallel_agents = 3`, batches over that size rejected
+outright), the new `delegate_parallel_tasks` tool (deliberately not
+`parallel_safe`), required/optional subtask semantics with bounded
+per-task retry, `verify_agent_result()` for evaluating coworker results
+objectively, genuine mid-flight coworker-subprocess cancellation
+(`Popen`-based, `SIGTERM` → bounded grace → `SIGKILL`, verified against
+a real OS process), cross-process-safe audit logging, and
+`ResearchAgent` routed through the same M2 `classify_task()`/
+`build_fallback_chain()` primitives the outer request uses. **1024 tests
+pass, 0 failures** (928 before this milestone + 96 new), no live/paid
+API calls anywhere in the suite.
 
 ## What we are currently building
 
-Nothing actively mid-task — Milestone 2 is feature-complete, reviewed,
-and tested. The only open item is the user's own commit decision (see
-"What still needs to be done").
+Nothing actively mid-task — Milestone 3 is feature-complete, reviewed,
+tested, and committed as of this session. The next planned work is
+OpenClaw interoperability (architecture/research audit first, per
+`ROADMAP.md`'s explicit initial-scope list) — **not started**, and
+should not be started without the user's explicit go-ahead, matching
+this project's standing commit/build convention.
 
 ## What was completed (this session, most recent first)
 
-1. **Pre-commit currency/cost review** (explicitly requested by the user
-   after approving M2's architecture "in principle" but before allowing
-   a commit) — re-checked every one of `agent/model_router.py`'s
-   task-aware-routing provider/model defaults (the fallback/economy/
-   quality tiers the router actually chooses between) against current
-   official documentation instead of trusting names chosen earlier in
-   the session, and found real, dated problems. `vision_model` sits
-   outside the router's candidate set — a separate, hardcoded per-call-
-   site OpenAI assignment (`tools/vision.py`), per `ARCHITECTURE.md`'s
-   description of vision/transcription/TTS/planning as hardcoded, non-
-   routed assignments — so it was out of scope for this router-focused
-   pass and was missed here; it was caught and fixed separately in a
-   second, narrowly-scoped cleanup pass (see the `vision_model` bullet
-   below). `transcription_model`/`tts_model` were not reviewed and
-   remain outside M2's scope entirely — no finding either way on those:
-   - **Perplexity**: Sonar Chat Completions (what M2 originally used) is
-     officially deprecated (2026-07), support ending **2026-09-27** —
-     about 6 weeks out. Rather than build new M2 infrastructure on an
-     API with a 6-week shelf life, migrated to the replacement **Agent
-     API** now. Its request/response shape genuinely differs from every
-     other provider here (`input`/`output`, not `messages`/`choices`),
-     so it could not share `agent/executor.py`'s existing
-     `_run_openai_compatible_loop` — added a narrow, dedicated,
-     single-shot call path instead (`_call_perplexity_agent`/
-     `_run_perplexity_agent_loop`, POSTs directly to
-     `https://api.perplexity.ai/v1/agent`). Deliberately **not** a
-     multi-step tool-calling loop: Perplexity is never handed Jarvis's
-     tool registry, so it can never become a second orchestrator — a
-     request routed to Perplexity gets one grounded research answer
-     back and can't also perform a Jarvis tool action in the same turn.
-     `config.settings.Settings.perplexity_model` now holds an Agent API
-     **preset** string (`"low"`, Perplexity's own documented sonar-pro
-     replacement), not a flat-rate model ID — this is the one settings
-     field that differs in kind from every sibling `*_model` field, and
-     is documented as such inline.
-   - **OpenAI**: `gpt-5` (the M2-era default) is stale — superseded by
-     the **GPT-5.6 family**. Added three tiers: `openai_economy_model`
-     (`gpt-5.6-luna`), `fallback_model` (`gpt-5.6-terra`, the "balanced"
-     default and unchanged legacy `fallback_choice()` return value),
-     `openai_quality_model` (`gpt-5.6-sol`). All confirmed still
-     callable via `chat.completions.create()` — no Responses API
-     migration was needed or done.
-   - **xAI**: `grok-4` (the M2-era default) isn't a real model ID.
-     Replaced with two real tiers: `xai_economy_model` (`grok-4.3`,
-     general-purpose and materially cheaper — the new default) and
-     `xai_quality_model` (`grok-4.6`, the flagship, only selected for
-     `quality_priority` tasks).
-   - **Anthropic**: `claude-sonnet-5`/`claude-haiku-4-5-20251001` were
-     confirmed still current — left unchanged, per the user's own
-     instruction to only change if the docs actually supported it.
-   - **`vision_model`** (not a router candidate — `tools/vision.py`'s
-     hardcoded OpenAI vision call): left on the stale `gpt-5` default
-     when the router tiers above were reviewed, then caught and fixed in
-     a second, narrowly-scoped follow-up pass — updated to
-     `gpt-5.6-terra`, confirmed image-input-capable via OpenAI's official
-     docs and already confirmed callable via `chat.completions.create()`
-     as `fallback_model` above (same GPT-5.6 family, same API shape).
-     `tools/vision.py`'s call path needed no changes — same Chat
-     Completions request with an `image_url` content block it already
-     used; only the settings default moved. No test pinned the old
-     `gpt-5` value, so none needed updating. `transcription_model`/
-     `tts_model` remain untouched and out of scope.
-   - **Pricing table** (`agent/usage.py`'s `_PRICING`): found and fixed
-     genuinely stale, billing-relevant entries — Sonnet 5 was priced at
-     Sonnet 4.6's old rate ($3/$15 vs. the real $2/$10) and Haiku 4.5 at
-     Haiku 3.5's rate ($0.80/$4 vs. the real $1/$5). Rebuilt the whole
-     table against each provider's official rate card, dated with a
-     "pricing last verified: 2026-08-15" header comment. Perplexity's
-     preset-based cost is deliberately left unpriced (a preset's
-     multi-step research cost isn't a flat per-token rate) so it falls
-     through to the existing conservative `_DEFAULT_TOKEN_PRICE`
-     safety net rather than guessing — never silently zero.
-   - Routing decision order, capability/health/budget filtering, cost
-     ranking, and the deterministic-classifier architecture were all
-     preserved exactly as approved — this pass changed model IDs,
-     pricing, and Perplexity's call mechanics only, never the
-     architecture.
-   - 13 new tests added (settings overrides, OpenAI/xAI tier-selection
-     in the router, and Perplexity Agent API request-shape/error/
-     cooldown/single-candidate-failure coverage), plus fixes to
-     existing tests whose hardcoded dollar-amount assertions depended
-     on the now-corrected pricing.
-   - Full suite re-run: **928 passed, 0 failed**. No paid API calls —
-     everything mocked at the client/`httpx.post` boundary, confirmed
-     both by code inspection and by the ~8-second total suite runtime.
-2. **Phase 9 Milestone 2 original implementation** (same session, before
-   the currency review above) — the task-aware routing architecture
-   itself:
-   - `agent/task_classifier.py` (new) — deterministic (no model call),
-     keyword/pattern-based `classify(text, source)` → `TaskRequirements`
-     (task type + vision/current-web/large-context/tool needs +
-     latency/quality/cost priority flags), matching this project's
-     standing "never let a model decide a routing outcome" rule.
-   - `agent/provider_budget.py` (new) — same-day per-provider and global
-     spend ceilings, reusing `agent/usage.py`'s existing
-     `cost_since()`/`cost_today()` aggregation rather than a new store.
-   - `agent/provider_health.py` (extended) — `xai_configured()`/
-     `perplexity_configured()`, plus an in-memory, per-provider
-     failure-cooldown tracker (`record_failure`/`clear_failure`/
-     `is_in_cooldown`) the router consults instead of a live
-     health-check ping before every request.
-   - `agent/model_router.py` (extended) — `build_fallback_chain()`: the
-     real task-aware entry point. Filter order is fixed and
-     load-bearing: capability → configured/healthy → budget, never
-     reordered, so routing can't discover mid-call that the cheapest
-     candidate simply can't do the task. Falls back to the original
-     static `[anthropic, openai]` chain if `task_aware_routing_enabled`
-     is off or every candidate gets filtered out — never an empty list.
-     `primary_choice()`/`fallback_choice()`/`select()` (the original
-     Phase 1 interface) are untouched.
-   - `agent/executor.py` (majorly extended) — generalized the old
-     hardcoded two-tier Claude-then-OpenAI cascade in
-     `execute_task_stream` into a real loop over however many
-     candidates the router returns, trying each in order and falling
-     through on failure (never calling multiple providers
-     simultaneously to compare answers). Verified via a real
-     (unmocked-router) end-to-end test that behavior with only
-     Anthropic/OpenAI configured is byte-for-byte unchanged from before.
-   - `agent/chat.py` (extended) — optional `xai_client`/
-     `perplexity_client`, constructed only when the matching API key is
-     present (`None`, never a raised exception, when absent).
-   - 83 new tests at this stage (before the currency review's further
-     13 on top).
+1. **Gap-closing review pass** (before considering M3 done) — found and
+   fixed two real gaps against M3's own stated goals:
+   - **`agent/research_agent.py` bypassed M2 routing entirely**: it
+     called `anthropic_client.messages.create(model=settings.default_model,
+     ...)` directly, hardcoded, no fallback, no capability/health/budget
+     filtering. Rewired `research()` to call `classify_task()` +
+     `build_fallback_chain()` (the same primitives `agent/executor.py`
+     uses) and dispatch through one of three provider-shaped loops
+     (Anthropic tool loop; a new OpenAI-compatible-shaped loop for
+     OpenAI/xAI; a single grounded Perplexity Agent API call, no tool
+     loop). Falls through to the next candidate only on a raised
+     exception — safe to restart from scratch because `ResearchAgent`'s
+     own tools (`open_browser`, `read_document`) are read-only. Each
+     call now records usage with `agent="research"`, real `task_type`,
+     and `fallback_position` attribution, and participates in
+     `agent/provider_health.py`'s cooldown tracking.
+     `_call_perplexity_agent`/`_client_for_provider` are small, local
+     re-implementations (not imports from `agent/executor.py`) —
+     importing from there would create a real import cycle
+     (`executor → agent.agents → agent.agents.research →
+     research_agent → executor`); documented inline as intentional, not
+     refactored further this pass. 15 new tests
+     (`tests/test_research_agent.py`), plus a one-line fix to
+     `tests/test_usage_limits_integration.py` (patched
+     `agent.research_agent.client`, which no longer exists, → 
+     `agent.research_agent.anthropic_client`).
+   - **Cancellation couldn't stop an already-running coworker
+     subprocess**: `execute_agent()` used `subprocess.run`, which blocks
+     synchronously and never exposes the child process handle, so there
+     was no way to signal it from another thread once launched.
+     Investigated whether this was safely fixable without a large
+     rewrite (it was — confined to one function) before building
+     `_run_agent_subprocess()`, a `Popen`-based poll loop using the
+     stdlib's documented-safe `communicate()`-retry pattern (avoids the
+     classic pipe-buffer deadlock risk of polling `wait()`/`poll()`
+     without draining output). On cancellation: `SIGTERM` first, a
+     bounded ~3s grace period, `SIGKILL` only if it doesn't exit; every
+     exit path (normal, timeout, cancelled, or an unexpected exception)
+     reaps the child, so no orphan/zombie can result. The existing
+     timeout guarantee is unchanged, not weakened. 8 new tests
+     (mocked-`Popen` mechanics plus one real, separate-OS-process test
+     confirming no orphan via `os.kill(pid, 0)` after cancellation).
+2. **Phase 9 Milestone 3 original implementation** (same session, before
+   the gap-closing review) — the bounded-parallel-delegation
+   architecture itself:
+   - `agent/agents/manager.py`'s `execute_agents_parallel()` — capability
+     unchanged per-subtask execution via the existing `execute_agent()`;
+     adds a batch-size ceiling (reject, never truncate), a cancellation
+     check, a global-budget pre-flight check, bounded per-task retry,
+     and `verify_agent_result()`-based `BatchStatus` computation
+     (`ALL_SUCCEEDED`/`PARTIAL`/`FAILED`).
+   - `tools/schemas/agents.py`'s new `delegate_parallel_tasks` tool —
+     deliberately not `parallel_safe` (would otherwise let the model
+     multiply concurrent subprocesses past the ceiling via
+     `_run_tool_batch`'s own, unrelated concurrency mechanism for
+     read-only tools). `consult_coworker_agent` (single-task) is
+     completely unmodified.
+   - `agent/agents/models.py` — new `AgentTaskRequest`, `AgentBatchItem`,
+     `AgentBatchResult`, `BatchStatus` dataclasses. `AgentResult` itself
+     was left untouched (avoided touching a widely-used, already-tested
+     dataclass).
+   - `agent/verification.py`'s new `verify_agent_result()` — cancellation
+     → explicit failure → agent-reported `verification_status` →
+     generic failure-marker check → (for `research` specifically) a
+     bounded source-evidence heuristic. Deliberately not extended to
+     FILES/BROWSER-shaped checks — no current coworker produces that
+     shape of result yet.
+   - `agent/execution_state.py` — new `active_agents`/`completed_agents`/
+     `failed_agents`/`parallel_batch_size`/`verification_status` fields,
+     additive alongside the pre-existing singular
+     `active_agent`/`agent_task`/`agent_status`/`agents_used` (a batch
+     leaves those untouched rather than overloading them).
+   - `agent/audit.py` — added `fcntl.flock` around `log_action`'s append
+     write, since parallel coworker subprocesses can now genuinely write
+     to the shared action log concurrently (previously only one coworker
+     subprocess ever ran at a time).
+   - `config/settings.py` — new `max_parallel_agents = 3`,
+     `max_agent_batch_retries = 1`.
+   - 73 new tests at this stage (before the gap-closing review's further
+     23 on top).
 
 ## What is partially completed
 
-Nothing mid-implementation. Milestone 2 (architecture + currency review)
-is complete and fully tested; the only thing not done is committing it,
-which was explicitly deferred to the user's decision.
+Nothing mid-implementation. Milestone 3 (architecture + gap-closing
+review) is complete, fully tested, and committed.
 
 ## Current bugs / known issues
 
-None currently open. The one previously-documented issue here —
-**Playwright profile contention** (Streamlit and menu-bar processes each
-opening their own browser context against the same on-disk Chrome
-profile with no cross-process coordination) — is **fixed**, not merely
-mitigated: Phase 9 Milestone 1 (`7b67bf0`) added `agent/browser_lock.py`,
-a non-blocking `fcntl.flock(LOCK_EX | LOCK_NB)` on a dedicated lock file,
-acquired by `tools/browser.py` before launching a persistent context and
-released on shutdown/dead-context discard (same primitive
-`agent/scheduler_lock.py` already used for the analogous scheduler race,
-adapted for a held-open-for-the-context's-lifetime duration instead of
-a per-tick one). A losing process gets a clean `BrowserBusyError` message
-("Another Jarvis process is already using the browser. Try again in a
-moment.") instead of racing Chrome's own profile lock. Verified this
-pass: 25/25 tests in `tests/test_browser_lock.py` +
-`tests/test_browser.py` pass, including a real cross-process contention
-test with a hard `SIGKILL` to prove kernel-managed release. This item
-should not reappear in this section unless a genuine regression is
-found — confirm against `agent/browser_lock.py` before re-adding it.
+None discovered this session. No regressions found in the full suite.
 
 ## Current blockers
 
-None technical. The only blocker is a decision, not a bug: whether/how
-the user wants this session's uncommitted work committed (see below).
+None. OpenClaw work should not start without the user's explicit
+go-ahead (matching this project's standing commit convention, and this
+session's explicit instruction not to begin it in the same pass as M3).
 
 ## Recent architectural decisions
 
-- **Perplexity stays a narrow research provider, never a second
-  orchestrator** — explicit user constraint, honored by giving it a
-  single-shot call path with no access to Jarvis's tool registry, rather
-  than trying to replicate the full tool-calling loop against the Agent
-  API's own (differently-shaped) tool mechanism. This is a deliberate,
-  documented scope limit, not an oversight: a request routed to
-  Perplexity can't also perform a Jarvis tool action in the same turn.
-- **Migrated off Sonar Chat Completions before it was strictly forced
-  to** — it remains functional until 2026-09-27, but the user was
-  explicit that a brand-new integration shouldn't knowingly be built on
-  an API already scheduled for retirement, so the migration happened
-  during this same pre-commit pass rather than being deferred.
-- **`perplexity_model` holds an Agent API preset, not a model ID** — the
-  one settings field that differs in kind from its siblings
-  (`openai_economy_model` etc. are all real model ID strings). Documented
-  inline in `config/settings.py` precisely because it's a surprising
-  exception to the pattern every other provider field follows.
-- **`agent/chat.py`'s `perplexity_client` (an OpenAI-SDK-shaped client
-  object) is intentionally kept despite the Agent API migration, not
-  leftover dead code** — inspected and confirmed this pass: the actual
-  live Agent API call (`agent/executor.py`'s `_call_perplexity_agent`)
-  correctly never touches it, using a raw `httpx.post` instead (the
-  Agent API's `input`/`output` shape isn't OpenAI-compatible). The
-  client's one real consumer is `agent/provider_health.py`'s
-  `check_providers()`, where it supplies the `initialized` field for
-  Perplexity's diagnostics entry, kept structurally uniform with
-  `xai_client`/`openai_client`/`anthropic_client`'s identical role there
-  — `tests/test_provider_health.py`'s
-  `test_optional_providers_degrade_gracefully_when_unconfigured` already
-  asserts `initialized == configured` for both `xai` and `perplexity`,
-  confirming this redundant-but-intentional symmetry is an existing,
-  tested pattern for optional providers generally, not a Perplexity-
-  specific oversight. Removing it would mean special-casing Perplexity
-  out of that otherwise-uniform 4-provider dict for no functional gain —
-  not done, since that would be changing working architecture for style,
-  which this project's conventions and the user's explicit instruction
-  both rule out.
-- **No live pricing lookups** — `agent/usage.py`'s `_PRICING` is a small,
-  centrally maintained, dated catalogue, deliberately not fetched from a
-  live pricing API before every request (would add a network dependency
-  to routing). Unknown/unpriced models fall through to a conservative
-  `_DEFAULT_TOKEN_PRICE`, never a silent zero.
-- **Routing decision order is fixed**: task → requirements → capability
-  filter → configured/healthy filter → budget filter → cost/quality
-  ranking → cheapest reliable sufficient model → call one provider →
-  success or fall through to the next candidate. Never call several
-  providers simultaneously to compare answers. This order was already
-  approved before the currency review and was not touched by it.
-- (Carried over, still true) Real coworker-agent execution goes through
-  `execute_agent()` (subprocess-isolated), not `route_and_execute()`
-  directly from a tool handler. `agent/quiet_mode.py` remains the one
-  shared suppression mechanism. Root `ARCHITECTURE.md` is authoritative
-  over `docs/ARCHITECTURE.md`.
+- **Model judgment decides *what* subtasks might be independent; code
+  decides *whether* it's safe to run them concurrently** — the same
+  separation this project already applies to permissions and routing
+  (skills matching, agent routing, task classification are all
+  keyword/deterministic; only the *content* of a plan/batch is ever
+  model-judged). `delegate_parallel_tasks`'s tool description constrains
+  the model to genuinely independent work; the concurrency ceiling,
+  depth guard, and budget gate are all code-enforced regardless of what
+  the model asks for.
+- **No second dispatch path** — `execute_agents_parallel()` is a bounded
+  *caller* of the existing `execute_agent()`, not a parallel/competing
+  execution mechanism. Every subtask, batched or not, still goes through
+  exactly one subprocess-launch function.
+- **Cost pre-flight, not a reservation engine** — `execute_agents_parallel()`
+  checks `agent/provider_budget.py`'s existing `global_budget_status()`
+  once before launching a batch; it does not reserve budget for calls
+  already in flight. Same documented limitation M2's own per-request
+  routing already has; building a full reservation engine was explicitly
+  out of scope for this milestone.
+- **`ResearchAgent` is the only coworker with a real LLM-routing
+  question** — `MemoryAgent` makes no model call at all (pure data
+  read/write); `CodingAgent` and `QAAgent`'s non-test-suite path both
+  fully defer to the ordinary executor (no model call of their own to
+  route). No speculative routing infrastructure was built for any of
+  the three.
+- **`_call_perplexity_agent`/`_client_for_provider` duplicated, not
+  shared** — `agent/research_agent.py` has its own small local copies
+  rather than importing `agent/executor.py`'s same-named functions,
+  specifically to avoid a real import cycle. A future cleanup could
+  extract a shared module; not done this pass (documented, not an
+  oversight).
+- **OpenClaw is planned, not implemented** — see `ROADMAP.md`'s "Next"
+  section for the full initial-scope list (architecture audit first,
+  separate runtime, localhost-only, allowlisted capabilities,
+  permission-gated wrapper tools, no model-routing authority, no
+  arbitrary callback into Jarvis's tool registry, no shared
+  secrets/memory). Jarvis remains the sole orchestrator; OpenClaw is
+  planned as a subordinate gateway, never a peer.
+- (Carried over, still true) `MAX_AGENT_DEPTH = 1`, real coworker-agent
+  execution goes through `execute_agent()` (subprocess-isolated), not
+  `route_and_execute()` directly from a tool handler.
+  `agent/quiet_mode.py` remains the one shared suppression mechanism.
+  Root `ARCHITECTURE.md` is authoritative over `docs/ARCHITECTURE.md`.
 
 ## Files recently modified
 
-**Uncommitted** (working tree, as of this writing — confirmed against a
-live `git status`; nothing staged, working tree is NOT clean):
+**This session's commit** (Phase 9 Milestone 3, landing as the direct
+child of `8d4da44` — confirm the exact SHA via `git log --oneline -3`):
 ```
-modified: HANDOFF.md
-modified: agent/chat.py
-modified: agent/executor.py
-modified: agent/model_router.py
-modified: agent/provider_health.py
-modified: agent/usage.py
+modified: agent/agents/manager.py
+modified: agent/agents/models.py
+modified: agent/audit.py
+modified: agent/execution_state.py
+modified: agent/research_agent.py
+modified: agent/verification.py
 modified: config/settings.py
-modified: tests/test_model_router.py
-modified: tests/test_phase6_security.py
-modified: tests/test_provider_health.py
-modified: tests/test_settings.py
-modified: tests/test_usage.py
-new:      agent/provider_budget.py
-new:      agent/task_classifier.py
-new:      tests/test_chat_providers.py
-new:      tests/test_executor_multi_provider_fallback.py
-new:      tests/test_provider_budget.py
-new:      tests/test_task_classifier.py
+modified: tools/schemas/agents.py
+modified: tests/test_agents_base_and_models.py
+modified: tests/test_agents_manager.py
+modified: tests/test_execution_state.py
+modified: tests/test_usage_limits_integration.py
+modified: tests/test_verification.py
+new:      tests/test_agents_batch.py
+new:      tests/test_agents_tool_batch.py
+new:      tests/test_audit.py
+new:      tests/test_research_agent.py
+modified: ROADMAP.md
+modified: ARCHITECTURE.md
+modified: CHANGELOG.md
+modified: SESSION_LOG.md
+modified: HANDOFF.md (this file)
 ```
-Everything except `HANDOFF.md` itself is the ENTIRETY of Phase 9
-Milestone 2 (original implementation + the currency review + the
-`vision_model` follow-up cleanup layered on top) — none of it has been
-committed. `HANDOFF.md`'s modifications are this session's documentation
-accuracy pass (see below) — also uncommitted. `ROADMAP.md`,
-`ARCHITECTURE.md`, `CHANGELOG.md`, and `SESSION_LOG.md` were deliberately
-left untouched this session (see "Current project status" above) and
-still describe the pre-Phase-9 state; update them as part of whatever
-commit eventually lands this work.
 
-**Committed**, most recent first: `7b67bf0` (**Phase 9 Milestone 1** —
-Playwright browser-profile ownership hardening, cross-process locking,
-complete), `d0f791c` (Obsidian vault integration), `d3481fc` (GitHub
-Actions CI), `3529737` (duplicate-scheduler fix), `96d20f5` (repository
-cleanup), `1a15ac0` (menu-bar cost readout). See `CHANGELOG.md` / `git
-log` for full history — note `CHANGELOG.md` itself stops before these
-most recent commits and well before this session's Phase 9 work; it
-needs a catch-up pass whenever this work is committed.
+**Committed**, most recent first: this session's Milestone 3 commit,
+`8d4da44` (Phase 9 Milestone 2 — task-aware multi-provider routing,
+currency-reviewed), `7b67bf0` (Phase 9 Milestone 1 — Playwright
+browser-profile ownership hardening), `d0f791c` (Obsidian vault
+integration), `d3481fc` (Phase 9 Milestone 0 — GitHub Actions CI),
+`3529737` (duplicate-scheduler fix), `96d20f5` (repository cleanup),
+`1a15ac0` (menu-bar cost readout). See `CHANGELOG.md` / `git log` for
+full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests` → **928 passed, 0 failed** (run
-at the end of this session, working tree as described above). No paid
-API calls: every provider call in every test is mocked at the client/
-`httpx.post` boundary; total suite runtime is ~8 seconds, consistent
-with zero live network calls. This number will be stale the moment new
-tests are added — re-run, don't trust it blindly.
+`python -m unittest discover -s tests` → **1024 passed, 0 failed** (run
+at the end of this session, immediately before commit). No paid API
+calls: every provider/subprocess call in every test is mocked at the
+client/`httpx.post`/`subprocess.Popen` boundary, except two deliberate
+real-boundary tests (a real cross-process audit-log write test, and a
+real separate-OS-process cancellation test) — neither makes a network
+call. This number will be stale the moment new tests are added —
+re-run, don't trust it blindly.
 
 ## What still needs to be done
 
-1. **Get the user's explicit go-ahead to commit** Phase 9 Milestone 2
-   (see "Files recently modified" above) — code- and test-complete,
-   928/928 passing, currency-reviewed, but per this project's commit
-   convention and the user's own explicit instruction this session
-   ("do NOT commit, do NOT push"), nothing should be committed without
-   asking first.
-2. **When committing**, also update `ROADMAP.md` (move Milestone 2 from
-   wherever it's tracked into "Completed"), `ARCHITECTURE.md` (§ on
-   model routing — the static Claude/OpenAI description is now stale),
-   `CHANGELOG.md` (a real entry — this is exactly the kind of
-   "meaningful change" that file's own convention calls for), and
-   `SESSION_LOG.md`, per `CLAUDE.md`'s SESSION END PROTOCOL. None of
-   these were touched this session because the user's instructions were
-   specifically to implement + review, not to finalize.
-3. **Do not start Milestone 3** until the user says so — explicit
-   instruction this session.
+1. **Push this session's commit** (`git push origin main`) if it hasn't
+   already happened by the time this file is read, and verify GitHub
+   Actions succeeds against the exact pushed SHA — see this session's
+   own final report (in the conversation that produced this commit) for
+   confirmation, or re-verify directly if picking this up fresh.
+2. **OpenClaw interoperability** — the next planned work, explicitly
+   **not started**. Begin with the architecture/research audit
+   `ROADMAP.md`'s "Next" section calls for, before any code — and only
+   with the user's explicit go-ahead, per this project's standing
+   commit/build convention.
+3. **Do not start Milestone 4** (FTS5 search) until OpenClaw work is
+   either complete or explicitly deprioritized by the user — the
+   sequencing (OpenClaw before M4) was an explicit instruction this
+   session, not an accident of ordering.
 4. Once xAI/Perplexity API keys are actually added by the user, the
-   user said they want **tiny, cheap live smoke tests** run separately
-   (not as part of this review) to confirm the real endpoints/model IDs
-   actually work — not yet done, intentionally deferred.
+   user previously said they want **tiny, cheap live smoke tests** run
+   separately (not as part of any implementation pass) to confirm the
+   real endpoints/model IDs actually work — still not done, still
+   intentionally deferred.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
-1. If the user confirms they want Phase 9 Milestone 2 committed, do a
-   normal `git add`/`git commit` for the files listed above (already
-   tested — nothing further needed first), then do the doc catch-up
-   pass described in "What still needs to be done" item 2.
-2. If the user has since added `XAI_API_KEY`/`PERPLEXITY_API_KEY`, offer
-   the small live smoke test described in item 4 above — cheapest real
-   path, not a broad live test, and only after explicit confirmation
-   given this project's standing real-API-cost sensitivity.
-3. Otherwise, treat this as an ordinary session start: re-verify this
-   file against actual git state (per `CLAUDE.md`'s NEW SESSION
-   PROTOCOL) before doing anything else, since a lot changed here.
+1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
+   NEW SESSION PROTOCOL) — confirm `git log --oneline -3` shows this
+   session's Milestone 3 commit at `HEAD`, matching `origin/main`, and
+   that `python -m unittest discover -s tests` still shows 1024 (or
+   more) passing.
+2. If the user wants to proceed with OpenClaw, start with the
+   architecture/research audit — do not write integration code before
+   that audit is done and reviewed, per `ROADMAP.md`'s explicit
+   initial-scope ordering.
+3. If the user has since added `XAI_API_KEY`/`PERPLEXITY_API_KEY`, offer
+   the small live smoke test described above — cheapest real path, not
+   a broad live test, and only after explicit confirmation given this
+   project's standing real-API-cost sensitivity.
 
 ## Important context that would otherwise be lost
 
-- **Real API cost is a standing user concern** — this whole currency
-  review happened specifically to avoid committing stale model
-  defaults, and the user was explicit that no real API credits should
-  be spent doing it ("mock all provider requests... we will perform
-  tiny live smoke tests separately"). Every research step in this
-  session used web search/fetch against public docs, never a live model
-  call to Anthropic/OpenAI/xAI/Perplexity.
-- **Today's date matters for two of this session's findings**: as of
-  2026-08-15, Perplexity's Sonar Chat Completions has about six weeks of
-  official support left (ends 2026-09-27) — if a future session finds
-  this file well after that date, re-verify the Agent API is still the
-  right integration and that `perplexity_model="low"` is still a valid
-  preset, since this area of the vendor's API was clearly still
-  evolving quickly at review time.
+- **Real API cost is a standing user concern** — this milestone's
+  ResearchAgent fix exists specifically because a coworker agent
+  quietly bypassing M2's cost-aware routing defeated the whole point of
+  building that routing in M2. Every cost-safety check added this
+  session (the batch-level budget pre-flight, ResearchAgent's routing)
+  was verified with mocked provider calls only — no live/paid API calls
+  anywhere in this session's work.
+- **Cancellation is now genuinely active for coworker subprocesses**,
+  not just "stop starting new work" — a real, previously-accepted
+  limitation from earlier in this same session's own work, investigated
+  properly (per explicit instruction not to force an unsafe fix if it
+  wasn't safely achievable) and confirmed safely fixable within one
+  function before being built.
+- **OpenClaw has zero implementation** — every mention of it anywhere in
+  this codebase as of this commit is planning documentation
+  (`ROADMAP.md`) or this file. Do not infer partial implementation from
+  its presence in these docs.
 - **The live app's actual running state is volatile and not tracked by
   git** — check `ps aux | grep CampusPilotAgent` / `grep streamlit`
   before assuming anything about what's currently running. Not

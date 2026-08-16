@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import threading
@@ -11,9 +12,9 @@ LOG_FILE = os.path.join(LOG_DIR, "audit.log")
 MAX_FIELD_LENGTH = 500
 
 # Read-only tools can now run concurrently within a single response (see
-# executor.py's PARALLEL_SAFE_TOOLS), so multiple threads can call
-# log_action at nearly the same instant — this keeps each append atomic
-# instead of risking interleaved/corrupted lines.
+# executor.py's PARALLEL_SAFE_TOOLS), so multiple threads in THIS process
+# can call log_action at nearly the same instant -- this keeps each
+# append atomic against those.
 _LOG_LOCK = threading.Lock()
 
 
@@ -33,9 +34,25 @@ def log_action(tool_name, tool_input, result):
         "result": _truncate(result),
     }
 
+    # Phase 9 Milestone 3: bounded-parallel coworker delegation means
+    # several genuinely separate OS processes (each execute_agent
+    # subprocess, itself possibly calling log_action -- see
+    # agent/research_agent.py's own log_action call) can now append here
+    # at nearly the same instant, not just several threads inside one
+    # process. _LOG_LOCK above only ever protected the latter. A single
+    # small write() to a file opened with O_APPEND is atomic on POSIX in
+    # practice, but this project's own stated convention for a file
+    # multiple PROCESSES touch is an explicit fcntl.flock (see
+    # agent/usage.py, agent/scheduler_lock.py, agent/browser_lock.py) --
+    # applying that same convention here rather than relying on an
+    # unstated OS guarantee.
     with _LOG_LOCK:
         with open(LOG_FILE, "a") as file:
-            file.write(json.dumps(entry) + "\n")
+            fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+            try:
+                file.write(json.dumps(entry) + "\n")
+            finally:
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
 def recent_actions(limit=20):

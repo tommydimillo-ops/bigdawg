@@ -269,6 +269,28 @@ class Settings:
     # own bounds via max_agent_steps), so this specifically covers the
     # two agents the manager calls directly.
     agent_timeout_seconds: float = 60.0
+    # Phase 9 Milestone 3: bounds concurrent coworker-agent subprocesses
+    # launched from ONE delegate_parallel_tasks batch (agent/agents/
+    # manager.py's execute_agents_parallel). Deliberately small and fixed
+    # rather than scaling with request size -- each unit is a real OS
+    # subprocess plus a real, potentially paid model call, so this is a
+    # cost/resource ceiling, not just a performance knob. Independent of
+    # tools.registry's parallel_safe mechanism (execution_control.py
+    # etc.), which bounds concurrent READ-ONLY tool calls within a single
+    # response and was never meant to gate paid, side-effecting work.
+    max_parallel_agents: int = 3
+    # How many times a single failed (non-cancelled) subtask within a
+    # batch is retried before being reported as a permanent failure --
+    # small and fixed, mirroring agent/retry_policy.py's MAX_RETRIES
+    # philosophy at the agent level instead of the tool-call level.
+    # Deliberately does not distinguish retryable/non-retryable failure
+    # types the way retry_policy.py does for tool errors -- an agent
+    # subprocess failure is coarser-grained (exit code, timeout, bad
+    # JSON) than a typed Python exception, so there's no equivalent
+    # signal to branch on yet; retrying once covers the common transient
+    # case (a flaky network call inside the subprocess) without risking a
+    # repair storm.
+    max_agent_batch_retries: int = 1
 
     # --- Usage tracking & limits (Phase 8) ---
     # IS wired (agent/usage.py): how many past API-call usage records to
@@ -352,6 +374,8 @@ class Settings:
             ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             agent_timeout_seconds=_env_float("AGENT_TIMEOUT_SECONDS", cls.agent_timeout_seconds),
+            max_parallel_agents=_env_int("MAX_PARALLEL_AGENTS", cls.max_parallel_agents),
+            max_agent_batch_retries=_env_int("MAX_AGENT_BATCH_RETRIES", cls.max_agent_batch_retries),
             usage_history_limit=_env_int("USAGE_HISTORY_LIMIT", cls.usage_history_limit),
             max_requests_per_execution=_env_int("MAX_REQUESTS_PER_EXECUTION", cls.max_requests_per_execution),
             max_agent_iterations=_env_int("MAX_AGENT_ITERATIONS", cls.max_agent_iterations),

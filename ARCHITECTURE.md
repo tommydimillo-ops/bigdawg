@@ -159,19 +159,30 @@ them:**
 
 | Agent | File | Real capability today |
 |---|---|---|
-| `research` | `agent/agents/research.py` | Wraps `agent/research_agent.py` — real multi-step web research (its own small Claude tool loop: `open_browser`, `read_document`), returns a synthesized answer |
-| `memory` | `agent/agents/memory.py` | Wraps `agent/memory_agent.py`'s `remember`/`recall` — real memory read/write |
-| `coding` | `agent/agents/coding.py` | **Stub.** Returns `metadata={"deferred_to_executor": True}` — no real execution yet |
-| `qa` | `agent/agents/qa.py` | Real, but narrow: runs this project's own test suite read-only (`python -m unittest discover`) when the task text matches test-running phrasing; everything else defers |
+| `research` | `agent/agents/research.py` | Wraps `agent/research_agent.py` — real multi-step web research (its own small tool loop: `open_browser`, `read_document`), returns a synthesized answer. The **only** coworker that directly makes an LLM call — see "ResearchAgent's M2 routing" below |
+| `memory` | `agent/agents/memory.py` | Wraps `agent/memory_agent.py`'s `remember`/`recall` — real memory read/write, no model call |
+| `coding` | `agent/agents/coding.py` | **Stub.** Returns `metadata={"deferred_to_executor": True}` — no real code-editing capability, no model call. Do not treat this as functional; see `ROADMAP.md`'s Phase 10 |
+| `qa` | `agent/agents/qa.py` | Real, but narrow: runs this project's own test suite read-only (`python -m unittest discover`) when the task text matches test-running phrasing, no model call; everything else defers |
 
-**Execution model (Phase 8 Part 4):** real execution goes through
-`agent/agents/manager.py`'s `execute_agent()`, which spawns
-`python -m agent.agents.worker` as a genuine OS subprocess and enforces
-`settings.agent_timeout_seconds` via `subprocess.run(timeout=...)` — a real
-`SIGKILL` on timeout, not a `ThreadPoolExecutor` that merely stops waiting
-while the underlying thread keeps running. Verified live: a subprocess
-mid-way through a real ~5-7s test-suite run was killed at 1.01s with the
-process confirmed gone, not orphaned.
+**Execution model (Phase 8 Part 4, hardened in Phase 9 Milestone 3):**
+real execution goes through `agent/agents/manager.py`'s `execute_agent()`,
+which spawns `python -m agent.agents.worker` as a genuine OS subprocess.
+Timeout enforcement (`settings.agent_timeout_seconds`) and cancellation
+now share one mechanism, `_run_agent_subprocess()` — a `Popen`-based
+poll loop (not `subprocess.run`) that wakes every 0.5s to check either
+condition:
+- **Timeout**: `SIGKILL` immediately — the same real, unweakened
+  guarantee as before (verified live: a subprocess mid-way through a
+  real ~5-7s test-suite run was killed at 1.01s with the process
+  confirmed gone, not orphaned).
+- **Cooperative cancellation** (the parent request was cancelled while
+  this subprocess was already running): `SIGTERM` first, a bounded
+  ~3s grace period to exit cleanly, `SIGKILL` only if it doesn't — this
+  project's general "graceful before forced" preference. Every exit path
+  (normal completion, timeout, cancellation, or an unexpected exception)
+  reaps the child via `communicate()`/`wait()` before returning, so no
+  orphan/zombie can result. Verified against a real, separate OS process
+  (not a mock) in `tests/test_agents_manager.py`.
 
 `agent/agents/manager.py` also has a second function, `route_and_execute()`
 — pure-routing-then-in-process-dispatch, used only by
@@ -182,7 +193,120 @@ calls `execute_agent()`, not `route_and_execute()`.**
 
 `MAX_AGENT_DEPTH = 1` — an agent's own `execute()` must never itself
 trigger another agent consultation; enforced structurally in
-`execute_agent()`, not by convention.
+`execute_agent()`, not by convention. Phase 9 Milestone 3's bounded
+parallel delegation (below) doesn't touch this guard at all: every
+subtask in a batch is still a direct, depth-unchanged call from Jarvis
+through `execute_agent()`, never an agent calling another agent.
+
+### Bounded parallel coworker delegation (Phase 9 Milestone 3)
+
+```
+Jarvis (model) judges 2+ subtasks genuinely independent
+        ↓
+delegate_parallel_tasks tool (new; permission_level=1, side_effect=True;
+                               deliberately NOT parallel_safe -- see below)
+        ↓
+execute_agents_parallel() -- agent/agents/manager.py
+  ├─ MAX_AGENT_DEPTH guard
+  ├─ batch-size guard: batch > settings.max_parallel_agents (3) is
+  │  REJECTED whole -- no subprocess spawned, never silently truncated
+  ├─ cooperative-cancellation check
+  ├─ global-budget pre-flight check (agent/provider_budget.py)
+  ↓
+bounded ThreadPoolExecutor(max_workers=len(tasks)) -- tasks<=3 by the
+  guard above, so this is never actually unbounded
+  ↓
+each subtask -> execute_agent() UNCHANGED -- same subprocess isolation,
+  same per-task depth/registered/enabled/cancellation checks; no second
+  dispatch path exists alongside this one
+  ↓
+failed (non-cancelled) subtasks get one bounded retry
+  (settings.max_agent_batch_retries = 1)
+  ↓
+agent.verification.verify_agent_result() per subtask
+  ↓
+BatchStatus: ALL_SUCCEEDED / PARTIAL (only optional subtasks failed
+  verification) / FAILED (a required subtask did)
+  ↓
+AgentBatchResult -> ExecutionState (active_agents/completed_agents/
+  failed_agents/verification_status, additive alongside the pre-existing
+  singular active_agent/agent_task/agent_status/agents_used fields) ->
+  formatted report back to Jarvis
+```
+
+`delegate_parallel_tasks` is deliberately **not** marked `parallel_safe`
+in `tools/registry.py`: that flag already exists for a different purpose
+(`agent/executor.py`'s `_run_tool_batch` running several *read-only*
+tool calls concurrently within one model turn — every existing
+`parallel_safe` tool is side-effect-free). If this tool were also
+`parallel_safe`, the model could call it more than once in one turn and
+`_run_tool_batch`'s own concurrency mechanism would multiply the real
+concurrent-subprocess count past the ceiling this milestone exists to
+enforce. The single-task `consult_coworker_agent` tool is completely
+unmodified by any of this — a caller wanting strictly sequential
+delegation simply keeps using it; dependent, order-sensitive subtasks
+were never routed through the parallel path in the first place (deciding
+*whether* subtasks are independent enough to batch is the model's
+judgment, constrained by `delegate_parallel_tasks`'s own tool
+description; deciding *how many* can actually run at once, and whether
+any of it is safe to start at all, is code-enforced, never model-decided
+— the same "model picks what, code decides whether it's allowed"
+separation this project already applies to permissions and routing).
+
+**Verification** (`agent/verification.py`'s new `verify_agent_result()`):
+evaluates a coworker's *actual* result rather than trusting
+`success=True` at face value — checked in order: cancellation, explicit
+`success=False`, an agent-reported `verification_status == "failed"`
+(e.g. QAAgent's own test-suite check reporting failing tests even though
+the QA *run itself* didn't crash), then the same generic failure-marker
+string check `agent/verification.py`'s tool-level `verify()` already
+uses, plus one agent-specific heuristic today: ResearchAgent's answer is
+flagged unverified if it contains no source/URL evidence at all (cheap
+regex, no extra model call — not proof the sources are real, only that
+the answer at least looks sourced). **Deliberately not extended to
+FILES/BROWSER-shaped checks** ("does the expected file exist," "does the
+resulting page show X") this milestone — no current coworker agent
+produces that shape of result to check yet (CodingAgent and QAAgent's
+non-test-suite path both still fully defer to the ordinary executor); see
+`ROADMAP.md`'s "QAAgent expansion" entry.
+
+**Cross-process audit-log safety**: `agent/audit.py`'s `log_action` — the
+security/action log every coworker subprocess also writes to (e.g.
+`agent/research_agent.py`'s `_run_tool` logs every page it visits) —
+gained an `fcntl.flock` around its append write. Before Milestone 3, only
+one coworker subprocess ever ran at a time in practice, so the
+pre-existing in-process `threading.Lock` was sufficient; bounded parallel
+dispatch makes genuinely concurrent OS-process writers to the same file a
+real scenario, so the same cross-process-lock convention already used
+elsewhere (`agent/usage.py`, `agent/scheduler_lock.py`,
+`agent/browser_lock.py`) was applied here too.
+
+**ResearchAgent's M2 routing**: `agent/research_agent.py` — the only
+coworker that directly calls a model — now calls
+`agent/task_classifier.py`'s `classify()` and
+`agent/model_router.py`'s `build_fallback_chain()` (the same primitives
+`agent/executor.py` uses for the outer request) instead of always calling
+Anthropic's default model directly. It therefore inherits capability/
+health/budget filtering, cost-aware tiering, and cross-provider fallback
+exactly like an ordinary request does. Dispatch is shaped per provider
+(Anthropic's own tool-calling loop; a new OpenAI-compatible-shaped loop
+for OpenAI/xAI; a single grounded Agent API call, no tool loop, for
+Perplexity) and falls through to the next candidate only on a raised
+exception — safe to restart from scratch specifically because
+ResearchAgent's own tools (`open_browser`, `read_document`) are
+read-only, unlike the main executor's `PartialToolExecution` caution
+around side-effecting tools. **Technical-debt note, intentional and
+documented, not scheduled for this pass**: `_call_perplexity_agent`/
+`_client_for_provider`/`_extract_agent_api_text` are small, local
+re-implementations inside `agent/research_agent.py`, not imports from
+`agent/executor.py`'s same-named functions — `agent/executor.py` already
+imports `agent.agents` (to populate the coworker registry), and
+`agent.agents.research` imports `agent.research_agent`, so importing
+`agent.executor` from `agent/research_agent.py` would create a real
+import cycle. Each duplicated function is a few lines with no shared
+mutable state; extracting a shared module is a legitimate future
+cleanup, not required for correctness, and was deliberately not done
+during this finalization pass.
 
 ## 5. Model router
 
@@ -514,15 +638,21 @@ wired; see `ROADMAP.md`.
 ## 15. Inter-agent communication
 
 The only inter-agent communication is main-loop → coworker-agent, one
-direction, via the `consult_coworker_agent` tool → `execute_agent()` →
-a subprocess running `agent/agents/worker.py`. Communication is JSON over
-stdin/stdout (task, request_id, agent_name in; an `AgentResult` out) —
-chosen specifically so free-text task descriptions never have to survive
-shell/argv quoting. `request_id` is propagated into the subprocess via
+direction, via `consult_coworker_agent` (single task) or
+`delegate_parallel_tasks` (2+ independent tasks, Phase 9 Milestone 3, §4)
+→ `execute_agent()` → a subprocess running `agent/agents/worker.py` (one
+subprocess per subtask even for a parallel batch — never a shared or
+pooled worker process). Communication is JSON over stdin/stdout (task,
+request_id, agent_name in; an `AgentResult` out) — chosen specifically so
+free-text task descriptions never have to survive shell/argv quoting.
+`request_id` is propagated into the subprocess via
 `agent/request_context.py`'s contextvar, so a coworker agent's own logs
-correlate back to the request that triggered it. There is no agent-to-
-agent communication (`MAX_AGENT_DEPTH = 1` structurally prevents an agent
-from consulting another agent).
+correlate back to the request that triggered it — including every
+subtask in a parallel batch, which all share the outer request's
+`request_id`. There is no agent-to-agent communication (`MAX_AGENT_DEPTH
+= 1` structurally prevents an agent from consulting another agent; a
+parallel batch is still Jarvis calling N coworkers directly, never a
+coworker calling another coworker).
 
 ## 16. Error handling
 

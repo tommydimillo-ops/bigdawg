@@ -7,7 +7,124 @@ needed.
 
 ---
 
-## 2026-08-15 (most recent) — Phase 9 Milestone 2: task-aware, multi-provider model routing
+## 2026-08-16 (most recent) — Phase 9 Milestone 3: bounded parallel coworker delegation + verification
+
+**What**: Added `agent/agents/manager.py`'s `execute_agents_parallel()` —
+Jarvis can now hand 2+ genuinely independent coworker subtasks to a
+bounded worker pool instead of only ever delegating one task at a time.
+Hard-capped at `settings.max_parallel_agents = 3`: a batch larger than
+that is rejected outright (zero subprocesses spawned), never silently
+truncated. Every subtask still runs through the existing, unmodified
+`execute_agent()` — same subprocess isolation, same per-task depth/
+registered/enabled/cancellation checks — so this adds no second dispatch
+path, only a bounded caller on top of the one that already existed. The
+only new entry point is a new tool, `delegate_parallel_tasks`
+(deliberately **not** `parallel_safe`, so the model can't multiply
+concurrent subprocesses past the ceiling by calling it twice in one
+turn); the existing single-task `consult_coworker_agent` tool is
+completely untouched. Subtasks default to `required=True`; a failed
+`required=False` subtask degrades the batch to `PARTIAL` instead of
+`FAILED`. A failed (non-cancelled) subtask gets one bounded retry
+(`settings.max_agent_batch_retries = 1`). Results come back as a
+structured `AgentBatchResult` (new dataclasses: `AgentTaskRequest`,
+`AgentBatchItem`, `BatchStatus`).
+
+`agent/verification.py` gained `verify_agent_result()` — evaluates
+whether a coworker's result actually holds up (cancellation, explicit
+failure, an agent-reported `verification_status` of `"failed"` — e.g.
+QAAgent's own test-suite check — all override a nominal `success=True`),
+plus a bounded, objective source-evidence heuristic for ResearchAgent
+specifically (does the answer mention a URL/source at all). Deliberately
+not extended to FILES/BROWSER-shaped checks — no current coworker
+produces that shape of result yet; documented as future work, not built
+speculatively.
+
+`execute_agent()`'s subprocess launch was rebuilt on `Popen` (a new
+`_run_agent_subprocess()` helper) instead of `subprocess.run`,
+specifically so a parent request cancelled mid-flight can terminate an
+already-running coworker subprocess, not just refuse to start a new one
+— graceful `SIGTERM` first, a bounded ~3s grace period, `SIGKILL` only
+if it doesn't exit, every exit path reaping the child so no orphan can
+result. The existing timeout guarantee (`SIGKILL` on
+`settings.agent_timeout_seconds`) is unchanged, not weakened.
+
+`agent/research_agent.py` — the only coworker that directly calls a
+model — now routes through `agent/task_classifier.py`'s `classify()` and
+`agent/model_router.py`'s `build_fallback_chain()`, the same M2
+primitives the outer request uses, instead of always calling Anthropic's
+default model directly. It inherits capability/health/budget filtering,
+cost-aware tiering, and cross-provider fallback; each call records usage
+with `agent="research"`, the real `task_type`, and `fallback_position`
+attribution, and participates in `agent/provider_health.py`'s failure-
+cooldown tracking like any other caller.
+
+`agent/audit.py`'s `log_action` gained an `fcntl.flock` around its
+append write — parallel coworker subprocesses can now genuinely write to
+the shared action log at the same instant, a scenario that didn't really
+exist before this milestone (only one coworker subprocess ever ran at a
+time previously).
+
+`agent/execution_state.py` gained `active_agents`/`completed_agents`/
+`failed_agents`/`parallel_batch_size`/`verification_status` (batch-level,
+additive) alongside the pre-existing singular `active_agent`/
+`agent_task`/`agent_status`/`agents_used` fields, which a batch leaves
+untouched rather than overloading with a synthetic value. New
+observability events: `agent_batch_started`, `agent_batch_completed`,
+`agent_batch_failed`, `agent_batch_rejected`, `agent_retry_started`.
+
+**Why**: `ROADMAP.md`'s "Next" item — the goal was making Jarvis better
+at decomposing genuinely-independent work, delegating it concurrently,
+verifying the combined result, and staying bounded in cost/concurrency/
+depth/retries throughout, without weakening any existing safety
+invariant (`MAX_AGENT_DEPTH = 1`, subprocess isolation, the timeout
+guarantee, tool-registry-gated permissions). A pre-commit review of the
+original implementation found two real gaps against that goal — coworker
+inference bypassing M2's cost-aware routing entirely, and cancellation
+only preventing new work rather than stopping work already in flight —
+and both were closed before this milestone was considered finished
+rather than shipped as known limitations.
+
+**Key decisions**: Deciding *which* subtasks are independent enough to
+batch stays the model's judgment (constrained by
+`delegate_parallel_tasks`'s own tool description) — same precedent
+`agent/planner.py`'s existing step decomposition already set. Deciding
+*whether* it's safe and *how many* can run — the concurrency ceiling,
+the depth guard, the budget pre-flight gate — stays fully code-enforced,
+never model-decided, the same separation this project already applies to
+permissions and routing. The cost pre-flight check
+(`agent/provider_budget.py`'s existing `global_budget_status()`) is a
+single check before launching a batch, not a spend-reservation engine —
+refuses to START a batch that would obviously worsen an already-over-
+budget day, but doesn't reserve budget for calls already in flight, the
+same limitation M2's own per-request routing already has.
+`_call_perplexity_agent`/`_client_for_provider` were duplicated locally
+inside `agent/research_agent.py` rather than imported from
+`agent/executor.py`, specifically to avoid a real import cycle
+(`executor → agent.agents → agent.agents.research → research_agent →
+executor`) — a documented, intentional technical-debt note, not an
+oversight.
+
+**Files affected**: `agent/agents/manager.py`, `agent/agents/models.py`,
+`agent/audit.py`, `agent/execution_state.py`, `agent/research_agent.py`,
+`agent/verification.py`, `config/settings.py`, `tools/schemas/agents.py`,
+plus new/updated tests across `tests/test_agents_batch.py` (new),
+`tests/test_agents_tool_batch.py` (new), `tests/test_audit.py` (new),
+`tests/test_research_agent.py` (new), `tests/test_agents_manager.py`,
+`tests/test_agents_base_and_models.py`, `tests/test_execution_state.py`,
+`tests/test_verification.py`, `tests/test_usage_limits_integration.py`.
+
+**Tests**: 96 new (1024 total, up from 928 before this milestone), full
+suite passing, zero live/paid API calls. Mid-flight subprocess
+cancellation is verified against a real, separate OS process (not a
+mocked `Popen`) confirming no orphan remains
+(`tests/test_agents_manager.py`'s `TestRunAgentSubprocessRealProcess`) —
+the same "at least one real-boundary test" rigor this project's other
+cross-process fixes already established (`tests/test_browser_lock.py`,
+`tests/test_audit.py`'s own cross-process write test).
+
+---
+
+## 2026-08-15 — Phase 9 Milestone 2: task-aware, multi-provider model routing
 
 **What**: Replaced the original static Claude-primary/OpenAI-fallback
 routing with task-aware, multi-provider routing. `agent/task_classifier.py`

@@ -295,5 +295,50 @@ class TestExecutionStatusTransitions(unittest.TestCase):
         self.assertEqual(state.status, ExecutionStatus.FAILED)
 
 
+class TestAgentBatchTracking(unittest.TestCase):
+    """Phase 9 Milestone 3 -- bounded-parallel delegation's plural batch
+    fields, additive alongside the pre-existing singular active_agent/
+    agent_task/agent_status/agents_used fields."""
+
+    def test_batch_started_sets_active_agents_and_size(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent_batch_started(["research", "memory"])
+        self.assertEqual(state.active_agents, ["research", "memory"])
+        self.assertEqual(state.parallel_batch_size, 2)
+
+    def test_batch_started_leaves_singular_fields_untouched(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent_batch_started(["research", "memory"])
+        self.assertIsNone(state.active_agent)
+        self.assertIsNone(state.agent_task)
+        self.assertIsNone(state.agent_status)
+
+    def test_batch_finished_records_completed_and_failed(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent_batch_started(["research", "memory"])
+        state.record_agent_batch_finished(completed=["research"], failed=["memory"], verification_status="partial")
+        self.assertEqual(state.completed_agents, ["research"])
+        self.assertEqual(state.failed_agents, ["memory"])
+        self.assertEqual(state.verification_status, "partial")
+
+    def test_batch_finished_clears_active_agents(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent_batch_started(["research", "memory"])
+        state.record_agent_batch_finished(completed=["research", "memory"], failed=[], verification_status="all_succeeded")
+        self.assertEqual(state.active_agents, [])
+
+    def test_batch_finished_appends_to_agents_used_without_duplicates(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent("research", "earlier single task", "routed")
+        state.record_agent_batch_started(["research", "memory"])
+        state.record_agent_batch_finished(completed=["research", "memory"], failed=[], verification_status="all_succeeded")
+        self.assertEqual(state.agents_used, ["research", "memory"])
+
+    def test_batch_finished_default_verification_status_is_none(self):
+        state = ExecutionState(max_iterations=8)
+        state.record_agent_batch_finished(completed=["research"], failed=[])
+        self.assertIsNone(state.verification_status)
+
+
 if __name__ == "__main__":
     unittest.main()

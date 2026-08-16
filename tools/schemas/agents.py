@@ -14,8 +14,11 @@ autonomy/confirmation gate every other tool call already does -- see
 Phase 7 section 13's explicit agent-must-go-through-the-tool-registry
 requirement.
 """
-from agent.agents.manager import execute_agent, get as get_agent
+from agent.agents.manager import execute_agent, execute_agents_parallel, get as get_agent
+from agent.agents.models import AgentTaskRequest
+from agent.execution_state import get_active
 from agent.request_context import RequestContext, get_current_request_id
+from config.settings import settings
 from tools.registry import ToolSpec, register
 
 _VALID_AGENTS = ("coding", "research", "qa", "memory")
@@ -87,4 +90,131 @@ register(ToolSpec(
     permission_level=1,
     side_effect=True,
     handler=_consult_coworker_agent,
+))
+
+
+def _format_batch_result(batch) -> str:
+    lines = [f"Batch result: {batch.status.value} -- {batch.note}"]
+    for item in batch.items:
+        if item.result.cancelled:
+            outcome = "CANCELLED"
+        elif item.result.success:
+            outcome = "OK"
+        else:
+            outcome = f"FAILED ({item.result.error or 'unknown error'})"
+        retried_note = " [retried]" if item.retried else ""
+        required_note = "" if item.required else " (optional)"
+        lines.append(f"- {item.agent_name}{required_note} -- {item.task_preview}: {outcome}{retried_note}")
+        if item.result.success and item.result.result:
+            lines.append(f"  -> {item.result.result}")
+    if batch.cost_usd is not None:
+        lines.append(f"(batch cost: ${batch.cost_usd:.4f})")
+    return "\n".join(lines)
+
+
+def _delegate_parallel_tasks(tool_input: dict) -> str:
+    raw_tasks = tool_input.get("tasks")
+    if not isinstance(raw_tasks, list) or len(raw_tasks) < 2:
+        return (
+            "At least two independent subtasks are required for a parallel batch "
+            "-- use consult_coworker_agent for a single task."
+        )
+    if len(raw_tasks) > settings.max_parallel_agents:
+        return (
+            f"Rejected: {len(raw_tasks)} subtasks requested, exceeds the "
+            f"configured limit of {settings.max_parallel_agents}. Split this "
+            "into smaller batches, or run the extra ones after this batch completes."
+        )
+
+    tasks = []
+    for raw in raw_tasks:
+        agent_name = (raw.get("agent_name") or "").strip().lower()
+        task = (raw.get("task") or "").strip()
+        if agent_name not in _VALID_AGENTS:
+            return f"Unknown agent '{agent_name}'. Valid agents: {', '.join(_VALID_AGENTS)}."
+        if not task:
+            return "Every subtask needs a task description."
+        tasks.append(AgentTaskRequest(agent_name=agent_name, task=task, required=bool(raw.get("required", True))))
+
+    context = RequestContext.create(
+        f"parallel batch of {len(tasks)} subtasks", source="agent_tool",
+        request_id=get_current_request_id(),
+    )
+
+    # Phase 9 Milestone 3: mirrors consult_coworker_agent's own contextvar-
+    # recovery pattern (get_current_request_id) to reach the live
+    # ExecutionState without widening this handler's Callable[[dict], str]
+    # signature -- see CLAUDE.md's note on this exact convention.
+    state = get_active(context.request_id) if context.request_id else None
+    if state is not None:
+        state.record_agent_batch_started([t.agent_name for t in tasks])
+
+    batch = execute_agents_parallel(tasks, context)
+
+    if state is not None:
+        completed = [item.agent_name for item in batch.items if item.result.success]
+        failed = [item.agent_name for item in batch.items if not item.result.success]
+        state.record_agent_batch_finished(completed, failed, batch.status.value)
+
+    return _format_batch_result(batch)
+
+
+register(ToolSpec(
+    name="delegate_parallel_tasks",
+    description=(
+        "Run 2 or more coworker-agent subtasks CONCURRENTLY, for genuinely "
+        "independent work only (e.g. researching two unrelated topics, or "
+        "research + a memory lookup) -- never for subtasks where one "
+        "depends on another's outcome (e.g. edit-then-test, or two agents "
+        "writing to the same thing), which must stay sequential "
+        f"consult_coworker_agent calls instead. Bounded to at most "
+        f"{settings.max_parallel_agents} subtasks per batch; each subtask "
+        "still runs in its own isolated process with its own timeout. "
+        "Returns one combined result showing which subtasks succeeded, "
+        "which failed, and the batch's overall status."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": settings.max_parallel_agents,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent_name": {
+                            "type": "string",
+                            "enum": list(_VALID_AGENTS),
+                            "description": "Which coworker agent should handle this subtask.",
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "The task description for this subtask.",
+                        },
+                        "required": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether the whole batch should be treated as failed if "
+                                "this specific subtask fails. Defaults to true."
+                            ),
+                        },
+                    },
+                    "required": ["agent_name", "task"],
+                },
+                "description": "The independent subtasks to run concurrently.",
+            },
+        },
+        "required": ["tasks"],
+    },
+    permission_level=1,
+    side_effect=True,
+    # Deliberately NOT parallel_safe: this tool already bounds its OWN
+    # internal concurrency to max_parallel_agents. Marking it parallel_safe
+    # at the registry level would let the model call it more than once in
+    # the same turn and have tools.registry's own concurrent-tool-call
+    # mechanism (agent/executor.py's _run_tool_batch) run several such
+    # batches at once -- multiplying the real concurrent-subprocess count
+    # past the configured ceiling this whole milestone exists to enforce.
+    handler=_delegate_parallel_tasks,
 ))
