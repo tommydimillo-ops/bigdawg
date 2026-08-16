@@ -29,26 +29,61 @@ real `auth.bootstrapToken` bug from the previous pass — the shared
 credential belongs under `auth.token`, a stored device credential under
 `auth.deviceToken`, confirmed directly against the Gateway SERVER's own
 connect-auth resolution logic; also fully CONFIRMED the previously-
-unverified device-ID derivation algorithm against the same real source).
-OpenClaw M1's implementation is complete and tested but **uncommitted**
-— awaiting the user's review, the same review-then-commit pattern
-Milestone 3 itself followed.
+unverified device-ID derivation algorithm against the same real source),
+and finally **M1 finalization** — committed as `d1eb813`, pushed to
+`origin/main`, CI-verified (GitHub Actions run `31963970515`,
+completed/success, unittest step completed/success).
+
+## OpenClaw M1 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE
+
+- **Commit**: `d1eb8130609d03e0f4f68a3f2cc46c4e3d66ade2`
+- **GitHub Actions**: run `31963970515`, completed/success
+- **Test baseline**: 1096 tests / OK
+- **Repository state**: M1 committed, M1 pushed, local `main` and
+  `origin/main` synchronized at the SHA above, working tree clean.
+
+**Current OpenClaw capabilities**: an optional, disabled-by-default,
+read-only Gateway bridge — authenticated loopback WebSocket, stable
+compatibility target `openclaw@2026.7.1-2`, protocol version 4, a
+persistent Jarvis Ed25519 device identity, a human-only pairing flow,
+`operator.read`-only scope, a fixed RPC allowlist (`health`/`status`/
+`node.list`), and two Jarvis tools (`openclaw_status`/
+`openclaw_list_nodes`).
+
+**Security boundaries**: Jarvis remains the sole orchestrator; no raw
+RPC; no `node.invoke`; no `operator.write`/admin/pairing scope; no
+automatic pairing approval; no third-party OpenClaw plugins; no OpenClaw
+model-routing authority; no OpenClaw memory authority; no shared secrets
+store.
+
+**Automated vs. real-world testing — an important distinction**: M1 has
+extensive mocked and local-fake-Gateway protocol tests (real Ed25519
+signature verification against a genuine local WebSocket server, never
+a stub), but a REAL OpenClaw Gateway has **not yet been installed,
+configured, or smoke-tested** on this machine. The next planned step
+(not yet started) is a narrow real loopback install + read-only smoke
+test. OpenClaw M2 (messaging) is **not implemented**. Device capabilities
+are **not implemented**. Phase 9 Milestone 4 (FTS5) remains deferred
+until after the OpenClaw work currently planned.
 
 ## Current project status
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed — HEAD `4265f55`
-on `origin/main`, CI-verified (GitHub Actions run `31950985587`,
-`success`). Milestone 4 (FTS5) not started, sequenced after OpenClaw.
+on `origin/main` at the time, CI-verified (GitHub Actions run
+`31950985587`, `success`). Milestone 4 (FTS5) not started, sequenced
+after OpenClaw.
 
 **OpenClaw** (a separate, real, independently-developed open-source
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
 subsystem): **M0** complete, approved, no code. **M1** (read-only
 Gateway bridge with real Ed25519 device-identity authentication) is
-implemented, tested, and **awaiting the user's review before commit**.
+**complete, committed (`d1eb813`), pushed, and CI-verified** — see the
+section above for the full detail.
 
-**Working tree is NOT clean.** Confirm the exact current file list with
-a live `git status` rather than trusting this file. **1096 tests pass,
-0 failures** (1093 before this stable-compatibility pass + 3 new; 1090
+**Working tree is clean; local `main` and `origin/main` are both at
+`d1eb813`.** Confirm with a live `git status`/`git log` rather than
+trusting this file. **1096 tests pass,
+0 failures** (1093 before the stable-compatibility pass + 3 new; 1090
 before the beta re-verification pass; 1075 before the device-auth
 correction pass; 1024 before OpenClaw M1 first landed), no live/paid API
 calls, no real OpenClaw installation used (confirmed not installed on
@@ -56,10 +91,11 @@ this machine).
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M1, now with a real, verified
-device-identity auth flow instead of the earlier unverified shared-token
-assumption, is feature-complete and tested. The only open item is the
-user's review/commit decision.
+Nothing actively mid-task — OpenClaw M1 is complete, tested, committed,
+pushed, and CI-verified. The user has not yet said whether to start
+OpenClaw M2 (messaging) or Phase 9 Milestone 4 (FTS5) next; both are
+explicitly deferred until asked for. A real-Gateway smoke test has also
+not been started.
 
 ## What was completed (this session, most recent first)
 
@@ -219,8 +255,8 @@ None remaining. The one design assumption flagged earlier this session
 
 ## Current blockers
 
-None technical. The only blocker is a decision: whether the user wants
-OpenClaw M1 (corrected) committed as-is after review.
+None. OpenClaw M1 is committed, pushed, and CI-verified. Nothing is
+waiting on a decision.
 
 ## Recent architectural decisions
 
@@ -311,8 +347,8 @@ OpenClaw M1 (corrected) committed as-is after review.
 
 ## Files recently modified
 
-**Uncommitted** (OpenClaw M1, corrected — confirm the exact current list
-with a live `git status`):
+**Committed** as `d1eb813` ("Add read-only OpenClaw gateway bridge"),
+pushed to `origin/main`, CI-verified:
 ```
 new:      agent/openclaw_gateway.py
 new:      tools/schemas/openclaw.py
@@ -328,10 +364,11 @@ modified: SESSION_LOG.md
 modified: HANDOFF.md (this file)
 ```
 
-**Committed**, most recent first: `4265f55` (Phase 9 Milestone 3),
-`8d4da44` (Phase 9 Milestone 2), `7b67bf0` (Phase 9 Milestone 1),
-`d0f791c` (Obsidian vault integration), `d3481fc` (Phase 9 Milestone 0 —
-GitHub Actions CI). See `CHANGELOG.md` / `git log` for full history.
+**Committed history**, most recent first: `d1eb813` (OpenClaw M1),
+`4265f55` (Phase 9 Milestone 3), `8d4da44` (Phase 9 Milestone 2),
+`7b67bf0` (Phase 9 Milestone 1), `d0f791c` (Obsidian vault integration),
+`d3481fc` (Phase 9 Milestone 0 — GitHub Actions CI). See
+`CHANGELOG.md` / `git log` for full history.
 
 ## Tests recently run and their results
 
@@ -345,39 +382,34 @@ the moment new tests are added — re-run, don't trust it blindly.
 
 ## What still needs to be done
 
-1. **Get the user's explicit go-ahead to commit** OpenClaw M1 (the
-   stable-compatibility-corrected, device-identity-authenticated
-   version) — code- and test-complete, 1096/1096 passing, but per this
-   project's commit convention nothing should be committed without
-   asking first.
-2. **When committing**, follow Milestone 3's own commit→push→CI-verify
-   sequence (exact SHA verification, GitHub Actions run/conclusion,
-   the unittest step specifically, final `git fetch`/sync check).
-3. **Do not start OpenClaw M2** (messaging, `operator.write`) until the
+1. **Nothing outstanding for OpenClaw M1 itself** — committed (`d1eb813`),
+   pushed to `origin/main`, CI-verified (GitHub Actions run
+   `31963970515`, event=push, conclusion=success; unittest step:
+   completed/success).
+2. **Do not start OpenClaw M2** (messaging, `operator.write`) until the
    user says so.
-4. **Do not start Phase 9 Milestone 4** (FTS5) until OpenClaw work is
+3. **Do not start Phase 9 Milestone 4** (FTS5) until OpenClaw work is
    complete or explicitly deprioritized.
-5. If a real OpenClaw Gateway is ever installed and running, a cheap
+4. If a real OpenClaw Gateway is ever installed and running, a cheap
    smoke test against it would still be valuable to confirm the overall
    handshake works end-to-end in practice — not because the device-ID
    algorithm is still in doubt (it's now confirmed against real primary
    source, both client and server), but because this bridge has still
    only ever been exercised against a local fake server, never a real
-   Gateway process.
+   Gateway process. Not yet started.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm whether OpenClaw M1 was committed
-   since this was written, and that the test suite still passes.
-2. If the user confirms they want OpenClaw M1 committed, follow
-   Milestone 3's own commit→push→CI-verify sequence exactly.
-3. If the user wants to proceed with OpenClaw M2 (messaging), that is a
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status` still show
+   `d1eb813` as HEAD, in sync with `origin/main`, and that the test
+   suite still passes.
+2. If the user wants to proceed with OpenClaw M2 (messaging), that is a
    real scope increase (`operator.write`) and should get the same
    explicit-approval treatment M1 itself did.
-4. If a real OpenClaw Gateway becomes available, a tiny, cheap smoke
+3. If a real OpenClaw Gateway becomes available, a tiny, cheap smoke
    test against it (confirming the whole handshake actually works
    end-to-end against the real thing, not just a local fake server)
    would be a nice final confirmation — offer this only with explicit
