@@ -5,7 +5,57 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-16 (latest) — OpenClaw M1 stable-compatibility pass: auth-field bug fixed for real, device-ID confirmed
+### 2026-08-17 (latest) — OpenClaw M1.5: real loopback Gateway smoke test, two real bugs found and fixed
+
+- **Objective**: Validate the already-committed OpenClaw M1 bridge
+  against an actual running OpenClaw Gateway (`openclaw@2026.7.1-2`,
+  the exact stated compatibility target) — not more source-reading,
+  the real thing.
+- **Work completed**: Installed the exact version into an isolated
+  npm prefix under `/tmp`, generated a test token stored via
+  `agent/secrets.py` into the real Keychain. First attempt (using
+  `--dev`) exposed a real isolation gap: the dev workspace escaped
+  `OPENCLAW_STATE_DIR` and wrote under the real `~/.openclaw`, and the
+  auto-loaded plugin set included `bonjour`, which broadcast the
+  Gateway on the LAN — caught and killed within ~8 seconds, before any
+  Jarvis call; the accidental files were removed with explicit user
+  approval. Corrected approach (no `--dev`, explicit workspace patch,
+  `plugins.enabled = false`) produced a properly isolated Gateway with
+  0 plugins and no further `~/.openclaw` writes. The real, load-
+  bearing test — Jarvis's actual `openclaw_status`/`openclaw_list_nodes`
+  tools, invoked through the real `tools.registry.dispatch()` path —
+  then found two real bugs: `client.platform` was required by the real
+  protocol schema but never sent; `client.deviceFamily` was signed into
+  the V3 payload but never actually included on the wire, so real
+  signature verification failed. Both fixed. Retried: full success —
+  `openclaw_status`/`openclaw_list_nodes` both succeeded against the
+  live Gateway, protocol 4, `operator.read` only (independently
+  confirmed via the OpenClaw CLI's own `devices list`).
+- **Decisions**: Cleaned up thoroughly afterward — killed the Gateway
+  process, freed the port, removed the ~363MB temporary `/tmp`
+  installation, and deleted the two smoke-test-only Keychain secrets
+  (`OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_DEVICE_TOKEN` — tied to the now-
+  deleted temporary Gateway's state) while preserving
+  `OPENCLAW_DEVICE_PRIVATE_KEY` (Jarvis's persistent device identity).
+  Corrected the fake test server's signature verification to
+  reconstruct from actual captured wire values instead of duplicate
+  constants, so this exact class of bug is now caught locally without
+  needing a real Gateway.
+- **Problems encountered**: The `--dev`-flag isolation gap (see above)
+  — a real OpenClaw test-environment configuration issue, not a Jarvis
+  security problem (Jarvis's own loopback-only WebSocket bind was never
+  violated). The real Gateway also auto-approved device pairing itself
+  in this dev/loopback configuration, so the `PAIRING_REQUIRED`/human-
+  approval code path wasn't exercised this time.
+- **Tests**: 2 new (1098 total, up from 1096), full suite passing. Real
+  (not mocked, not faked) OpenClaw process and WebSocket connection used
+  for the load-bearing verification; no model/provider API calls of any
+  kind occurred.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-16 — OpenClaw M1 stable-compatibility pass: auth-field bug fixed for real, device-ID confirmed
 
 - **Objective**: Re-check the previous pass's own auth-field fix (which
   sent Jarvis's shared token under `auth.bootstrapToken`, based on a

@@ -145,6 +145,47 @@ Findings, compared against the beta packages:
     this same stable bundle's `deriveDeviceIdFromPublicKey` and its use
     in the server's own independent re-derive-and-compare check.
 
+REAL GATEWAY SMOKE TEST (2026-08-17): every finding above came from
+reading source, never from running an actual OpenClaw Gateway. Running
+one for the first time (an isolated, loopback-only, plugin-disabled
+`openclaw@2026.7.1-2` process under a temp state dir, per this project's
+standing "verify against primary source" discipline extended one level
+further) immediately surfaced a real bug none of that source-reading
+had caught: the real Gateway rejected `connect` with `INVALID_REQUEST`
+("at /client: must have required property 'platform'"). The real
+`ConnectParams.client` schema does mark `platform` required
+(`protocol.schema.json`), and the real client always sends
+`this.opts.platform ?? process.platform` -- this had simply never been
+checked against directly, since the fake local test server's own
+signature/field checks never validated the full schema, only the
+specific fields this bridge's tests were written to check. Fixed:
+`client.platform` (and the signed V3 payload's `platform` component,
+which must match) now carries `sys.platform` (`_CLIENT_PLATFORM`),
+matching Node's `process.platform` string values byte-for-byte on every
+platform Jarvis runs on.
+
+Fixing that surfaced a second, related bug immediately: the real
+Gateway then rejected connect with "device signature invalid". The real
+server reconstructs the signed payload's `deviceFamily` component from
+`connectParams.client.deviceFamily`
+(`resolveDeviceSignaturePayloadVersion`, real compiled server source) --
+this module signed `deviceFamily="jarvis"` but never actually included
+`client.deviceFamily` in the wire `connect` params at all, so the
+server's independent reconstruction used an empty string and the
+signature no longer matched what was actually sent. Fixed: `client`
+now also carries `deviceFamily` (`_CLIENT_DEVICE_FAMILY`), matching what
+was already being signed. Both bugs are the same class of mistake --
+signing a field that isn't also present on the wire -- and neither was
+caught by extensive source-reading or by the local fake test server,
+whose own signature verification reconstructed payloads from expected
+constants rather than from the actual captured wire values; the fake
+server was corrected to do the latter (read `client.platform`/
+`client.deviceFamily` from what was actually sent, not from a constant)
+so a future version of this same mistake would be caught locally next
+time. A concrete reminder that source-reading and a local fake server,
+however careful, are not a substitute for testing against the real
+thing at least once.
+
 Connection model: one-shot (websockets.sync.client, not async -- fits
 Jarvis's synchronous tool architecture with no event-loop adapter
 needed). Never requests scopes beyond ["operator.read"] -- the minimal
@@ -158,6 +199,7 @@ same compiled `index.mjs`) -- never more than that.
 import base64
 import hashlib
 import json
+import sys
 import time
 import uuid
 from typing import Optional
@@ -195,6 +237,15 @@ _PROTOCOL_VERSION = 4
 _CLIENT_ID = "cli"
 _CLIENT_MODE = "cli"
 _CLIENT_DEVICE_FAMILY = "jarvis"
+# Real ConnectParams.client schema (protocol.schema.json) marks `platform`
+# required (`"required": ["id", "version", "platform", "mode"]`) -- caught
+# 2026-08-17 by a real Gateway process rejecting connect with
+# INVALID_REQUEST ("at /client: must have required property 'platform'"),
+# not by any prior source inspection. sys.platform matches Node's
+# process.platform byte-for-byte on every platform Jarvis runs on
+# ("darwin"/"linux"/"win32"), which the real client itself uses as its
+# default (`this.opts.platform ?? process.platform`).
+_CLIENT_PLATFORM = sys.platform
 _ROLE = "operator"
 _SCOPES = ["operator.read"]
 
@@ -473,7 +524,8 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
         payload = _build_device_auth_payload_v3(
             device_id=device_id, client_id=_CLIENT_ID, client_mode=_CLIENT_MODE,
             role=_ROLE, scopes=_SCOPES, signed_at_ms=signed_at_ms,
-            token=auth_token, nonce=nonce, device_family=_CLIENT_DEVICE_FAMILY,
+            token=auth_token, nonce=nonce, platform=_CLIENT_PLATFORM,
+            device_family=_CLIENT_DEVICE_FAMILY,
         )
         signature = _sign_payload(private_key, payload)
 
@@ -484,7 +536,10 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
             "params": {
                 "minProtocol": _PROTOCOL_VERSION,
                 "maxProtocol": _PROTOCOL_VERSION,
-                "client": {"id": _CLIENT_ID, "mode": _CLIENT_MODE, "version": "1"},
+                "client": {
+                    "id": _CLIENT_ID, "mode": _CLIENT_MODE, "version": "1",
+                    "platform": _CLIENT_PLATFORM, "deviceFamily": _CLIENT_DEVICE_FAMILY,
+                },
                 "role": _ROLE,
                 "scopes": list(_SCOPES),
                 "auth": {auth_field: auth_token},

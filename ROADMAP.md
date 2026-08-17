@@ -210,10 +210,20 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     field existence) and fully CONFIRMED the device-ID derivation
     algorithm (previously a documented low-risk assumption) against a
     literal server-side function doing the exact same computation. All
-    of this is protocol-verified against a local fake Gateway server
-    (real Ed25519 signature verification, not a stub) — M1 has not yet
-    been exercised against a real, installed OpenClaw Gateway process.
-    See `CHANGELOG.md` for full detail.
+    of this was protocol-verified against a local fake Gateway server
+    (real Ed25519 signature verification, not a stub).
+  - **OpenClaw M1.5 — real loopback Gateway smoke test** ✅: validated
+    the above against an actual, isolated, temporary
+    `openclaw@2026.7.1-2` process — real `openclaw_status`/
+    `openclaw_list_nodes` succeeded through Jarvis's own tool-registry
+    path (protocol 4, `operator.read` only). Found and fixed two real
+    bugs the fake-server/source-reading approach had missed
+    (`client.platform` and `client.deviceFamily` both required on the
+    wire, not just in the signed payload); corrected the fake test
+    server's signature verification to reconstruct from actual captured
+    wire values so this class of bug is now caught locally. No daemon or
+    permanent OpenClaw installation exists on this machine. See
+    `CHANGELOG.md` for full detail.
 
 ## In progress
 

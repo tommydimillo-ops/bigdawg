@@ -20,6 +20,7 @@ Run with: python -m unittest tests.test_openclaw_gateway -v
 """
 import base64
 import json
+import sys
 import threading
 import time
 import unittest
@@ -160,7 +161,9 @@ def _serve_one(ws, *, method_responses, protocol, challenge_nonce, challenge_ts,
                 device_id=device.get("id"), client_id=params.get("client", {}).get("id"),
                 client_mode=params.get("client", {}).get("mode"), role=params.get("role"),
                 scopes=params.get("scopes") or [], signed_at_ms=device.get("signedAt"),
-                token=_extract_auth_credential(auth), nonce=expected_nonce, device_family=gw._CLIENT_DEVICE_FAMILY,
+                token=_extract_auth_credential(auth), nonce=expected_nonce,
+                platform=params.get("client", {}).get("platform"),
+                device_family=params.get("client", {}).get("deviceFamily"),
             )
             signature_bytes = _b64url_decode(device["signature"])
             public_key.verify(signature_bytes, expected_payload.encode("utf-8"))
@@ -312,6 +315,39 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self.assertNotIn("bootstrapToken", auth)
         self.assertNotIn("deviceToken", auth)
 
+    def test_client_platform_is_present_and_signed(self):
+        # Real ConnectParams.client schema (protocol.schema.json) marks
+        # platform required -- caught 2026-08-17 by a REAL Gateway process
+        # rejecting connect with INVALID_REQUEST ("at /client: must have
+        # required property 'platform'"), not by any prior source
+        # inspection. Regression guard: the wire client.platform value and
+        # the signed payload's platform component must both be present and
+        # consistent (sys.platform, matching Node's process.platform
+        # byte-for-byte on darwin/linux/win32).
+        captured = {}
+        self._serve(_make_handler({"health": {}}, capture=captured))
+        gw._call("health")
+        client = captured["params"]["client"]
+        self.assertEqual(client.get("platform"), sys.platform)
+        self.assertTrue(client.get("platform"))
+
+    def test_client_device_family_is_present_and_signed(self):
+        # Real Gateway server reconstructs the signed payload's
+        # deviceFamily component from connectParams.client.deviceFamily
+        # (resolveDeviceSignaturePayloadVersion, real compiled server
+        # source) -- caught 2026-08-17 by a REAL Gateway process rejecting
+        # connect with "device signature invalid" once client.platform
+        # alone was fixed. Jarvis signed deviceFamily="jarvis" but never
+        # actually sent client.deviceFamily on the wire, so the server's
+        # independent reconstruction used an empty string and the
+        # signature no longer matched. Regression guard: both must be
+        # present and consistent.
+        captured = {}
+        self._serve(_make_handler({"health": {}}, capture=captured))
+        gw._call("health")
+        client = captured["params"]["client"]
+        self.assertEqual(client.get("deviceFamily"), gw._CLIENT_DEVICE_FAMILY)
+
     def test_stored_device_token_sent_under_auth_device_token(self):
         # Real Gateway server: auth.deviceToken is checked via a wholly
         # separate path (verifyDeviceToken) from auth.token's shared-secret
@@ -351,7 +387,8 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         expected_payload = gw._build_device_auth_payload_v3(
             device_id=device["id"], client_id=gw._CLIENT_ID, client_mode=gw._CLIENT_MODE,
             role=gw._ROLE, scopes=gw._SCOPES, signed_at_ms=device["signedAt"],
-            token=sent_credential, nonce=device["nonce"], device_family=gw._CLIENT_DEVICE_FAMILY,
+            token=sent_credential, nonce=device["nonce"], platform=gw._CLIENT_PLATFORM,
+            device_family=gw._CLIENT_DEVICE_FAMILY,
         )
         signature_bytes = _b64url_decode(device["signature"])
         public_key = Ed25519PublicKey.from_public_bytes(_b64url_decode(device["publicKey"]))

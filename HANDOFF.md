@@ -6,65 +6,57 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-16, a session that continued from Phase 9
+Last updated: 2026-08-17, a session that continued from Phase 9
 Milestone 3 (committed, pushed, CI-verified as `4265f55`) into a new,
-separate initiative — OpenClaw interoperability — across five passes:
-**M0** (research/architecture audit, no code, approved with three
-factual corrections), **M1 v1** (a read-only Gateway bridge using
-shared-token auth, explicitly flagged in its own code as "a documented
-assumption, not verified against a real Gateway"), **M1 correction**
-(that assumption was disproven — current official OpenClaw behavior
-requires a persistent Ed25519 device identity and a challenge-signed
-handshake, not just a shared secret; verified directly against the
-actual published OpenClaw npm packages and rebuilt correctly), **M1
-re-verification #1** (a claimed `signedAt` bug was checked against a
-freshly re-pulled, newer beta npm release and found to be factually
-incorrect — no change made there — while the same pass introduced its
-OWN auth-field bug, sending Jarvis's shared token under `auth
-.bootstrapToken`), and then **M1 re-verification #2 — stable
-compatibility** (checked everything against the actual CURRENT STABLE
-`openclaw` app package, not just the beta-only client/protocol packages,
-which turn out to have NO stable npm release at all; found and fixed the
-real `auth.bootstrapToken` bug from the previous pass — the shared
-credential belongs under `auth.token`, a stored device credential under
-`auth.deviceToken`, confirmed directly against the Gateway SERVER's own
-connect-auth resolution logic; also fully CONFIRMED the previously-
-unverified device-ID derivation algorithm against the same real source),
-and finally **M1 finalization** — committed as `d1eb813`, pushed to
-`origin/main`, CI-verified (GitHub Actions run `31963970515`,
-completed/success, unittest step completed/success).
+separate initiative — OpenClaw interoperability. OpenClaw M1 (the
+read-only Gateway bridge, across five internal passes documented in
+prior CHANGELOG.md entries) is committed as `d1eb813`, pushed, and
+CI-verified (GitHub Actions run `31963970515`). This session then ran
+**OpenClaw M1.5 — a real loopback Gateway smoke test**: installed an
+actual `openclaw@2026.7.1-2` process (isolated, temporary, never a
+daemon), and called Jarvis's real `openclaw_status`/`openclaw_list_nodes`
+tools against it through the normal `tools.registry.dispatch()` path.
+This found and fixed two real bugs (`client.platform` and
+`client.deviceFamily` both required on the wire, not just in the signed
+payload — see CHANGELOG.md's M1.5 entry for full detail) that neither
+extensive source-reading nor the local fake test server had caught.
+With both fixed, the real smoke test succeeded end to end. **M1.5's
+fixes are verified and awaiting this session's finalization commit.**
 
-## OpenClaw M1 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE
+## OpenClaw M1 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE (M1.5 real-Gateway-verified)
 
-- **Commit**: `d1eb8130609d03e0f4f68a3f2cc46c4e3d66ade2`
-- **GitHub Actions**: run `31963970515`, completed/success
-- **Test baseline**: 1096 tests / OK
-- **Repository state**: M1 committed, M1 pushed, local `main` and
-  `origin/main` synchronized at the SHA above, working tree clean.
-
-**Current OpenClaw capabilities**: an optional, disabled-by-default,
-read-only Gateway bridge — authenticated loopback WebSocket, stable
-compatibility target `openclaw@2026.7.1-2`, protocol version 4, a
-persistent Jarvis Ed25519 device identity, a human-only pairing flow,
-`operator.read`-only scope, a fixed RPC allowlist (`health`/`status`/
-`node.list`), and two Jarvis tools (`openclaw_status`/
-`openclaw_list_nodes`).
+- **M1 commit**: `d1eb8130609d03e0f4f68a3f2cc46c4e3d66ade2` (pushed,
+  CI-verified, GitHub Actions run `31963970515`)
+- **M1.5 status**: real-Gateway smoke test passed; two bug fixes
+  verified locally (1098/1098 tests) but not yet committed as of this
+  writing — confirm with `git status` whether this session's
+  finalization commit has landed since this was written.
+- **Current OpenClaw capabilities**: an optional, disabled-by-default,
+  read-only Gateway bridge — authenticated loopback WebSocket, stable
+  compatibility target `openclaw@2026.7.1-2` (now verified against an
+  actual running instance of that exact version, not just its source),
+  protocol version 4, a persistent Jarvis Ed25519 device identity, a
+  human-only pairing flow, `operator.read`-only scope, a fixed RPC
+  allowlist (`health`/`status`/`node.list`), and two Jarvis tools
+  (`openclaw_status`/`openclaw_list_nodes`).
 
 **Security boundaries**: Jarvis remains the sole orchestrator; no raw
 RPC; no `node.invoke`; no `operator.write`/admin/pairing scope; no
-automatic pairing approval; no third-party OpenClaw plugins; no OpenClaw
-model-routing authority; no OpenClaw memory authority; no shared secrets
-store.
+automatic pairing approval by Jarvis (the real Gateway auto-approved
+pairing itself in the M1.5 dev/loopback test configuration — a real
+OpenClaw default for that config shape, not anything Jarvis did); no
+third-party OpenClaw plugins; no OpenClaw model-routing authority; no
+OpenClaw memory authority; no shared secrets store.
 
-**Automated vs. real-world testing — an important distinction**: M1 has
-extensive mocked and local-fake-Gateway protocol tests (real Ed25519
-signature verification against a genuine local WebSocket server, never
-a stub), but a REAL OpenClaw Gateway has **not yet been installed,
-configured, or smoke-tested** on this machine. The next planned step
-(not yet started) is a narrow real loopback install + read-only smoke
-test. OpenClaw M2 (messaging) is **not implemented**. Device capabilities
-are **not implemented**. Phase 9 Milestone 4 (FTS5) remains deferred
-until after the OpenClaw work currently planned.
+**Automated vs. real-world testing**: M1 has extensive mocked and
+local-fake-Gateway protocol tests (real Ed25519 signature verification
+against a genuine local WebSocket server, never a stub), **and** as of
+M1.5, has now also been verified against a real, running
+`openclaw@2026.7.1-2` process (temporary, isolated, removed afterward —
+no OpenClaw installation persists on this machine). OpenClaw M2
+(messaging) is **not implemented**. Device capabilities are **not
+implemented**. Phase 9 Milestone 4 (FTS5) remains deferred until after
+the OpenClaw work currently planned.
 
 ## Current project status
 
@@ -77,28 +69,57 @@ after OpenClaw.
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
 subsystem): **M0** complete, approved, no code. **M1** (read-only
 Gateway bridge with real Ed25519 device-identity authentication) is
-**complete, committed (`d1eb813`), pushed, and CI-verified** — see the
-section above for the full detail.
+**complete, committed (`d1eb813`), pushed, and CI-verified**. **M1.5**
+(real loopback Gateway smoke test) passed, with two real bug fixes
+verified locally, pending this session's finalization commit — see the
+section above and CHANGELOG.md's M1.5 entry for full detail.
 
-**Working tree is clean; local `main` and `origin/main` are both at
-`d1eb813`.** Confirm with a live `git status`/`git log` rather than
-trusting this file. **1096 tests pass,
-0 failures** (1093 before the stable-compatibility pass + 3 new; 1090
-before the beta re-verification pass; 1075 before the device-auth
-correction pass; 1024 before OpenClaw M1 first landed), no live/paid API
-calls, no real OpenClaw installation used (confirmed not installed on
-this machine).
+**Working tree status depends on whether this session's M1.5
+finalization commit has landed** — confirm with a live `git status`/
+`git log` rather than trusting this file. **1098 tests pass,
+0 failures** as of the M1.5 fixes (1096 at M1's own commit; 1093 before
+the stable-compatibility pass + 3 new; 1090 before the beta
+re-verification pass; 1075 before the device-auth correction pass; 1024
+before OpenClaw M1 first landed), no live/paid API calls during testing.
+A real, temporary `openclaw@2026.7.1-2` process WAS installed and run
+during M1.5's smoke test, then fully removed — no OpenClaw installation
+persists on this machine as of this writing.
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M1 is complete, tested, committed,
-pushed, and CI-verified. The user has not yet said whether to start
-OpenClaw M2 (messaging) or Phase 9 Milestone 4 (FTS5) next; both are
-explicitly deferred until asked for. A real-Gateway smoke test has also
-not been started.
+Nothing actively mid-task — OpenClaw M1.5's real-Gateway fixes are
+complete and tested; this session's remaining work is documentation +
+the finalization commit/push/CI-verify sequence. The user has not yet
+said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
+(FTS5) next; both are explicitly deferred until asked for.
 
 ## What was completed (this session, most recent first)
 
+0. **OpenClaw M1.5 — real loopback Gateway smoke test** (new session,
+   2026-08-17, follows M1's own commit/push/CI-verify from the prior
+   session): ran an actual `openclaw@2026.7.1-2` process for the first
+   time — isolated npm install under `/tmp`, isolated
+   `OPENCLAW_STATE_DIR`, loopback-only bind, test token stored via
+   `agent/secrets.py`. First attempt (`--dev`) exposed a real isolation
+   gap (dev workspace escaped the state-dir override, wrote under the
+   real `~/.openclaw`; the `bonjour` plugin broadcast the Gateway on the
+   LAN) — caught within ~8 seconds, killed before any Jarvis call,
+   cleaned up with explicit user approval. Corrected approach (no
+   `--dev`, explicit workspace patch, `plugins.enabled = false`)
+   produced a clean isolated Gateway. The real, load-bearing test —
+   Jarvis's actual `openclaw_status`/`openclaw_list_nodes` tools via
+   `tools.registry.dispatch()` — found and fixed two real bugs
+   (`client.platform` required by the real schema but never sent;
+   `client.deviceFamily` signed into the payload but never sent on the
+   wire, breaking real signature verification). With both fixed: full
+   success, `operator.read` only (independently confirmed via
+   `openclaw devices list`), empty node list as expected. Cleaned up
+   fully afterward: Gateway killed, port freed, ~363MB temp install
+   removed, smoke-test-only Keychain secrets (`OPENCLAW_GATEWAY_TOKEN`,
+   `OPENCLAW_DEVICE_TOKEN`) deleted, `OPENCLAW_DEVICE_PRIVATE_KEY`
+   preserved. 2 new tests (1098 total, up from 1096); the fake test
+   server's signature verification was also corrected to reconstruct
+   from actual captured wire values instead of duplicate constants.
 1. **OpenClaw M1 re-verification #2 — stable compatibility: auth-field
    bug fixed for real, device-ID CONFIRMED** (same session, follow-up to
    item 2 below): re-verification #1 (also this session, folded below)
@@ -243,23 +264,55 @@ not been started.
 
 ## What is partially completed
 
-Nothing mid-implementation. OpenClaw M1 (with the real device-auth
-correction) is complete and fully tested; the only thing not done is
-the user's review/commit decision.
+Nothing mid-implementation. OpenClaw M1.5's real-Gateway bug fixes are
+complete and fully tested; the only thing not done as this file was
+written is this session's own finalization commit/push/CI-verify
+sequence (in progress in the same session that wrote this update).
 
 ## Current bugs / known issues
 
-None remaining. The one design assumption flagged earlier this session
-(device-ID hash algorithm) is now CONFIRMED against real primary source
-— see "Recent architectural decisions" below. No other open issues.
+None remaining. The two real bugs M1.5's smoke test found
+(`client.platform`, `client.deviceFamily` both missing from the wire
+`connect` params) are fixed and verified against a real Gateway — see
+item 0 in "What was completed" above. The device-ID hash algorithm
+(flagged in a prior session) remains CONFIRMED against real primary
+source. No other open issues.
 
 ## Current blockers
 
-None. OpenClaw M1 is committed, pushed, and CI-verified. Nothing is
-waiting on a decision.
+None technical. This session's M1.5 finalization commit/push/CI-verify
+sequence may or may not have completed depending on when this file is
+read — confirm with `git status`/`git log`.
 
 ## Recent architectural decisions
 
+- **Source-reading and a careful local fake server are not a substitute
+  for testing against the real thing at least once.** M1.5's real
+  loopback Gateway smoke test found two real bugs (`client.platform`,
+  `client.deviceFamily` missing from the wire) that survived every prior
+  source-reading pass and the entire local fake-server test suite,
+  because the fake server's own signature verification reconstructed
+  payloads from expected constants rather than the actual captured wire
+  values. Fixed both the bugs and the fake server's fidelity gap that
+  let them through.
+- **A temporary test harness's own isolation claims still need
+  verification, not just trust.** OpenClaw's documented
+  `OPENCLAW_STATE_DIR` override, combined with `--dev`, did not fully
+  isolate a real Gateway process from the user's real `~/.openclaw` —
+  the dev workspace path escaped it, and the default plugin set
+  (including `bonjour`) broadcast the test Gateway on the LAN. Caught
+  within seconds by checking the Gateway's own log output rather than
+  assuming the isolation worked; not a Jarvis security issue (the
+  WebSocket bind itself was loopback-only throughout), but a reminder to
+  verify a test environment's actual behavior, not just its documented
+  behavior. Future temporary OpenClaw test harnesses must: never use
+  `--dev`; explicitly patch the workspace path in addition to setting
+  `OPENCLAW_STATE_DIR`; set `plugins.enabled = false`; verify the
+  listener's real bind address before connecting; verify no `~/.openclaw`
+  writes occurred; skip normal onboarding entirely; and delete temporary
+  Gateway/device-token secrets afterward (a stored device token tied to
+  deleted Gateway state is worse than no token — it looks configured but
+  isn't valid).
 - **A user-supplied "bug report" was checked against primary source
   before being applied, and the code was NOT changed when the source
   contradicted it** — a claim that `device.signedAt` must never come
@@ -347,16 +400,16 @@ waiting on a decision.
 
 ## Files recently modified
 
-**Committed** as `d1eb813` ("Add read-only OpenClaw gateway bridge"),
-pushed to `origin/main`, CI-verified:
+**OpenClaw M1** committed as `d1eb813` ("Add read-only OpenClaw gateway
+bridge"), pushed to `origin/main`, CI-verified.
+
+**OpenClaw M1.5** (this session, being finalized — check `git status`
+for current state; by the time this finalization commit lands, expect
+it as one new commit):
 ```
-new:      agent/openclaw_gateway.py
-new:      tools/schemas/openclaw.py
-new:      tests/test_openclaw_gateway.py
-new:      tests/test_openclaw_tool.py
-modified: tools/schemas/__init__.py
-modified: config/settings.py
-modified: requirements.txt (websockets==16.1.1, cryptography==50.0.0)
+modified: agent/openclaw_gateway.py (client.platform/deviceFamily fix)
+modified: tests/test_openclaw_gateway.py (2 new regression tests, fake
+          server signature verification now uses captured wire values)
 modified: ROADMAP.md
 modified: ARCHITECTURE.md
 modified: CHANGELOG.md
@@ -372,13 +425,13 @@ modified: HANDOFF.md (this file)
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests` → **1096 passed, 0 failed** (run
-at the end of this session). No paid API calls, no real OpenClaw
-installation used or required: every network call in every OpenClaw
-test is either mocked or exercised against a genuine **local fake**
-WebSocket server (ephemeral loopback port) performing real Ed25519
-signature verification, never a real Gateway. This number will be stale
-the moment new tests are added — re-run, don't trust it blindly.
+`python -m unittest discover -s tests` → **1098 passed, 0 failed** (run
+at the end of this session, after the M1.5 real-Gateway bug fixes). No
+paid API calls. Both mocked/local-fake-Gateway tests AND a real,
+temporary `openclaw@2026.7.1-2` process were used this session — the
+real process was fully removed afterward, no OpenClaw installation
+persists on this machine. This number will be stale the moment new
+tests are added — re-run, don't trust it blindly.
 
 ## What still needs to be done
 
@@ -386,33 +439,35 @@ the moment new tests are added — re-run, don't trust it blindly.
    pushed to `origin/main`, CI-verified (GitHub Actions run
    `31963970515`, event=push, conclusion=success; unittest step:
    completed/success).
-2. **Do not start OpenClaw M2** (messaging, `operator.write`) until the
+2. **OpenClaw M1.5** (real-Gateway smoke test + two bug fixes): verified
+   locally; confirm with `git log`/`git status` whether this session's
+   own finalization commit/push/CI-verify has completed.
+3. **Do not start OpenClaw M2** (messaging, `operator.write`) until the
    user says so.
-3. **Do not start Phase 9 Milestone 4** (FTS5) until OpenClaw work is
+4. **Do not start Phase 9 Milestone 4** (FTS5) until OpenClaw work is
    complete or explicitly deprioritized.
-4. If a real OpenClaw Gateway is ever installed and running, a cheap
-   smoke test against it would still be valuable to confirm the overall
-   handshake works end-to-end in practice — not because the device-ID
-   algorithm is still in doubt (it's now confirmed against real primary
-   source, both client and server), but because this bridge has still
-   only ever been exercised against a local fake server, never a real
-   Gateway process. Not yet started.
+4. **Done** — the real-Gateway smoke test (M1.5) has now run
+   successfully (see item 0 in "What was completed" above). A future
+   session could re-run one against a newer OpenClaw release if useful,
+   but that would be validating a different compatibility target, not
+   filling a gap in this one.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm `git log`/`git status` still show
-   `d1eb813` as HEAD, in sync with `origin/main`, and that the test
-   suite still passes.
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status` show the M1.5
+   finalization commit landed, in sync with `origin/main`, and that the
+   test suite still passes (expect 1098+).
 2. If the user wants to proceed with OpenClaw M2 (messaging), that is a
    real scope increase (`operator.write`) and should get the same
-   explicit-approval treatment M1 itself did.
-3. If a real OpenClaw Gateway becomes available, a tiny, cheap smoke
-   test against it (confirming the whole handshake actually works
-   end-to-end against the real thing, not just a local fake server)
-   would be a nice final confirmation — offer this only with explicit
+   explicit-approval treatment M1/M1.5 themselves did.
+3. If a compatibility check against a newer OpenClaw release (beyond
+   `2026.7.1-2`) becomes useful, the M1.5 real-Gateway smoke-test
+   approach documented in `ARCHITECTURE.md`'s "Real-Gateway smoke-test
+   isolation" note is the one to reuse (no `--dev`, explicit workspace
+   patch, `plugins.enabled = false`) — offer this only with explicit
    confirmation, matching this project's standing real-API-cost/
    real-external-service sensitivity.
 

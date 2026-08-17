@@ -786,11 +786,54 @@ genuine **local fake** Gateway server (`websockets.sync.server`,
 ephemeral loopback port, real Ed25519 signature verification) in
 `tests/test_openclaw_gateway.py` — this proves the handshake, auth-field
 selection, and error handling are implemented correctly against the
-documented/reverse-engineered protocol. It has **not** been exercised
-against a real, installed, running OpenClaw Gateway process; no
-OpenClaw installation exists on this machine as of this writing. Treat
-that as the one remaining gap before relying on M1 in practice, not as
-already covered by the existing test suite.
+documented/reverse-engineered protocol.
+
+**OpenClaw M1.5 — real loopback Gateway smoke test (2026-08-17,
+✅ verified)**: the bridge was also validated against an actual, running
+`openclaw@2026.7.1-2` Gateway process — isolated, loopback-only,
+temporary, never installed as a daemon or left on this machine. Real
+`openclaw_status` and `openclaw_list_nodes` calls succeeded through
+Jarvis's own `tools.registry.dispatch` path (protocol 4, `operator.read`
+only, confirmed independently via the OpenClaw CLI's own `devices list`
+inspection, empty node list as expected). This surfaced two real bugs
+the local fake server and source-reading alone had missed: `client
+.platform` was never sent, though the real `ConnectParams.client` schema
+requires it; and `client.deviceFamily` was signed into the V3 payload
+but never actually included on the wire, so the real Gateway's
+independent signature reconstruction failed. Both are fixed (`agent/
+openclaw_gateway.py`'s `_CLIENT_PLATFORM`/`_CLIENT_DEVICE_FAMILY` now
+appear in both the wire `client` block and the signed payload), and the
+fake test server's own signature verification was corrected to
+reconstruct from the actual captured wire values rather than duplicate
+expected constants, so a regression of this same mistake would be
+caught locally next time. No real Gateway was left running or installed
+after this test.
+
+**Real-Gateway smoke-test isolation — lesson learned**: the first
+attempt at this smoke test used OpenClaw's `--dev` flag for convenience
+and got a real isolation failure from it — `--dev`'s auto-created "dev
+workspace" ignored the `OPENCLAW_STATE_DIR` override entirely and wrote
+five template files under the real `~/.openclaw/workspace-dev`, and the
+auto-loaded default plugin set included `bonjour`, which broadcast the
+temporary Gateway's existence (with the real machine's device name) on
+the LAN via mDNS within seconds of startup — even though the WebSocket
+listener itself was correctly loopback-only throughout. This was caught
+and stopped immediately, not a Jarvis security issue (Jarvis's own
+loopback-only, no-LAN-exposure design was never violated — the WebSocket
+bind stayed on `127.0.0.1`/`::1` the whole time), but a real OpenClaw
+test-environment configuration gap. The corrected approach — used
+successfully for the rest of this test and required for any future
+temporary OpenClaw test harness — is: never use `--dev`; explicitly set
+`OPENCLAW_STATE_DIR` AND patch `agents.defaults.workspace` to an
+isolated path (`openclaw config patch`, not reliance on the env var
+alone); explicitly set `plugins.enabled = false` (eliminates the whole
+plugin set, not just `bonjour`, in one setting); verify the listener's
+actual bind address before letting Jarvis connect; verify no writes
+landed under `~/.openclaw` before and after; never run OpenClaw's normal
+onboarding (it can discover/validate real model-provider credentials);
+and delete the temporary Gateway/device-token secrets afterward (see
+`CHANGELOG.md`'s M1.5 entry) since they're tied to Gateway state that no
+longer exists.
 
 **Failure isolation**: `openclaw_enabled` defaults to `False`. Nothing in
 this module runs at import time (no module-level connection, unlike
