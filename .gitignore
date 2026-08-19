@@ -18,3 +18,10 @@ logs/
 # an externally-configured OBSIDIAN_VAULT_PATH lives outside the repo
 # entirely and is unaffected by this.
 /JarvisVault/
+
+# Graphify (development-only structural graph, see docs/GRAPHIFY.md) --
+# regenerated locally in seconds via `graphify extract . --code-only`,
+# kept out of version control rather than committed (see docs/GRAPHIFY.md
+# for why: this repo is public, and the generated graph.json/graph.html
+# are large, low-diff-signal, wholesale-rewritten blobs).
+graphify-out/

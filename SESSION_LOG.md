@@ -5,7 +5,48 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-19 (latest) — OpenClaw M2 hardening/review pass (still uncommitted)
+### 2026-08-19 (latest) — Graphify G0: development codebase graph baseline
+
+- **Objective**: Evaluate and establish Graphify as an optional,
+  local, development-time structural-intelligence layer for the Jarvis
+  codebase — explicitly not a Jarvis runtime integration, no MCP, no
+  hooks, no semantic extraction, in this first pass.
+- **Work completed**: Verified the real current Graphify release via
+  primary sources (v0.9.47, `graphifyy` on PyPI, `Graphify-Labs/graphify`
+  on GitHub). Installed isolated via `uv tool install graphifyy` (`uv`
+  itself installed via Homebrew with user confirmation, since neither
+  `uv` nor `pipx` was already present) — CampusPilot's own
+  `.venv`/`requirements.txt` untouched. Inspected existing ignore
+  coverage before graphing (sufficient; no `.graphifyignore` needed).
+  Built a code-only graph (`graphify extract . --code-only` +
+  `graphify cluster-only . --no-label`) — zero LLM/API calls: 3024
+  nodes, 6407 edges, 163 communities. Validated the output for secrets/
+  private-data leakage (none found) and manually cross-checked
+  `explain`/`path`/`affected` results against real source across 8
+  architectural areas — mostly accurate, and independently corroborated
+  three existing architectural claims from `CLAUDE.md`. Found and
+  documented two real limitations: a same-basename module-collision
+  false positive, and a system-wide miss of the
+  `register(ToolSpec(..., handler=...))` wiring pattern.
+- **Decisions**: Graphify approved as supplementary tooling only — never
+  Jarvis's source of truth, never a permission/autonomy authority.
+  Generated `graphify-out/` kept local (gitignored, not committed) —
+  this repo is public, and the graph is large/low-diff-signal/free to
+  rebuild. No `graphify install`/hooks/MCP enabled. `CLAUDE.md`
+  deliberately not touched. Full detail in `docs/GRAPHIFY.md`.
+- **Problems encountered**: Neither `uv` nor `pipx` was available for
+  isolated installation as the task expected — paused and asked before
+  installing any new system tooling rather than assuming brew was fine
+  to use unprompted.
+- **Tests**: 1176 passed, 0 failed, identical before and after graph
+  generation — zero Jarvis runtime impact confirmed.
+- **Next session objective**: See `HANDOFF.md`. Graphify G1 (a possible
+  narrow read-only Jarvis tool over the graph) is a distinct, separate,
+  not-yet-approved future decision.
+
+---
+
+### 2026-08-19 — OpenClaw M2 hardening/review pass (still uncommitted)
 
 - **Objective**: Narrow hardening/review pass on the still-uncommitted
   OpenClaw M2 diff (see the entry below), prompted by a review that

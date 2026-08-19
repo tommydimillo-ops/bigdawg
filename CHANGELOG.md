@@ -7,7 +7,102 @@ needed.
 
 ---
 
-## 2026-08-19 (most recent) — OpenClaw M2 hardening/review pass (still uncommitted, no real channel)
+## 2026-08-19 (most recent) — Graphify G0: development codebase graph baseline
+
+**What**: Evaluated and approved Graphify (`graphifyy` on PyPI,
+`graphify` CLI, `Graphify-Labs/graphify` on GitHub) as an optional,
+local, developer-facing structural code graph for this repo — a
+supplementary navigation/impact-analysis aid for a Claude Code session
+working on Jarvis, explicitly **not** a Jarvis runtime subsystem: no
+ToolSpec registered, no `agent/executor.py` change, no MCP integration,
+no Claude Code hooks, no CLAUDE.md change, zero change to any Jarvis
+source file. Confirmed the real, current release via primary sources
+(PyPI JSON API, GitHub API, the actual default `v8` branch README — the
+stale `main` branch README pointed at a different GitHub account's CI
+badge and was not used) rather than assumed: latest stable **v0.9.47**,
+Python 3.10+, `graphify extract . --code-only` / `query` / `path` /
+`explain` all exist and behave as expected, no telemetry.
+
+Installed isolated via `uv tool install graphifyy` (Homebrew-installed
+`uv`, since neither `uv` nor `pipx` was already present — confirmed with
+the user before installing any new system tooling) into
+`~/.local/share/uv/tools/graphifyy/`, entirely separate from
+CampusPilot's own `.venv`/`requirements.txt`, both confirmed untouched
+before and after.
+
+Before graphing, inspected `.gitignore`/`.git/info/exclude` and every
+top-level path *not* already covered by them (`.pytest_cache`,
+`.streamlit`, `.claude`, `.agents`, `documents`, `database`) for
+sensitive/private/generated content — found existing `.gitignore`
+coverage already sufficient (covers `.env`, `.venv/`, `__pycache__/`,
+`JarvisVault/`, `logs/`, build artifacts); no in-repo OpenClaw state or
+Playwright browser-profile directory exists (both live outside the repo
+under `~/Library/Application Support/CampusPilot/`). No
+`.graphifyignore` was created.
+
+Ran `graphify extract . --code-only` (local tree-sitter AST parsing
+only, no API key set in the environment at all, zero network activity,
+~12s) then `graphify cluster-only . --no-label` (community
+detection/report generation, `--no-label` specifically to avoid
+`cluster-only`'s default LLM-based community-naming step) — **zero
+LLM/API calls, zero paid extraction, "Token cost: 0 input · 0 output"**
+per the generated report. Result: 3024 nodes, 6407 edges, 163
+communities, 96% EXTRACTED / 4% INFERRED edge confidence, zero import
+cycles, `built_at_commit` correctly recorded as the exact HEAD this was
+built from.
+
+Validated the generated `graphify-out/` (graph.json 3.5MB, graph.html
+2.9MB, GRAPH_REPORT.md 44KB, manifest.json 40KB, cache/ 4.5MB) directly:
+zero secret patterns anywhere (`.env`, private keys, tokens), zero
+ignored/private paths ingested (confirmed against all 196 manifest
+entries), zero absolute local paths in any substantive content (only a
+25-byte internal `.graphify_root` anchor file contains one).
+
+Manually cross-checked Graphify's `explain`/`path`/`affected` output
+against real source across the 8 architectural areas requested
+(orchestration, tool registry, autonomy, provider routing, coworker
+system, OpenClaw, voice pipeline, memory/Obsidian) rather than trusting
+it — accurate down to the exact source line in nearly every case, and it
+independently corroborated three separate claims already in
+`CLAUDE.md`/`ARCHITECTURE.md` (the memory-wrapper pattern, the three
+`execute_task_stream` entry points, the OpenClaw profile-scoped RPC
+allowlist) purely from static call-graph analysis.
+
+Found and documented two concrete, verified limitations (full detail in
+`docs/GRAPHIFY.md`): (1) a same-basename module-collision false
+positive — a dependency query for `tools/registry.py` incorrectly
+attributed an edge that was actually `agent/skills/registry.py`,
+confirmed specific to the basename collision via a clean parallel test
+against `agent/autonomy.py`; (2) a system-wide miss of the
+`register(ToolSpec(..., handler=...))` registration-wiring pattern —
+invisible for all 14 `tools/schemas/*.py` modules, even though the
+*same* OpenClaw tool's `agent/verification.py` dict-literal
+`_VERIFIERS` registration *was* correctly picked up. Because of these,
+Graphify must never be trusted alone for ToolSpec-to-handler wiring or
+any permission/autonomy/credential-boundary question — direct source
+inspection remains authoritative there.
+
+**Decision**: generated `graphify-out/` artifacts are gitignored and
+kept **local**, not committed — this repo is public, and a committed
+graph would publish a detailed, algorithmically-ranked structural map of
+exactly where this project's permission/autonomy/credential-separation
+logic lives, on top of being a large (3-4MB), wholesale-rewritten,
+low-diff-signal blob on every future extraction. Rebuilding is free
+(~12s, zero cost) whenever actually needed.
+
+**Files affected**: `.gitignore` (`graphify-out/` entry),
+`docs/GRAPHIFY.md` (new), `ROADMAP.md`, `HANDOFF.md`, `SESSION_LOG.md`.
+No Jarvis source file, test file, or `requirements.txt` touched.
+`CLAUDE.md` deliberately not modified — Graphify's own Claude Code
+hook/automation behavior has not been approved.
+
+**Verification**: `python -m unittest discover -s tests -v` → 1176
+passed, 0 failed, both before and after graph generation (identical
+result — confirming zero runtime impact). `git diff --check` clean.
+Secret scan of the tracked diff (`.gitignore`, `docs/GRAPHIFY.md`,
+project record docs) found nothing.
+
+## 2026-08-19 — OpenClaw M2 hardening/review pass (still uncommitted, no real channel)
 
 **What**: A narrow hardening pass on the still-uncommitted M2 diff below,
 prompted by a review that found several issues in the original design.

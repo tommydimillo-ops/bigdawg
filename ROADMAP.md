@@ -262,6 +262,34 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     mistaken for confirmed success. See `CHANGELOG.md` for full detail
     and exact current test counts.
 
+- **Graphify G0 — development codebase graph baseline.** Evaluated and
+  approved Graphify (`graphifyy` on PyPI, `graphify` CLI,
+  `Graphify-Labs/graphify` on GitHub, v0.9.47) as an optional,
+  supplementary, development-time structural-intelligence layer — never
+  Jarvis's source of truth, never a permission/autonomy authority, never
+  a runtime dependency. Installed isolated via `uv tool install
+  graphifyy` (CampusPilot's own `.venv`/`requirements.txt` untouched).
+  Built a code-only graph (`graphify extract . --code-only`, then
+  `graphify cluster-only . --no-label` for the report — zero LLM/API
+  calls, zero paid extraction): 3024 nodes, 6407 edges, 163 communities,
+  96% EXTRACTED / 4% INFERRED edge confidence, zero import cycles.
+  Manually cross-checked Graphify's `explain`/`path`/`affected` output
+  against real source across 8 architectural areas (orchestration, tool
+  registry, autonomy, provider routing, coworker system, OpenClaw, voice
+  pipeline, memory/Obsidian) — mostly accurate down to the exact line
+  number, and independently corroborated three separate architectural
+  claims already documented in `CLAUDE.md` purely from static analysis.
+  Found and documented two concrete, verified limitations: a
+  same-basename module-collision false positive
+  (`tools/registry.py` vs. `agent/skills/registry.py`), and a
+  system-wide miss of the `register(ToolSpec(..., handler=...))`
+  registration-wiring pattern that is this codebase's core tool-wiring
+  mechanism. Full detail, rebuild commands, and the complete limitations
+  list: `docs/GRAPHIFY.md`. Generated graph artifacts
+  (`graphify-out/`) are gitignored and kept local, not committed — see
+  `docs/GRAPHIFY.md` for why. No MCP integration, no Claude Code hooks,
+  no CLAUDE.md changes, no Jarvis runtime integration in this pass.
+
 ## In progress
 
 - Nothing mid-flight as of the last session update — see `HANDOFF.md`
@@ -274,6 +302,13 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 Candidates raised but not yet started, roughly in order of what's been
 discussed most recently:
 
+- **Graphify G1** — a possible narrow, read-only Jarvis `ToolSpec` over
+  the local Graphify graph (through `tools/registry.py`, never a
+  parallel dispatch path), scoped by G0's evaluation (`docs/GRAPHIFY.md`)
+  — not started, not yet approved. If pursued, must not let the graph or
+  an LLM's reading of it become an enforced permission/routing/autonomy
+  decision, and must account for G0's two verified accuracy limitations
+  (module-basename collisions, missed ToolSpec-registration wiring).
 - **Provider admin-key cost reconciliation** — link real OpenAI/Anthropic
   Admin API keys (checked live, confirmed the project's regular keys
   can't reach either provider's usage/billing endpoint) to reconcile

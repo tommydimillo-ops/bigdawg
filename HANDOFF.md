@@ -6,36 +6,21 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-17, a session that continued from Phase 9
-Milestone 3 (committed, pushed, CI-verified as `4265f55`) into a new,
-separate initiative — OpenClaw interoperability. OpenClaw M1 (the
-read-only Gateway bridge) is committed as `d1eb813`, and **OpenClaw
-M1.5** (a real loopback Gateway smoke test against an actual
-`openclaw@2026.7.1-2` process, which found and fixed two real bugs —
-`client.platform`/`client.deviceFamily` both required on the wire, not
-just in the signed payload) is committed as `8502c03`, pushed, and
-CI-verified (GitHub Actions run `32073836073`, completed/success). Both
-are done.
+Last updated: 2026-08-19. OpenClaw M1/M1.5/M2 (including the M2
+hardening/review pass) are all now **complete, committed, pushed, and
+CI-verified** — HEAD is `d270dc461b15d8bd79e013032fea9ba05a674f87`
+("Add permission-gated OpenClaw outbound messaging"), CI run
+`32310485314` succeeded. See the "OpenClaw M1 + M1.5" and "OpenClaw M2"
+sections below for full detail; both are done, no OpenClaw work is
+in-flight or awaiting review.
 
-This session then implemented **OpenClaw M2 — outbound text
-messaging**: a `send_message_via_openclaw` tool backed by the real
-Gateway `send` RPC (never `chat.send`), a completely separate
-`operator.write` device identity from M1's `operator.read` one,
-Jarvis-side channel/target allowlists (disabled and empty by default),
-idempotency-key generation, and full test coverage. **M2 is
-implementation + tests only — no real channel has been configured, no
-real message has been sent, and nothing from this pass has been
-committed or pushed, per explicit instruction.**
-
-A same-day **hardening/review pass** (still part of this same
-uncommitted diff) then corrected several issues a review found in that
-first implementation — most importantly, removed an automatic same-key
-retry on uncertain delivery that the review correctly identified as
-unsafe across a Gateway process restart (the Gateway's dedupe cache is
-in-memory and does not survive one). See the "OpenClaw M2" section
-below for the corrected, current design — the paragraph above describes
-the original implementation for history's sake; where the two disagree,
-the hardening-pass section below is what the code actually does.
+This same session then ran **Graphify G0** — evaluating and approving
+Graphify as an optional, local, development-time structural-code-graph
+tool for this repo (not a Jarvis runtime subsystem). See the "Graphify
+G0" section below and `docs/GRAPHIFY.md` for full detail. G0 finalized
+as commit-worthy documentation only (`.gitignore` entry,
+`docs/GRAPHIFY.md`, and these project records) — no Jarvis source file
+changed.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -59,12 +44,13 @@ M1.5, has also been verified against a real, running
 `openclaw@2026.7.1-2` process (temporary, isolated, removed afterward —
 no OpenClaw installation persists on this machine).
 
-## OpenClaw M2 — OUTBOUND TEXT MESSAGING ⏳ IMPLEMENTED, TESTED, HARDENED, UNCOMMITTED (awaiting review)
+## OpenClaw M2 — OUTBOUND TEXT MESSAGING ✅ COMPLETE, HARDENED, COMMITTED, PUSHED, CI-VERIFIED
 
-- **Status**: code- and test-complete (see this session's final report
-  for the exact current test count), **not committed, not pushed** —
-  per explicit "implement + test only, do not commit" instruction, now
-  followed by a same-day hardening/review pass, also uncommitted.
+- **Status**: code- and test-complete, hardened per review, **committed
+  as `d270dc461b15d8bd79e013032fea9ba05a674f87`** ("Add
+  permission-gated OpenClaw outbound messaging"), pushed to
+  `origin/main`, CI-verified (GitHub Actions run `32310485314`,
+  success). 1176 tests passing at that commit.
 - **What it adds**: `send_message_via_openclaw` (permission_level=3,
   side_effect=True, requires_live_confirmation=True — matching
   `send_email`'s convention). Input is exactly `channel`/`target`/
@@ -112,10 +98,55 @@ no OpenClaw installation persists on this machine).
   registered in `_VERIFIERS`) parses this tool's JSON result directly
   so `uncertain`/`failed` are never mistaken for `confirmed` by the
   generic failure-marker string check.
-- **Not done in this pass**: no real channel (Telegram/Discord/
-  WhatsApp/Slack/Signal/iMessage/...) configured or logged into, no
-  real outbound message sent — every automated test uses the same
+- **Still not done**: no real channel (Telegram/Discord/WhatsApp/Slack/
+  Signal/iMessage/...) configured or logged into, no real outbound
+  message ever sent — every automated test uses the same
   local-fake-Gateway-server pattern as M1/M1.5, never a real channel.
+  Choosing/configuring the first real channel is a separate, not-yet-
+  started future step (see ROADMAP.md's "Next" section).
+
+## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ EVALUATED, APPROVED, DOCUMENTED
+
+Not a Jarvis subsystem — an optional, local, development-time
+structural code graph (`graphify` CLI, `graphifyy` on PyPI,
+`Graphify-Labs/graphify` on GitHub, v0.9.47), installed isolated via
+`uv tool install graphifyy`, entirely separate from CampusPilot's
+`.venv`/`requirements.txt`. Full detail, rebuild commands, and verified
+limitations: `docs/GRAPHIFY.md`.
+
+- **What it is**: a queryable graph of this repo's own code structure
+  (`graphify extract . --code-only` then `graphify cluster-only .
+  --no-label` — both fully local, zero LLM/API calls, zero cost),
+  giving a Claude Code session faster answers to "what calls/imports/
+  depends on X" than repeated grep/Read round-trips.
+- **G0 result**: 3024 nodes, 6407 edges, 163 communities, 96% EXTRACTED
+  / 4% INFERRED edge confidence, zero import cycles. Validated clean —
+  zero secrets, zero ignored/private paths, zero meaningful absolute-path
+  leakage in the generated output.
+- **Cross-checked against real source across 8 architectural areas**
+  (orchestration, tool registry, autonomy, provider routing, coworker
+  system, OpenClaw, voice pipeline, memory/Obsidian) — mostly accurate
+  down to the exact source line, and independently corroborated three
+  separate architectural claims already documented in `CLAUDE.md`.
+- **Two verified limitations, must be respected going forward**: (1) a
+  same-basename module-collision false positive
+  (`tools/registry.py` vs. `agent/skills/registry.py`); (2) a
+  system-wide miss of the `register(ToolSpec(..., handler=...))`
+  registration-wiring pattern — this codebase's core tool-wiring
+  mechanism, invisible for all 14 `tools/schemas/*.py` modules. Because
+  of these, Graphify must never be trusted alone for ToolSpec-to-handler
+  wiring or any permission/autonomy/credential-boundary question.
+- **Decision**: generated `graphify-out/` is gitignored, kept **local**,
+  rebuilt on demand (~12s, free) — not committed, since this repo is
+  public and the graph would be a large, low-diff-signal blob mapping
+  exactly where the security-relevant logic lives.
+- **Not enabled**: `graphify-mcp`, MCP registration, `graphify install`/
+  `claude install`, `PreToolUse` hooks (soft or strict), `watch` mode,
+  semantic/document extraction, any Jarvis runtime integration. `CLAUDE.md`
+  was deliberately not modified.
+- **Next**: Graphify G1 (a possible narrow read-only Jarvis `ToolSpec`
+  over the graph) is a distinct, separate, not-yet-approved decision —
+  see ROADMAP.md's "Next" section.
 
 ## Current project status
 
@@ -126,44 +157,50 @@ after OpenClaw.
 
 **OpenClaw** (a separate, real, independently-developed open-source
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
-subsystem): **M0** complete, approved, no code. **M1** and **M1.5**
-complete, committed, pushed, CI-verified — see the section above.
-**M2** (outbound text messaging) implemented and tested this session,
-**uncommitted, awaiting the user's review** — see the section above and
-CHANGELOG.md's M2 entry for full detail.
+subsystem): **M0** complete, approved, no code. **M1**, **M1.5**, and
+**M2** (including its hardening pass) all complete, committed, pushed,
+CI-verified — see the section above.
 
-**Working tree is NOT clean as of this writing** — M2's files are
-uncommitted. Confirm with a live `git status`/`git log` rather than
-trusting this file. **1160 tests pass, 0 failures** (1098 at the M1.5
-commit; 1096 at M1's own commit; earlier counts in prior CHANGELOG.md
+**Graphify G0**: evaluated, approved as supplementary tooling, and
+documented this same session — see the section above and
+`docs/GRAPHIFY.md`. Not a Jarvis runtime integration.
+
+**Working tree**: clean as of this writing, aside from this
+documentation pass itself (`.gitignore`, `docs/GRAPHIFY.md`, and these
+project records). Confirm with a live `git status`/`git log` rather
+than trusting this file. **1176 tests pass, 0 failures** (1160 at the
+OpenClaw M2 hardening commit; earlier counts in prior CHANGELOG.md
 entries), no live/paid API calls during testing. No real OpenClaw
-installation persists on this machine; M1.5's temporary smoke-test
-process was fully removed after that pass.
+installation persists on this machine.
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M2's implementation and tests are
-complete; this session's remaining work is documentation (this file
-included) and reporting back to the user for review. **Do not commit
-or push M2. Do not configure a real messaging channel. Do not start
-OpenClaw device capabilities, OpenClaw agent/model-routing integration,
-or Phase 9 Milestone 4 (FTS5)** until the user explicitly says so.
+Nothing actively mid-task — OpenClaw M1/M1.5/M2 and Graphify G0 are both
+complete and committed. **Do not start Graphify G1, a real OpenClaw
+messaging channel, OpenClaw device capabilities, OpenClaw agent/
+model-routing integration, or Phase 9 Milestone 4 (FTS5)** until the
+user explicitly says so.
 
 ## What was completed (this session, most recent first)
 
--1. **OpenClaw M2 hardening/review pass** (same session, still
-    uncommitted, no real channel): a review of the M2 diff below found
-    several issues, all fixed — see CHANGELOG.md's dedicated 2026-08-19
-    entry for full detail. Summary: removed the automatic same-key retry
-    on uncertain delivery (unsafe across a Gateway restart); added a
-    dedicated JSON-parsing verifier for `send_message_via_openclaw` in
-    `agent/verification.py`; enforced the closed `_Profile` set by
-    Python identity (`is`) in `_call()`, not `==`; renamed `send_raw()`
-    to private `_send_raw()`; corrected documentation that overstated a
-    compromised messaging credential as having no read authority at all
-    (the Gateway's own server-side scope semantics are asymmetric);
-    narrowed `account_id`/`thread_id` out of the public tool surface.
-    Ran targeted + full regression tests; nothing committed or pushed.
+-2. **Graphify G0 — development codebase graph baseline** (new session):
+    evaluated and approved Graphify as optional, local, development-time
+    tooling — see the "Graphify G0" section above and `docs/GRAPHIFY.md`
+    for full detail. Committed: `.gitignore` entry, `docs/GRAPHIFY.md`,
+    and these project records. `graphify-out/` itself stays local,
+    gitignored, never committed.
+-1. **OpenClaw M2 hardening/review pass** (prior session): a review of
+    the M2 diff found several issues, all fixed — see CHANGELOG.md's
+    2026-08-19 entry for full detail. Summary: removed the automatic
+    same-key retry on uncertain delivery (unsafe across a Gateway
+    restart); added a dedicated JSON-parsing verifier for
+    `send_message_via_openclaw` in `agent/verification.py`; enforced the
+    closed `_Profile` set by Python identity (`is`) in `_call()`, not
+    `==`; renamed `send_raw()` to private `_send_raw()`; corrected
+    documentation that overstated a compromised messaging credential as
+    having no read authority at all (the Gateway's own server-side scope
+    semantics are asymmetric); narrowed `account_id`/`thread_id` out of
+    the public tool surface. Committed as `d270dc4`, pushed, CI-verified.
 0. **OpenClaw M2 — outbound text messaging bridge** (new session,
    implementation + tests only, uncommitted): the real Gateway `send`
    RPC, never `chat.send` (`ChatSendParamsSchema` requires a
@@ -381,10 +418,10 @@ source. No other open issues.
 
 ## Current blockers
 
-None technical. The only blocker is a decision: whether the user wants
-OpenClaw M2 (outbound text messaging, implemented and tested this
-session) committed as-is after review, and separately, which real
-messaging channel (if any) to configure next.
+None technical. OpenClaw M1/M1.5/M2 and Graphify G0 are all committed.
+Open decisions (none urgent): which real messaging channel (if any) to
+configure for OpenClaw next, and whether/when to pursue Graphify G1 (a
+possible narrow read-only Jarvis tool over the graph).
 
 ## Recent architectural decisions
 
@@ -551,14 +588,14 @@ bridge"), pushed to `origin/main`, CI-verified.
 **OpenClaw M1.5** committed as `8502c03` ("Fix OpenClaw bridge against
 real Gateway"), pushed, CI-verified (GitHub Actions run `32073836073`).
 
-**OpenClaw M2 + hardening pass** (this session — implementation, tests,
-and a same-day hardening/review pass, all uncommitted; confirm current
-state with a live `git status`):
+**OpenClaw M2 + hardening pass** committed as `d270dc4` ("Add
+permission-gated OpenClaw outbound messaging"), pushed, CI-verified
+(GitHub Actions run `32310485314`):
 ```
 new:      agent/openclaw_messaging.py
 new:      tests/test_openclaw_messaging.py
-modified: agent/openclaw_gateway.py (profile abstraction now enforced
-          by identity; _send_raw (renamed private);
+modified: agent/openclaw_gateway.py (profile abstraction enforced by
+          identity; _send_raw (renamed private);
           OpenClawUncertainDelivery, no longer auto-retried)
 modified: agent/verification.py (new _verify_send_message_via_openclaw,
           registered in _VERIFIERS)
@@ -572,63 +609,67 @@ modified: tests/test_openclaw_gateway.py (profile abstraction;
 modified: tests/test_openclaw_tool.py (new tool registration/dispatch
           tests)
 modified: tests/test_verification.py (new verifier tests)
-modified: ROADMAP.md
-modified: ARCHITECTURE.md
-modified: CHANGELOG.md
-modified: SESSION_LOG.md
-modified: HANDOFF.md (this file)
+modified: ROADMAP.md, ARCHITECTURE.md, CHANGELOG.md, SESSION_LOG.md,
+          HANDOFF.md
 ```
 
-**Committed history**, most recent first: `8502c03` (OpenClaw M1.5),
-`f370c00` (M1 handoff doc update), `d1eb813` (OpenClaw M1), `4265f55`
-(Phase 9 Milestone 3), `8d4da44` (Phase 9 Milestone 2), `7b67bf0`
-(Phase 9 Milestone 1), `d0f791c` (Obsidian vault integration),
-`d3481fc` (Phase 9 Milestone 0 — GitHub Actions CI). See
-`CHANGELOG.md` / `git log` for full history.
+**Graphify G0** (this session — documentation only, kept local
+`graphify-out/` never staged; confirm current state with a live
+`git status`):
+```
+new:      docs/GRAPHIFY.md
+modified: .gitignore (graphify-out/ entry)
+modified: ROADMAP.md, CHANGELOG.md, SESSION_LOG.md, HANDOFF.md
+```
+
+**Committed history**, most recent first: `d270dc4` (OpenClaw M2 +
+hardening pass), `8502c03` (OpenClaw M1.5), `f370c00` (M1 handoff doc
+update), `d1eb813` (OpenClaw M1), `4265f55` (Phase 9 Milestone 3),
+`8d4da44` (Phase 9 Milestone 2), `7b67bf0` (Phase 9 Milestone 1),
+`d0f791c` (Obsidian vault integration), `d3481fc` (Phase 9 Milestone 0
+— GitHub Actions CI). See `CHANGELOG.md` / `git log` for full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests` → **1160 passed, 0 failed** (run
-at the end of this session, after implementing OpenClaw M2). No paid
-API calls, no real OpenClaw installation used or required for M2 (every
-M2 test uses the same local-fake-Gateway-server pattern as M1/M1.5,
-never a real channel). This number will be stale the moment new
-tests are added — re-run, don't trust it blindly.
+`python -m unittest discover -s tests` → **1176 passed, 0 failed** (run
+both before and after Graphify graph generation this session — identical
+result, confirming zero runtime impact). No paid API calls; no real
+OpenClaw installation used; no LLM/API calls during Graphify's code-only
+graph build either. This number will be stale the moment new tests are
+added — re-run, don't trust it blindly.
 
 ## What still needs to be done
 
-1. **Nothing outstanding for OpenClaw M1 or M1.5** — both committed
-   (`d1eb813`, `8502c03`), pushed to `origin/main`, CI-verified (M1.5's
-   run: `32073836073`, event=push, conclusion=success; unittest step
-   completed/success).
-2. **OpenClaw M2 (outbound text messaging) is implemented and tested,
-   NOT committed** — 1160/1160 tests passing locally, but per explicit
-   instruction for this pass ("implement + test only") nothing was
-   committed or pushed. Get the user's explicit review/go-ahead before
-   committing.
-3. **Do not configure a real messaging channel** (Telegram/Discord/
-   WhatsApp/Slack/Signal/iMessage/...) until M2 is reviewed and a
-   specific channel is chosen.
-4. **Do not start OpenClaw device capabilities, OpenClaw agent/model-
-   routing integration, or Phase 9 Milestone 4 (FTS5)** until the user
-   explicitly says so.
+1. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
+   (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
+   CI-verified.
+2. **Nothing outstanding for Graphify G0** — evaluated, approved,
+   documented (`docs/GRAPHIFY.md`), committed this session.
+3. **Do not configure a real OpenClaw messaging channel** (Telegram/
+   Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
+   is explicitly chosen.
+4. **Do not start Graphify G1**, OpenClaw device capabilities, OpenClaw
+   agent/model-routing integration, or Phase 9 Milestone 4 (FTS5) until
+   the user explicitly says so.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm `git log`/`git status` show whether
-   OpenClaw M2 has since been committed, in sync with `origin/main`, and
-   that the test suite still passes (expect 1160+ if M2 is still
-   uncommitted, or check the actual count if it has landed).
-2. If the user approves OpenClaw M2 as reviewed, follow the same
-   commit→push→CI-verify sequence M1/M1.5 themselves used.
-3. If the user wants to proceed with configuring a real messaging
-   channel, that is a real, separate, higher-risk step (real external
-   service credentials, a real live send) and should get the same
-   explicit-approval treatment every OpenClaw milestone so far has had
-   — do not silently fold it into a "review M2" approval.
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
+   match what this file claims before trusting it.
+2. If the user wants to proceed with configuring a real OpenClaw
+   messaging channel, that is a real, separate, higher-risk step (real
+   external service credentials, a real live send) and should get the
+   same explicit-approval treatment every OpenClaw milestone so far has
+   had.
+3. If the user wants to pursue Graphify G1 (a possible narrow read-only
+   Jarvis tool over the local Graphify graph), that is a distinct,
+   separate, not-yet-approved decision — see `docs/GRAPHIFY.md` and
+   ROADMAP.md's "Next" section for the scope and known limitations to
+   account for (module-basename collisions, missed ToolSpec-registration
+   wiring) before designing it.
 4. If a compatibility check against a newer OpenClaw release (beyond
    `2026.7.1-2`) becomes useful, the M1.5 real-Gateway smoke-test
    approach documented in `ARCHITECTURE.md`'s "Real-Gateway smoke-test
