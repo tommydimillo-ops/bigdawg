@@ -188,13 +188,115 @@ thing at least once.
 
 Connection model: one-shot (websockets.sync.client, not async -- fits
 Jarvis's synchronous tool architecture with no event-loop adapter
-needed). Never requests scopes beyond ["operator.read"] -- the minimal
-scope OpenClaw's own docs confirm is sufficient for
-health/status/node.list. Bounded retry: if a stored device token is
-rejected (AUTH_DEVICE_TOKEN_MISMATCH), it is cleared and ONE retry is
-made with the bootstrap token -- mirroring the real client's own
-documented "cleared stale device-auth token" behavior (confirmed in the
-same compiled `index.mjs`) -- never more than that.
+needed). Bounded retry: if a stored device token is rejected
+(AUTH_DEVICE_TOKEN_MISMATCH), it is cleared and ONE retry is made with
+the bootstrap token -- mirroring the real client's own documented
+"cleared stale device-auth token" behavior (confirmed in the same
+compiled `index.mjs`) -- never more than that.
+
+OPENCLAW M2 -- OUTBOUND MESSAGING, PROFILE-BASED IDENTITY (2026-08-18):
+this module now supports a SECOND, code-controlled identity/scope
+bundle (`_Profile`, exactly two fixed instances: `_READ_PROFILE` and
+`_MESSAGE_PROFILE` -- no public API constructs a third, and nothing here
+accepts a caller-supplied scope list; `_call()` also checks the profile
+argument is one of these two BY IDENTITY before doing any connection
+work, so a forged `_Profile` -- even one copying valid scopes/methods --
+is rejected before a WebSocket is ever opened). `_READ_PROFILE` is the
+original, unchanged M1 identity (`OPENCLAW_DEVICE_PRIVATE_KEY`/
+`OPENCLAW_DEVICE_TOKEN`, `operator.read` only, `{health, status,
+node.list}`). `_MESSAGE_PROFILE` is a deliberately SEPARATE device
+identity (`OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY`/
+`OPENCLAW_MESSAGE_DEVICE_TOKEN`), `operator.write` only, `{send}` only.
+
+**Precisely what this separation does and does not guarantee** (worded
+carefully, corrected 2026-08-19, after review): three genuinely
+different claims, easy to conflate --
+  1. CREDENTIAL ISOLATION (true, unconditional): the read and messaging
+     identities are separate Ed25519 keypairs under separate Keychain
+     secret names. Rotating/revoking one never touches the other.
+  2. JARVIS RPC CONFINEMENT (true, structurally enforced): `_call()`'s
+     profile-scoped `allowed_methods` means JARVIS ITSELF will never
+     issue anything but `send` using the messaging identity, and never
+     anything but `health`/`status`/`node.list` using the read identity
+     -- this is a real, tested, code-level guarantee, not just a
+     convention.
+  3. SERVER-SIDE SCOPE SEMANTICS (asymmetric -- do not overstate the
+     `operator.write` direction): confirmed directly against real
+     source (`operator-scope-compat-*.js`'s `operatorScopeSatisfied`)
+     that the Gateway itself treats `operator.write` as ALSO satisfying
+     an `operator.read` check. This means if the messaging identity's
+     raw private key were ever extracted and used OUTSIDE Jarvis (a
+     hand-rolled client speaking the protocol directly, bypassing this
+     module's own RPC allowlist entirely), the real Gateway would still
+     accept read-shaped requests from it -- guarantee (2) only binds
+     Jarvis's own code, not the credential's cryptographic capability
+     against the real server. The REVERSE direction has no such
+     asymmetry: `operator.read` does NOT satisfy an `operator.write`
+     check (confirmed in the same source: only `admin`/`write` satisfy
+     a `write` check), so the read-only identity genuinely cannot
+     perform `send` regardless of who holds its key -- both Jarvis's own
+     confinement AND the server's own scope semantics agree here.
+
+Both profiles may reuse the same `OPENCLAW_GATEWAY_TOKEN` shared
+bootstrap credential (that credential authenticates the Gateway
+connection generically; it is not what determines a device's granted
+scopes -- pairing approval is).
+
+Verified directly against `openclaw@2026.7.1-2`'s compiled server
+source (the same stable target as every other verification in this
+file):
+  - `send` is a real, distinct, top-level Gateway RPC method (`server-
+    methods-*.js`'s method table, handled by `loadSendHandlers`) --
+    genuinely separate from `chat.send` (`ChatSendParamsSchema` requires
+    a `sessionKey` and is part of OpenClaw's own agent/session execution
+    surface, confirmed by reading its schema directly) and from
+    `message.action` (a broader action-dispatch RPC the CLI's own richer
+    commands use, which internally supports a "send" action variant but
+    is a different, wider surface than the plain `send` method this
+    bridge uses).
+  - `send`'s required scope is `operator.write`, confirmed verbatim from
+    the real core method-scope descriptor table (`core-descriptors-
+    *.js`: `{name: "send", scope: "operator.write"}`).
+  - `operator.write` already satisfies an `operator.read` check
+    server-side (`operator-scope-compat-*.js`'s `operatorScopeSatisfied`:
+    `requestedScope === READ_SCOPE => granted.has(READ_SCOPE) ||
+    granted.has(WRITE_SCOPE)`) -- confirmed directly, not assumed, so
+    `_MESSAGE_PROFILE` requests only `operator.write`, never both.
+  - The real `SendParamsSchema` (`schema-*.js`, `additionalProperties:
+    false`): `to` (required, the target) and `idempotencyKey` (required)
+    are the only required fields; `message`, `channel`, `accountId`,
+    `threadId` are optional and exactly what this bridge's text-only
+    `send_message()` uses -- `agentId`, `sessionKey`, `replyToId`,
+    `parseMode`, and every media/poll/voice field are real but
+    deliberately unused (M2's first pass is text-only, see
+    agent/openclaw_messaging.py). Identical between this stable release
+    and the newer `2026.8.1-beta.2` protocol package -- no drift to
+    account for.
+  - Idempotency is REAL and server-verified, not assumed, but IN-MEMORY
+    and NOT durable -- corrected 2026-08-19 after review: the Gateway
+    maintains an in-memory, `idempotencyKey`-keyed dedupe cache
+    (`server-request-context-*.js`'s `context.dedupe`, a plain `Map`)
+    that caches BOTH the success and failure result of a `send` call and
+    replays the cached result verbatim on a repeat request with the SAME
+    key (`resolveGatewayInflightRequest`/`runGatewayInflightWork`,
+    `send-*.js`), confirmed via `server-maintenance-*.js`'s cleanup
+    loop (entries expire after 5 minutes, `now - v.ts > 3e5`, and the
+    cache is capped in size). Real, but this is a single-process,
+    in-memory cache -- it does NOT survive a Gateway process restart,
+    and therefore does NOT establish durable exactly-once delivery. An
+    earlier version of this module treated this cache as justification
+    for an automatic same-key retry on `OpenClawUncertainDelivery`; that
+    was removed after review identified the real gap it leaves open: if
+    the Gateway process dies or restarts between an uncertain response
+    and a retry, the in-memory dedupe entry is gone, and a same-key
+    resend could no longer be deduplicated -- an automatic retry could
+    send a genuine duplicate external message. `idempotencyKey` is still
+    generated and sent on every call (protocol correctness,
+    defense-in-depth, and useful if a human explicitly asks Jarvis to
+    try again within the cache's live window), but this module does not
+    itself decide to resend based on it -- see `OpenClawUncertainDelivery`
+    and agent/openclaw_messaging.py's own module docstring for the
+    current, single-transmission-per-call behavior.
 """
 import base64
 import hashlib
@@ -202,7 +304,7 @@ import json
 import sys
 import time
 import uuid
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -247,21 +349,55 @@ _CLIENT_DEVICE_FAMILY = "jarvis"
 # default (`this.opts.platform ?? process.platform`).
 _CLIENT_PLATFORM = sys.platform
 _ROLE = "operator"
-_SCOPES = ["operator.read"]
 
-_DEVICE_PRIVATE_KEY_SECRET = "OPENCLAW_DEVICE_PRIVATE_KEY"
-_DEVICE_TOKEN_SECRET = "OPENCLAW_DEVICE_TOKEN"
 _BOOTSTRAP_TOKEN_SECRET = "OPENCLAW_GATEWAY_TOKEN"
 
-# Every RPC method this module will ever send, full stop -- see module
-# docstring. No caller-supplied method string reaches _call() from a
-# tool's own input schema (openclaw_status/openclaw_list_nodes take no
-# method-selecting parameter at all -- see tools/schemas/openclaw.py),
-# so this allowlist is defense-in-depth on top of that structural
-# guarantee, not the only thing standing between a tool call and an
-# arbitrary RPC. Deliberately excludes node.describe -- node.list's own
-# response already carries everything get_node_list() needs.
-_ALLOWED_METHODS = frozenset({"health", "status", "node.list"})
+
+class _Profile(NamedTuple):
+    """A fixed, code-controlled device-identity/scope/RPC-allowlist
+    bundle. Exactly two instances of this exist at module scope
+    (_READ_PROFILE, _MESSAGE_PROFILE) -- there is no public constructor,
+    no way for a tool input or any caller to build a third with
+    arbitrary scopes, and every function in this module that takes a
+    `profile` argument requires one of these two by identity, never a
+    caller-supplied scope list."""
+    name: str
+    private_key_secret: str
+    device_token_secret: str
+    scopes: tuple
+    allowed_methods: frozenset
+
+
+# M1: read-only. Unchanged secrets/scopes/methods from the original
+# device-identity design -- see the module docstring's DEVICE-AUTH
+# VERIFICATION section.
+_READ_PROFILE = _Profile(
+    name="read",
+    private_key_secret="OPENCLAW_DEVICE_PRIVATE_KEY",
+    device_token_secret="OPENCLAW_DEVICE_TOKEN",
+    scopes=("operator.read",),
+    # Deliberately excludes node.describe -- node.list's own response
+    # already carries everything get_node_list() needs.
+    allowed_methods=frozenset({"health", "status", "node.list"}),
+)
+
+# M2: outbound messaging. A SEPARATE device identity/token from
+# _READ_PROFILE, on purpose -- see the module docstring's OPENCLAW M2
+# section (specifically the "Precisely what this separation does and
+# does not guarantee" paragraph) for the verified operator.write scope
+# requirement and the precise, non-overstated boundary between
+# credential isolation, Jarvis's own RPC confinement, and the real
+# Gateway's own scope semantics. `send` is the only method this profile
+# will ever be used to call THROUGH JARVIS -- chat.send/message.action/
+# node.invoke/every other write-capable method are structurally
+# unreachable through this profile, not merely undocumented.
+_MESSAGE_PROFILE = _Profile(
+    name="message",
+    private_key_secret="OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY",
+    device_token_secret="OPENCLAW_MESSAGE_DEVICE_TOKEN",
+    scopes=("operator.write",),
+    allowed_methods=frozenset({"send"}),
+)
 
 # Real, verified error codes (ConnectErrorDetailCodes,
 # @openclaw/gateway-protocol/connect-error-details.mjs, read verbatim
@@ -340,6 +476,22 @@ class OpenClawUnsupportedCapability(OpenClawError):
     support something this bridge needs."""
 
 
+class OpenClawUncertainDelivery(OpenClawError):
+    """A side-effecting request (send) was transmitted to the Gateway,
+    but no trustworthy response was received before the connection was
+    lost or the request budget was exhausted -- the Gateway may or may
+    not have processed it. Only ever raised for method == "send" (never
+    for read-only methods, which have no side effect to be uncertain
+    about) and only after the request frame itself was successfully
+    written to the socket. Deliberately its own exception type, distinct
+    from every other OpenClawError: callers (agent/openclaw_messaging.py)
+    must not treat this the same as a definitive failure, and must not
+    automatically retry it -- see the module docstring's idempotency-
+    cache findings (real, but in-memory and not durable across a Gateway
+    restart) for exactly why neither this module nor its caller resends
+    automatically on this exception."""
+
+
 class _DeviceTokenMismatch(Exception):
     """Internal sentinel only -- never leaves this module. Signals that
     the CURRENT attempt used a stored device token the Gateway just
@@ -359,28 +511,30 @@ def openclaw_configured() -> bool:
     return bool(settings.openclaw_enabled) and bool(get_secret(_BOOTSTRAP_TOKEN_SECRET))
 
 
-def _load_or_create_device_identity():
-    """Returns (private_key, device_id, public_key_b64url). Persists a
-    newly-generated Ed25519 private key (PEM, PKCS8, unencrypted --
-    protected by Keychain access control, the same trust boundary every
-    other secret in this project already relies on) via agent/secrets.py
-    on first use; reloads it on every subsequent call rather than
-    caching in memory, matching this module's one-shot-per-call
-    philosophy (see module docstring) -- correctness over the marginal
-    cost of re-parsing a small PEM string.
+def _load_or_create_device_identity(profile: _Profile):
+    """Returns (private_key, device_id, public_key_b64url) for the given
+    profile's OWN device identity -- _READ_PROFILE and _MESSAGE_PROFILE
+    each persist a completely separate Ed25519 keypair under separate
+    secret names, never shared. Persists a newly-generated Ed25519
+    private key (PEM, PKCS8, unencrypted -- protected by Keychain access
+    control, the same trust boundary every other secret in this project
+    already relies on) via agent/secrets.py on first use; reloads it on
+    every subsequent call rather than caching in memory, matching this
+    module's one-shot-per-call philosophy (see module docstring) --
+    correctness over the marginal cost of re-parsing a small PEM string.
 
     device_id derivation: SHA-256 of the raw 32-byte Ed25519 public key,
     hex-encoded. CONFIRMED against real primary source (the stable
     `openclaw` app's own `deriveDeviceIdFromPublicKey` and the Gateway
     server's own independent re-derivation check on every connect) -- see
     the module docstring's "DEVICE-ID DERIVATION -- CONFIRMED" section."""
-    pem = get_secret(_DEVICE_PRIVATE_KEY_SECRET)
+    pem = get_secret(profile.private_key_secret)
     if pem:
         private_key = load_pem_private_key(pem.encode("ascii"), password=None)
     else:
         private_key = Ed25519PrivateKey.generate()
         new_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-        set_secret(_DEVICE_PRIVATE_KEY_SECRET, new_pem.decode("ascii"))
+        set_secret(profile.private_key_secret, new_pem.decode("ascii"))
 
     public_key = private_key.public_key()
     raw_public_key = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
@@ -415,8 +569,8 @@ def _sign_payload(private_key, payload: str) -> str:
     return base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
 
 
-def _clear_device_token() -> None:
-    set_secret(_DEVICE_TOKEN_SECRET, "")
+def _clear_device_token(profile: _Profile) -> None:
+    set_secret(profile.device_token_secret, "")
 
 
 def _raise_for_error(error: dict) -> None:
@@ -487,10 +641,13 @@ def _wait_for_challenge(ws, budget_start: float):
         # sends device-auth material without a real challenge to sign.
 
 
-def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: float, use_device_token: bool) -> dict:
-    private_key, device_id, public_key_b64url = _load_or_create_device_identity()
+def _connect_and_call(
+    method: str, params: Optional[dict], call_id: str, start: float,
+    use_device_token: bool, profile: _Profile,
+) -> dict:
+    private_key, device_id, public_key_b64url = _load_or_create_device_identity(profile)
     bootstrap_token = get_secret(_BOOTSTRAP_TOKEN_SECRET)
-    device_token = get_secret(_DEVICE_TOKEN_SECRET) if use_device_token else None
+    device_token = get_secret(profile.device_token_secret) if use_device_token else None
     auth_token = device_token or bootstrap_token
     # Verified against the real, current STABLE Gateway server's own
     # connect-auth resolution (resolveSharedConnectAuth/
@@ -523,7 +680,7 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
 
         payload = _build_device_auth_payload_v3(
             device_id=device_id, client_id=_CLIENT_ID, client_mode=_CLIENT_MODE,
-            role=_ROLE, scopes=_SCOPES, signed_at_ms=signed_at_ms,
+            role=_ROLE, scopes=profile.scopes, signed_at_ms=signed_at_ms,
             token=auth_token, nonce=nonce, platform=_CLIENT_PLATFORM,
             device_family=_CLIENT_DEVICE_FAMILY,
         )
@@ -541,7 +698,7 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
                     "platform": _CLIENT_PLATFORM, "deviceFamily": _CLIENT_DEVICE_FAMILY,
                 },
                 "role": _ROLE,
-                "scopes": list(_SCOPES),
+                "scopes": list(profile.scopes),
                 "auth": {auth_field: auth_token},
                 "device": {
                     "id": device_id, "publicKey": public_key_b64url,
@@ -568,15 +725,20 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
 
         auth_info = hello_payload.get("auth") or {}
         granted_scopes = auth_info.get("scopes") or []
-        if "operator.read" not in granted_scopes:
-            # STEP 7: authentication succeeding is NOT sufficient -- the
-            # exact scope this bridge needs must actually be granted, or
-            # this fails closed rather than proceeding.
-            raise OpenClawScopeError("Gateway authenticated the connection but did not grant operator.read")
+        missing_scopes = [scope for scope in profile.scopes if scope not in granted_scopes]
+        if missing_scopes:
+            # Authentication succeeding is NOT sufficient -- every scope
+            # this profile needs must actually be granted, or this fails
+            # closed rather than proceeding (this is why _MESSAGE_PROFILE
+            # never silently degrades to acting as _READ_PROFILE, and
+            # vice versa).
+            raise OpenClawScopeError(
+                f"Gateway authenticated the connection but did not grant {', '.join(missing_scopes)}"
+            )
 
         new_device_token = auth_info.get("deviceToken")
         if isinstance(new_device_token, str) and new_device_token and new_device_token != device_token:
-            set_secret(_DEVICE_TOKEN_SECRET, new_device_token)
+            set_secret(profile.device_token_secret, new_device_token)
 
         advertised_methods = (hello_payload.get("features") or {}).get("methods") or []
         if advertised_methods and method not in advertised_methods:
@@ -584,24 +746,54 @@ def _connect_and_call(method: str, params: Optional[dict], call_id: str, start: 
 
         request_frame = {"type": "req", "id": call_id, "method": method, "params": params or {}}
         ws.send(json.dumps(request_frame))
-        response = _receive_matching(ws, call_id, start)
+        try:
+            response = _receive_matching(ws, call_id, start)
+        except (TimeoutError, OSError, WebSocketException, json.JSONDecodeError) as error:
+            if method == "send":
+                # The request frame definitely left this process -- see
+                # the module docstring's real, verified idempotency-cache
+                # findings for why a same-key retry is safe. This module
+                # itself never performs that retry; it only signals the
+                # uncertainty distinctly so a caller (agent/
+                # openclaw_messaging.py) can decide. Never raised for
+                # read-only methods, which have no side effect to be
+                # uncertain about -- those fall through to _call()'s
+                # existing generic timeout/unavailable handling unchanged.
+                raise OpenClawUncertainDelivery(
+                    f"OpenClaw '{method}' request was sent but no response was received "
+                    f"({type(error).__name__}); delivery could not be confirmed"
+                ) from error
+            raise
 
     if not response.get("ok", False):
         _raise_for_error(response.get("error") or {})
     return response.get("payload") or {}
 
 
-def _call(method: str, params: Optional[dict] = None) -> dict:
-    """The one place this module ever opens a WebSocket. Bounded to at
-    most 2 real connection attempts total: try a stored device token
-    first if one exists, falling back to the bootstrap token exactly
-    once if (and only if) the Gateway specifically reports
-    AUTH_DEVICE_TOKEN_MISMATCH for it -- never more than that, and never
-    for any other error (STEP 6's own explicit "must not create infinite
-    retry loops" requirement)."""
+def _call(method: str, params: Optional[dict] = None, *, profile: _Profile) -> dict:
+    """The one place this module ever opens a WebSocket. `profile` is
+    always one of the two module-level constants (_READ_PROFILE,
+    _MESSAGE_PROFILE) -- required, keyword-only, no default, so every
+    call site is explicit about which identity/scope/allowlist it's
+    using. Bounded to at most 2 real connection attempts total: try a
+    stored device token first if one exists, falling back to the
+    bootstrap token exactly once if (and only if) the Gateway
+    specifically reports AUTH_DEVICE_TOKEN_MISMATCH for it -- never more
+    than that, and never for any other error (STEP 6's own explicit
+    "must not create infinite retry loops" requirement)."""
 
-    if method not in _ALLOWED_METHODS:
-        raise OpenClawProtocolError(f"'{method}' is not an allowlisted OpenClaw method")
+    # Fail closed BEFORE any connection/network work if `profile` is not
+    # one of the two sanctioned module constants, checked by IDENTITY
+    # (`is`), not equality -- _Profile is a NamedTuple, so a forged
+    # instance with identical field values would compare `==` equal to
+    # a real one; `is` is the only check that actually distinguishes
+    # "one of the two constants this module defines" from "something
+    # that merely looks like one," including a forged profile that
+    # invents broader scopes/methods than either real one has.
+    if profile is not _READ_PROFILE and profile is not _MESSAGE_PROFILE:
+        raise OpenClawProtocolError("OpenClaw profile is not one of this module's two sanctioned identities")
+    if method not in profile.allowed_methods:
+        raise OpenClawProtocolError(f"'{method}' is not allowlisted for the '{profile.name}' OpenClaw identity")
     if not openclaw_configured():
         raise OpenClawUnavailable("OpenClaw is disabled or not configured")
 
@@ -613,15 +805,15 @@ def _call(method: str, params: Optional[dict] = None) -> dict:
     start = time.time()
     log_event("openclaw_request_started", request_id=request_id, component="openclaw", method=method)
 
-    stored_device_token = get_secret(_DEVICE_TOKEN_SECRET)
+    stored_device_token = get_secret(profile.device_token_secret)
     attempts = [True, False] if stored_device_token else [False]
     last_auth_error: Optional[OpenClawError] = None
 
     for use_device_token in attempts:
         try:
-            response = _connect_and_call(method, params, call_id, start, use_device_token)
+            response = _connect_and_call(method, params, call_id, start, use_device_token, profile)
         except _DeviceTokenMismatch:
-            _clear_device_token()
+            _clear_device_token(profile)
             last_auth_error = OpenClawAuthError(
                 "stored OpenClaw device token was rejected (AUTH_DEVICE_TOKEN_MISMATCH); "
                 "cleared it and retried once with the bootstrap token"
@@ -683,7 +875,7 @@ def get_status() -> dict:
     if not openclaw_configured():
         return {"configured": False, "available": False, "detail": "OpenClaw is disabled or not configured"}
     try:
-        payload = _call("status")
+        payload = _call("status", profile=_READ_PROFILE)
     except OpenClawPairingRequired as error:
         return {
             "configured": True, "available": False, "pairing_required": True,
@@ -729,7 +921,7 @@ def get_node_list() -> dict:
     if not openclaw_configured():
         return {"configured": False, "available": False, "nodes": []}
     try:
-        payload = _call("node.list")
+        payload = _call("node.list", profile=_READ_PROFILE)
     except OpenClawPairingRequired as error:
         return {
             "configured": True, "available": False, "nodes": [], "pairing_required": True,
@@ -744,3 +936,31 @@ def get_node_list() -> dict:
         raw_nodes = []
     nodes = [_minimize_node(raw) for raw in raw_nodes if isinstance(raw, dict)]
     return {"configured": True, "available": True, "nodes": nodes}
+
+
+def _send_raw(params: dict) -> dict:
+    """Private (underscore) entry point for the real `send` Gateway RPC,
+    always through _MESSAGE_PROFILE (operator.write, {send} only --
+    never the read identity). Deliberately NOT public: this module must
+    never expose a general-purpose, public-looking side-effecting
+    transport function -- the only sanctioned caller is agent/
+    openclaw_messaging.py, which applies Jarvis's own deterministic
+    channel/recipient allowlist and message validation BEFORE this is
+    ever reached. There is still no registered raw-RPC tool, no generic
+    RPC dispatcher, and no caller-selected RPC method anywhere in this
+    project; this function is defense-in-depth on top of that, not the
+    only thing preventing an arbitrary send.
+
+    Unlike get_status()/get_node_list(), this deliberately does NOT
+    catch and normalize OpenClawError here: agent/openclaw_messaging.py
+    needs to distinguish OpenClawPairingRequired (never auto-approved),
+    OpenClawUncertainDelivery (never automatically retried -- see that
+    exception's own docstring), and every other OpenClawError (a
+    definitive failure) to decide what to do next -- collapsing them
+    into one normalized shape here would throw that information away.
+    Raises OpenClawUnavailable itself if OpenClaw isn't configured,
+    matching every other function in this module's "never assume
+    configured" convention."""
+    if not openclaw_configured():
+        raise OpenClawUnavailable("OpenClaw is disabled or not configured")
+    return _call("send", params, profile=_MESSAGE_PROFILE)

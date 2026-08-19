@@ -7,7 +7,226 @@ needed.
 
 ---
 
-## 2026-08-17 (most recent) — OpenClaw M1.5: real loopback Gateway smoke test, two real bugs found and fixed
+## 2026-08-19 (most recent) — OpenClaw M2 hardening/review pass (still uncommitted, no real channel)
+
+**What**: A narrow hardening pass on the still-uncommitted M2 diff below,
+prompted by a review that found several issues in the original design.
+No new milestone, no real channel, no real message sent, nothing
+committed or pushed.
+
+1. **Removed the automatic same-key retry on uncertain delivery.** The
+   original entry below treated the Gateway's in-memory dedupe cache as
+   sufficient justification for one bounded same-key retry. Review
+   established that justification doesn't hold across a Gateway process
+   restart (the cache is in-memory, single-process, and gone on restart)
+   -- so a same-key resend is not provably safe, and could send a real
+   duplicate message if the Gateway restarted between successfully
+   delivering the original message and Jarvis receiving the response.
+   `agent/openclaw_messaging.py`'s `send_message()` now makes AT MOST ONE
+   transmission per logical send; an `OpenClawUncertainDelivery` is
+   reported as `delivery_status: "uncertain"` and left there, never
+   auto-retried. The `idempotencyKey` is still generated and sent (
+   protocol correctness / defense-in-depth against the Gateway's own
+   retry machinery), just no longer used to justify a second attempt
+   from this side.
+2. **Added a dedicated post-action verifier.** `agent/verification.py`'s
+   generic string check (a failure-marker scan) does not correctly read
+   this tool's JSON result -- a body like `{"sent": false,
+   "delivery_status": "uncertain", ...}` contains none of the
+   `FAILURE_MARKERS` words and would otherwise pass. Added
+   `_verify_send_message_via_openclaw`, registered in the existing
+   `_VERIFIERS` dict: `confirmed` → `ok=True`; `failed` → `ok=False`
+   with the error detail; `uncertain` → `ok=False` with a note
+   explicitly stating delivery is uncertain, must not be claimed
+   successful, and must not be auto-retried; anything malformed/
+   unrecognized fails closed (`ok=False`).
+3. **Enforced the closed profile set by identity, not equality.**
+   `agent/openclaw_gateway.py`'s `_call()` documented but didn't enforce
+   that only `_READ_PROFILE`/`_MESSAGE_PROFILE` are valid. Since
+   `_Profile` is a `NamedTuple`, a forged instance with identical field
+   values would compare `==` equal to a real one -- `_call()` now checks
+   `profile is _READ_PROFILE or profile is _MESSAGE_PROFILE` (Python
+   identity) as the very first thing it does, before any network work.
+4. **Renamed `send_raw()` to `_send_raw()`.** The old public-looking name
+   was a second, undocumented side-effecting transport surface that
+   bypassed `agent/openclaw_messaging.py`'s allowlist/validation policy
+   if called directly. Now private, documented as sanctioned for use
+   only by that module; still no registered raw-RPC tool, generic RPC
+   dispatcher, or caller-selected method anywhere in the project.
+5. **Corrected the write/read-scope documentation wording.** The
+   original entry's "a compromised messaging credential never carries
+   read-identity authority" overstated the guarantee -- this project's
+   own earlier verification found `operator.write` already satisfies an
+   `operator.read` check server-side (`operatorScopeSatisfied`).
+   Documentation (this file, `ARCHITECTURE.md`, `HANDOFF.md`,
+   `agent/openclaw_gateway.py`'s module docstring) now distinguishes
+   three separate claims: credential isolation (true), Jarvis's own RPC
+   confinement (true, structurally enforced), and server-side scope
+   semantics (asymmetric -- don't overstate the write→read direction).
+6. **Narrowed `account_id`/`thread_id` out of the public surface.** Both
+   are optional in the real `SendParamsSchema`, so neither was strictly
+   required for the basic single-account direct-message path this first
+   release targets, and neither has its own independent channel/target-
+   style allowlist yet. Removed from `send_message()`'s signature and
+   the `send_message_via_openclaw` ToolSpec's `input_schema` entirely.
+   `required` stays `["channel", "target", "message"]`.
+7. ToolSpec risk metadata (`permission_level=3`, `side_effect=True`,
+   `unattended_allowed=False`, `requires_live_confirmation=True`,
+   `parallel_safe=False`) and the general autonomy model
+   (`agent/autonomy.py`) were deliberately left untouched -- out of scope
+   for this pass.
+
+**Files affected**: `agent/openclaw_gateway.py`, `agent/
+openclaw_messaging.py`, `agent/verification.py`, `tools/schemas/
+openclaw.py`, `tests/test_openclaw_gateway.py` (+6 tests: forged-profile
+rejection ×3, legitimate-profile pass-through, no-public-raw-send-
+surface ×2), `tests/test_openclaw_messaging.py` (retry-proving tests
+replaced with single-transmission-proving tests; account_id/thread_id
+tests replaced; +2 executor-integration tests), `tests/
+test_verification.py` (+10 tests for the new verifier).
+
+**Verification**: targeted OpenClaw/verification/executor test files
+plus a full `python -m unittest discover -s tests` run (see this
+session's final report for exact counts). Nothing committed or pushed;
+no real channel configured; no real outbound message sent.
+
+## 2026-08-17 — OpenClaw M2: outbound text messaging bridge (implementation + tests, no real channel yet)
+
+**What**: A new, narrow capability on top of the M1/M1.5 read-only
+bridge — sending a plain-text outbound message through an
+operator-configured OpenClaw channel. Implementation and tests only;
+no real channel was configured, no real message was sent, and nothing
+was committed or pushed as part of this pass.
+
+Re-verified the real `send` RPC contract directly against
+`openclaw@2026.7.1-2`'s compiled server source (the same stable target
+as every other verification in this project): `send` is a genuine,
+distinct, top-level Gateway RPC method (`server-methods-*.js`'s method
+table), with its own real `SendParamsSchema` (`to`/`idempotencyKey`
+required; `message`/`channel`/`accountId`/`threadId` optional and
+exactly what this bridge uses; `additionalProperties: false`) --
+identical between this stable release and the newer `2026.8.1-beta.2`
+protocol package, no drift. Confirmed `send` requires `operator.write`
+(the real core method-scope descriptor table:
+`{name: "send", scope: "operator.write"}`), and that `operator.write`
+already satisfies an `operator.read` check server-side
+(`operator-scope-compat-*.js`'s `operatorScopeSatisfied`), so the new
+messaging identity requests only `operator.write`, never both.
+Confirmed `chat.send` (`ChatSendParamsSchema` requires a `sessionKey`,
+part of OpenClaw's own agent/session execution surface) and
+`message.action` (a broader CLI action-dispatch RPC) are genuinely
+different, wider surfaces this bridge never uses -- the user's own
+explicit architectural mandate ("use `send`, never `chat.send`, so an
+OpenClaw agent loop never processes Jarvis's outbound message") is
+directly validated by real source, not just followed on instruction.
+Also confirmed the Gateway maintains a real, in-memory,
+`idempotencyKey`-keyed dedupe cache (`server-request-context-*.js`'s
+`context.dedupe`, a plain `Map`; 5-minute TTL confirmed via
+`server-maintenance-*.js`'s cleanup loop, `now - v.ts > 3e5`) that
+caches both success and failure results and replays them verbatim on a
+same-key repeat within that window, against the SAME running Gateway
+process. A subsequent hardening/review pass (same day, still
+uncommitted) identified that this does not establish durable
+exactly-once delivery: the cache is in-memory and does not survive a
+Gateway process restart, so if the Gateway delivers the message and then
+dies/restarts before Jarvis receives the response, a same-key resend is
+no longer provably deduplicated and could send a real duplicate. As a
+result, `agent/openclaw_messaging.py` does NOT automatically retry an
+uncertain delivery at all -- see that pass's own entry below for the
+corrected design. Verified, not assumed, per this project's standing
+rule not to guess at safety-critical retry behavior -- including,
+crucially, this project's own earlier guess about it.
+
+**`agent/openclaw_gateway.py`** (connection/transport layer, extended):
+added a small, closed `_Profile` NamedTuple type -- exactly two
+instances exist at module scope (`_READ_PROFILE`, unchanged from M1;
+`_MESSAGE_PROFILE`, new), each bundling its own device-identity
+secrets, scopes, and RPC allowlist. No public API constructs a third
+profile or accepts a caller-supplied scope list. `_connect_and_call`/
+`_call`/`_load_or_create_device_identity`/`_clear_device_token` all now
+take a required `profile` argument instead of using fixed module
+constants, so every call site is explicit about which identity it's
+using; `_READ_PROFILE`'s behavior is unchanged from M1 (`get_status`/
+`get_node_list` pass it explicitly now). Added a new
+`OpenClawUncertainDelivery` exception, raised only for `method ==
+"send"` and only when the request frame was confirmed transmitted (the
+`ws.send()` call itself succeeded) but no trustworthy response arrived
+-- every other failure mode (auth, validation, pre-transmission
+timeout/connection-refused) remains a definitive failure, unchanged
+from M1's existing exception hierarchy. Added `_send_raw()` (private --
+see hardening pass below), a thin pass-through to `_call("send", params,
+profile=_MESSAGE_PROFILE)` that deliberately does NOT normalize/catch
+errors the way `get_status()`/`get_node_list()` do, so the messaging
+policy layer above it can react to each distinct failure mode.
+
+**`agent/openclaw_messaging.py`** (new): the messaging POLICY layer --
+channel/target allowlist enforcement, message validation, idempotency-
+key generation (a fresh UUID per logical send, never caller-supplied),
+and result normalization into three `delivery_status` shapes
+(`confirmed`/`failed`/`uncertain`). Makes AT MOST ONE transmission per
+logical send -- an `OpenClawUncertainDelivery` is never automatically
+retried (see hardening pass below for why this changed from the retry
+originally implemented in this entry).
+Makes no transport/auth decisions -- never opens a socket directly.
+Text-only: never emits any media/voice/poll/reaction field the real
+`send` schema supports. `MAX_MESSAGE_LENGTH = 4000` (conservative,
+channel-neutral; oversized input is rejected, never truncated).
+Messaging `PAIRING_REQUIRED` is normalized into a result shape that's
+naturally distinct from `get_status()`'s (different key set entirely),
+never auto-approved, never reuses the read-only device token.
+
+**`config/settings.py`**: `openclaw_messaging_enabled` (default
+`False`, a separate opt-in from `openclaw_enabled` -- enabling the
+read-only bridge does not also enable messaging), `openclaw_
+allowed_channels`/`openclaw_allowed_targets` (default empty,
+comma-separated exact-match allowlists -- no wildcards, no regex, no
+OpenClaw-side name/directory resolution; a human-friendly alias layer,
+if ever built, would need to resolve deterministically to one of these
+exact configured pairs through Jarvis's own contacts layer).
+
+**`tools/schemas/openclaw.py`**: one new tool, `send_message_via_
+openclaw` (`permission_level=3`, `side_effect=True`,
+`unattended_allowed=False`, `requires_live_confirmation=True`,
+`parallel_safe=False` -- matching `send_email`'s existing external-
+communication convention exactly). Input: exactly `channel`/`target`/
+`message`, all required; never a raw RPC method, device/Gateway token,
+OpenClaw session identifier, `account_id`, or `thread_id` (the latter
+two are optional in the real `SendParamsSchema` but were deliberately
+narrowed out of the public surface -- see hardening pass below).
+
+**Why**: Sending a message to a real person through a real channel is
+the same risk class this project already gates `send_email`/
+`confirm_login` for -- the same permission level, the same live-
+confirmation requirement, and (new here) the same "verify against real
+primary source before trusting a retry is safe" discipline this
+project has applied to every OpenClaw milestone so far. The separate
+device identity exists so the read and messaging credentials are
+independently revocable/scoped secrets; see the hardening pass below
+for the precise, non-overstated boundary between that credential
+isolation, Jarvis's own RPC confinement, and the real Gateway's
+server-side scope semantics (which are asymmetric, not symmetric).
+
+**Files affected**: `agent/openclaw_gateway.py` (profile abstraction,
+`OpenClawUncertainDelivery`, `_send_raw`), `agent/openclaw_messaging.py`
+(new), `config/settings.py` (3 new settings), `tools/schemas/
+openclaw.py` (new tool), `tests/test_openclaw_gateway.py` (updated for
+the profile abstraction; `TestSecurityAllowlist` restructured to cover
+both profiles independently), `tests/test_openclaw_tool.py` (new
+registration + dispatch tests), `tests/test_openclaw_messaging.py`
+(new, 46 tests).
+
+**Verification**: `npm pack openclaw@2026.7.1-2` (already downloaded
+from the M1.5 pass) re-inspected for the `send`/`chat.send`/
+`message.action` RPC definitions, `SendParamsSchema`, the core
+method-scope descriptor table, the operator-scope-compat hierarchy
+check, and the real dedupe-cache implementation. `python -m unittest
+discover -s tests` → 1160 passed, 0 failed (up from 1098). Nothing
+committed or pushed; no real messaging channel configured; no real
+outbound message sent.
+
+---
+
+## 2026-08-17 — OpenClaw M1.5: real loopback Gateway smoke test, two real bugs found and fixed
 
 **What**: Every prior OpenClaw M1 verification pass (below) was source-
 reading and local-fake-server testing — this pass ran an actual OpenClaw

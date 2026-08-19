@@ -21,6 +21,7 @@ still real: it catches the tool having already detected and reported its
 own failure, which the caller could otherwise easily miss when a failure
 message reads as plausible prose rather than an exception.
 """
+import json
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -68,10 +69,54 @@ def _verify_memory_write(result: str) -> VerificationResult:
     return _string_check(result, "checked for the memory safety filter's refusal message")
 
 
+def _verify_send_message_via_openclaw(tool_input: dict, result: str) -> VerificationResult:
+    """agent.openclaw_messaging.send_message() normalizes every outcome to
+    a JSON object with `sent`/`delivery_status` (see that module's
+    docstring for the three delivery_status values: confirmed/failed/
+    uncertain) -- the generic string check above is not safe here, since
+    a JSON body like {"sent": false, "delivery_status": "uncertain", ...}
+    contains no FAILURE_MARKERS word and would otherwise read as success.
+    This parses the JSON directly and fails closed on anything that
+    doesn't match the expected shape, so an ambiguous or malformed result
+    is never mistaken for a confirmed delivery."""
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return VerificationResult(
+            ok=False, note="send_message_via_openclaw result was not valid JSON; cannot verify delivery",
+        )
+    if not isinstance(payload, dict):
+        return VerificationResult(
+            ok=False, note="send_message_via_openclaw result was not a JSON object; cannot verify delivery",
+        )
+
+    delivery_status = payload.get("delivery_status")
+
+    if payload.get("sent") is True and delivery_status == "confirmed":
+        return VerificationResult(ok=True, note="OpenClaw reported the message sent and delivery confirmed")
+    if delivery_status == "failed":
+        return VerificationResult(
+            ok=False,
+            note=f"OpenClaw message delivery failed: {payload.get('error', 'no error detail provided')}",
+        )
+    if delivery_status == "uncertain":
+        return VerificationResult(
+            ok=False,
+            note="OpenClaw message delivery is UNCERTAIN -- the send request was transmitted but no "
+                 "trustworthy response was received. This must NOT be treated as a successful send, "
+                 "and it must NOT be automatically retried (a resend could deliver a duplicate message).",
+        )
+    return VerificationResult(
+        ok=False,
+        note=f"send_message_via_openclaw result has an unrecognized shape (delivery_status={delivery_status!r}); failing closed",
+    )
+
+
 # tool name -> verifier. Anything not listed here has no specific
 # verification defined and falls through to the generic string check.
 _VERIFIERS = {
     "schedule_task": _verify_schedule_task,
+    "send_message_via_openclaw": _verify_send_message_via_openclaw,
 }
 
 

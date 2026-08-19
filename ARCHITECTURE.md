@@ -852,9 +852,147 @@ OpenClaw tools or skills in M1, and has no mechanism to.
 
 **Explicitly out of scope for M1 and not built**: `node.invoke` (any
 node capability — notifications, device info, camera, screen, location),
-sending a message through a channel, and anything requiring
-`operator.write` or above. See `ROADMAP.md`'s OpenClaw M2 entry for the
-next planned increment (messaging) and its own scope limits.
+and anything requiring `operator.admin`/`operator.approvals`/
+`operator.pairing`/`operator.talk`. Outbound messaging is M2, described
+next — still no `node.invoke`, still no device capabilities, still no
+OpenClaw agent/model-routing authority.
+
+### OpenClaw messaging bridge (optional, outbound-only, OpenClaw M2 — under review, no real channel configured)
+
+A second, narrow capability layered on top of the M1 bridge: sending a
+plain-text outbound message through an operator-configured OpenClaw
+channel. Implemented and tested against a local fake Gateway server
+only — **no real messaging channel (Telegram, Discord, WhatsApp, Slack,
+Signal, iMessage, ...) has been configured or exercised, and no real
+outbound message has been sent, as of this writing.**
+
+```
+Jarvis (model, via the ordinary tool-calling loop)
+ ↓
+send_message_via_openclaw (tools/schemas/openclaw.py — permission_level=3,
+                            side_effect=True, requires_live_confirmation=True)
+ ↓
+agent/openclaw_messaging.py (channel/target allowlist, message
+                              validation, idempotency-key generation,
+                              result normalization — Jarvis's own policy
+                              layer, makes no transport/auth decisions,
+                              never auto-retries an uncertain delivery)
+ ↓
+agent/openclaw_gateway.py's _send_raw() (private — see below) → _MESSAGE_PROFILE
+ ↓
+Gateway `send` RPC (never `chat.send` — see below)
+ ↓
+operator-configured channel plugin → recipient
+```
+
+**`send`, never `chat.send`, and never `message.action`** — the core
+architectural decision this milestone was built around. Verified
+directly against `openclaw@2026.7.1-2`'s compiled server source (see
+`agent/openclaw_gateway.py`'s module docstring for the full verification
+trail): `send` is a genuine, distinct, top-level Gateway RPC method with
+its own `SendParamsSchema`. `chat.send` requires a `sessionKey` and is
+part of OpenClaw's own agent/session execution surface — using it would
+mean an OpenClaw agent loop processes Jarvis's outbound message, which
+is exactly the architectural blurring this project avoids; Jarvis
+remains the sole orchestrator, and OpenClaw is transport only.
+`message.action` is a broader action-dispatch RPC the OpenClaw CLI's
+own richer commands use (stickers, broadcasts, moderation); this bridge
+never uses it either.
+
+**A separate device identity from M1, on purpose.** `send` requires
+`operator.write` (confirmed against the real core method-scope
+descriptor table); M1's read-only identity requests only
+`operator.read`. Rather than upgrade the read identity's scope, M2 holds
+its own, completely separate Ed25519 keypair and device token
+(`OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY`/`OPENCLAW_MESSAGE_DEVICE_TOKEN`,
+distinct secrets from `OPENCLAW_DEVICE_PRIVATE_KEY`/
+`OPENCLAW_DEVICE_TOKEN`). This separation gives three distinct, non-
+equivalent guarantees, and the boundary must not be overstated as
+stronger than it is:
+1. **Credential isolation (true, unconditional)** — the read and
+   messaging keypairs/tokens are independent secrets; compromising one
+   does not hand over the other.
+2. **Jarvis RPC confinement (true, structurally enforced)** — `_call()`
+   in `agent/openclaw_gateway.py` fails closed on any profile that isn't
+   one of the two exact module-level `_Profile` instances (checked by
+   Python identity, `is`, not `==`, so a forged profile with identical
+   field values is still rejected), and each profile's RPC allowlist is
+   independently exact (`_READ_PROFILE`: `{health, status, node.list}`;
+   `_MESSAGE_PROFILE`: `{send}` only) — through Jarvis, a read-only
+   connection cannot reach `send` and the messaging connection cannot
+   reach `health`/`status`/`node.list`.
+3. **Server-side scope semantics (asymmetric — do not overstate)** — per
+   the real Gateway's own `operatorScopeSatisfied` compatibility check
+   (verified against `openclaw@2026.7.1-2`'s compiled source),
+   `operator.write` already satisfies an `operator.read` check
+   server-side. So while the *read* identity is genuinely incapable of
+   any write through Jarvis, the claim that a compromised *messaging*
+   credential "carries no read authority at all" is not accurate at the
+   server level — it is Jarvis's own RPC confinement (point 2), not the
+   credential's cryptographic scope, that keeps the messaging identity
+   from reading anything through this bridge.
+
+Both identities may reuse the same `OPENCLAW_GATEWAY_TOKEN` shared
+bootstrap credential during pairing; that credential authenticates the
+connection generically and is not what determines a device's granted
+scopes. There is no public API to construct a third `_Profile` or to
+request an arbitrary scope list.
+
+**Deterministic, Jarvis-side allowlists — never OpenClaw's own name/
+directory lookups.** `openclaw_messaging_enabled` defaults to `False`;
+`openclaw_allowed_channels`/`openclaw_allowed_targets` default to empty.
+No channel is authorized and no message can be sent until an operator
+explicitly configures both an exact channel name and an exact
+"channel:target" pair — no wildcards, no regex, no fuzzy/name-based
+resolution ("send to Bob" is never handed to OpenClaw as a name to
+resolve). A future human-friendly alias layer, if built, would resolve
+deterministically to one of these exact configured pairs through
+Jarvis's own contacts layer, never through OpenClaw's own channel-side
+directory.
+
+**Text-only, first pass.** The real `send` RPC schema supports media,
+voice notes, polls, and more; `agent/openclaw_messaging.py` deliberately
+never emits any of those fields. `message` is the only content field
+this bridge ever sends, capped at a conservative, channel-neutral 4000
+characters (`MAX_MESSAGE_LENGTH`) — oversized input is rejected, never
+silently truncated.
+
+**Idempotency and uncertain delivery — at most ONE transmission per
+logical send, never an automatic retry.** Every send carries a fresh,
+internally-generated `idempotencyKey` (a UUID; never caller-supplied).
+The real Gateway does maintain a genuine, verified, in-memory idempotency
+cache (5-minute TTL, single-process — see `agent/openclaw_gateway.py`'s
+docstring for the exact primary-source citations), but that cache does
+not survive a Gateway process restart, so a same-key resend is not
+provably safe: if the Gateway successfully delivers the message and then
+dies/restarts before Jarvis receives the response, the in-memory dedupe
+entry is gone and a resend — even with the identical key — could produce
+a real duplicate message. `agent/openclaw_gateway.py` distinguishes a
+failure that happened *before* the request frame was transmitted
+(definitive — reported as `delivery_status: "failed"`) from one that
+happened *after* transmission but before a trustworthy response arrived
+(`OpenClawUncertainDelivery` — reported as `delivery_status:
+"uncertain"` and left there, never automatically retried, with the same
+key or a new one). The `idempotencyKey` is still generated and sent on
+every call (protocol correctness and defense-in-depth against the
+Gateway's own retry/replay machinery), but `agent/openclaw_messaging.py`
+never treats it as license to resend on its own. A dedicated verifier
+(`agent/verification.py`'s `_verify_send_message_via_openclaw`) parses
+this JSON result directly rather than relying on the generic string
+check, so an `"uncertain"` result is always flagged as unverified —
+never silently read as success.
+
+**Pairing is normalized separately from M1's.** A first connection with
+the new messaging identity may require pairing, exactly like M1's own
+device identity did — never auto-approved, and the resulting result
+shape (`sent`/`delivery_status`-keyed) is naturally distinct from
+`get_status()`'s (`configured`/`available`-keyed), so a caller can never
+confuse which identity's pairing is pending.
+
+**Explicitly out of scope for M2's first pass**: any real channel
+configuration/login, media/attachments/voice/polls, `node.invoke`,
+device capabilities, OpenClaw agent/session execution, OpenClaw
+model-routing authority.
 
 ## 15. Inter-agent communication
 

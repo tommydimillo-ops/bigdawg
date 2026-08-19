@@ -5,7 +5,89 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-17 (latest) — OpenClaw M1.5: real loopback Gateway smoke test, two real bugs found and fixed
+### 2026-08-19 (latest) — OpenClaw M2 hardening/review pass (still uncommitted)
+
+- **Objective**: Narrow hardening/review pass on the still-uncommitted
+  OpenClaw M2 diff (see the entry below), prompted by a review that
+  found several design issues. No new milestone, no real channel, no
+  real message, no commit/push.
+- **Work completed**: Removed the automatic same-key retry on uncertain
+  delivery — the Gateway's in-memory dedupe cache doesn't survive a
+  Gateway process restart, so a same-key resend isn't provably safe;
+  `send_message()` now makes at most one transmission per logical send.
+  Added `agent/verification.py`'s `_verify_send_message_via_openclaw`
+  (registered in `_VERIFIERS`), parsing this tool's JSON result directly
+  so `uncertain`/`failed` deliveries can't be mistaken for confirmed
+  success by the generic failure-marker string check. Enforced the
+  closed `_Profile` set by Python identity (`is`, not `==`) as the first
+  check in `agent/openclaw_gateway.py`'s `_call()`, rejecting any forged
+  profile. Renamed `send_raw()` to private `_send_raw()`. Corrected
+  documentation across `agent/openclaw_gateway.py`, `ARCHITECTURE.md`,
+  `HANDOFF.md`, and `CHANGELOG.md` that overstated a compromised
+  messaging credential as having no read authority at all — the real
+  Gateway's own server-side scope semantics are asymmetric
+  (`operator.write` already satisfies an `operator.read` check there).
+  Narrowed `account_id`/`thread_id` out of `send_message()`'s signature
+  and the `send_message_via_openclaw` ToolSpec's `input_schema`.
+- **Decisions**: Kept the fix scoped to this diff only — no general
+  autonomy-model changes, no ToolSpec risk-metadata changes, no real
+  channel configuration.
+- **Problems encountered**: None during the fix itself; the issues fixed
+  were all found by the user's own review of the prior session's work,
+  not rediscovered independently here.
+- **Tests**: See this session's final review report for exact targeted
+  and full-suite counts; policy is the full suite must stay green.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-17 — OpenClaw M2: outbound text messaging bridge (implementation + tests only)
+
+- **Objective**: Implement OpenClaw M2 — sending a plain-text outbound
+  message through an operator-configured OpenClaw channel — first pass:
+  implementation and tests only, no real channel, no real message sent,
+  no commit/push.
+- **Work completed**: Re-verified the real `send` RPC contract against
+  `openclaw@2026.7.1-2`'s compiled server source: a genuine, distinct
+  top-level method (never `chat.send`, which requires a `sessionKey`
+  and is part of OpenClaw's own agent/session surface — confirmed via
+  real source, validating the user's explicit architectural mandate,
+  not just following it), requires `operator.write`, and the real
+  Gateway maintains a genuine in-memory idempotency cache (5-minute
+  TTL). This cache was originally reasoned to make one bounded same-key
+  retry safe on uncertain delivery — **corrected in the very next
+  session's hardening pass, see below: that reasoning doesn't survive a
+  Gateway process restart, so the retry was removed.** Added a small,
+  closed `_Profile` type to `agent/openclaw_gateway.py` — exactly two
+  instances (`_READ_PROFILE` unchanged from M1, new `_MESSAGE_PROFILE`
+  with its own separate device identity/secrets, `operator.write` only,
+  `{send}` only) — no public API for a caller-supplied scope list. New
+  `agent/openclaw_messaging.py`: channel/target allowlist enforcement
+  (disabled and empty by default), message validation, idempotency-key
+  generation, the (later-removed) bounded uncertain-delivery retry, and
+  result normalization into confirmed/failed/uncertain. New tool
+  `send_message_via_openclaw` (permission_level=3, side_effect=True,
+  requires_live_confirmation=True, matching `send_email`'s convention).
+- **Decisions**: A separate device identity for messaging, not a scope
+  upgrade of the read identity. Text-only first pass; no real channel
+  configuration until this pass is reviewed. (The "compromised messaging
+  credential must never carry read-identity authority, and vice versa"
+  framing originally recorded here was corrected in the hardening pass
+  below — the real Gateway's own scope semantics are asymmetric, so only
+  the read→write direction of that claim holds unconditionally.)
+- **Problems encountered**: None apparent at the time — a same-day
+  hardening/review pass (see below) subsequently found real design
+  issues in this implementation that weren't caught here.
+- **Tests**: 62 net new (1160 total, up from 1098) — 46 in new
+  `tests/test_openclaw_messaging.py`, the rest updated/added in
+  `tests/test_openclaw_gateway.py`/`tests/test_openclaw_tool.py`. Full
+  suite passing, zero live/paid API calls, no real OpenClaw
+  installation used.
+- **Next session objective**: See `HANDOFF.md`.
+
+---
+
+### 2026-08-17 — OpenClaw M1.5: real loopback Gateway smoke test, two real bugs found and fixed
 
 - **Objective**: Validate the already-committed OpenClaw M1 bridge
   against an actual running OpenClaw Gateway (`openclaw@2026.7.1-2`,

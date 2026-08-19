@@ -4,6 +4,7 @@ verifier re-queries a real store (schedule_task).
 
 Run with: python -m unittest tests.test_verification -v
 """
+import json
 import os
 import tempfile
 import unittest
@@ -162,6 +163,81 @@ class TestVerifyAgentResult(unittest.TestCase):
         result = verify_agent_result(self._result(
             agent_name="memory", result="Could not save that fact.",
         ))
+        self.assertFalse(result.ok)
+
+
+class TestSendMessageViaOpenClawVerification(unittest.TestCase):
+    """The generic string check (FAILURE_MARKERS) is not safe for this
+    tool's JSON result -- e.g. {"sent": false, "delivery_status":
+    "uncertain", ...} contains none of those marker words. This verifier
+    must parse the JSON directly and fail closed."""
+
+    def _dump(self, **fields):
+        return json.dumps(fields)
+
+    def test_confirmed_delivery_is_ok(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=True, delivery_status="confirmed", channel="telegram",
+            target="allowed-target-1", message_id="m1",
+        ))
+        self.assertTrue(result.ok)
+
+    def test_failed_delivery_is_not_ok(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=False, delivery_status="failed", error="target is not allowlisted",
+        ))
+        self.assertFalse(result.ok)
+        self.assertIn("failed", result.note.lower())
+        self.assertIn("target is not allowlisted", result.note)
+
+    def test_uncertain_delivery_is_not_ok(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=False, delivery_status="uncertain", channel="telegram", target="allowed-target-1",
+        ))
+        self.assertFalse(result.ok)
+        self.assertIn("uncertain", result.note.lower())
+
+    def test_uncertain_delivery_note_says_not_successful(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=False, delivery_status="uncertain",
+        ))
+        self.assertIn("NOT", result.note)
+        self.assertIn("successful", result.note.lower())
+
+    def test_uncertain_delivery_note_says_must_not_retry(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=False, delivery_status="uncertain",
+        ))
+        self.assertIn("retr", result.note.lower())
+
+    def test_sent_true_but_wrong_status_is_not_ok(self):
+        # A malformed/inconsistent combination -- must not be treated as
+        # success just because "sent" is truthy.
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=True, delivery_status="uncertain",
+        ))
+        self.assertFalse(result.ok)
+
+    def test_unknown_delivery_status_fails_closed(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(
+            sent=True, delivery_status="something_new",
+        ))
+        self.assertFalse(result.ok)
+
+    def test_missing_delivery_status_fails_closed(self):
+        result = verify("send_message_via_openclaw", {}, self._dump(sent=True))
+        self.assertFalse(result.ok)
+
+    def test_malformed_json_fails_closed(self):
+        result = verify("send_message_via_openclaw", {}, "not json at all")
+        self.assertFalse(result.ok)
+
+    def test_json_array_instead_of_object_fails_closed(self):
+        result = verify("send_message_via_openclaw", {}, json.dumps(["sent", "confirmed"]))
+        self.assertFalse(result.ok)
+
+    def test_empty_string_fails_closed(self):
+        result = verify("send_message_via_openclaw", {}, "")
         self.assertFalse(result.ok)
 
 

@@ -224,6 +224,43 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     wire values so this class of bug is now caught locally. No daemon or
     permanent OpenClaw installation exists on this machine. See
     `CHANGELOG.md` for full detail.
+  - **OpenClaw M2 — outbound text messaging bridge** ⏳ under review (no
+    real channel configured yet): `agent/openclaw_messaging.py` (new) —
+    the real Gateway `send` RPC, never `chat.send`
+    (`ChatSendParamsSchema` requires a `sessionKey` and is part of
+    OpenClaw's own agent/session execution surface, confirmed via real
+    source, not this bridge's concern). A SEPARATE `operator.write`
+    device identity from M1's `operator.read` one
+    (`OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY`/
+    `OPENCLAW_MESSAGE_DEVICE_TOKEN`), implemented as a small closed
+    `_Profile` type in `agent/openclaw_gateway.py` (exactly two
+    instances; no public API for a caller-supplied scope list); each
+    profile's RPC allowlist is independently exact (`_READ_PROFILE`:
+    `{health, status, node.list}`; `_MESSAGE_PROFILE`: `{send}`).
+    Deterministic Jarvis-side channel/target allowlists
+    (`openclaw_messaging_enabled` defaults `False`,
+    `openclaw_allowed_channels`/`openclaw_allowed_targets` default
+    empty — no wildcards, no fuzzy matching, no OpenClaw-side name
+    resolution). Text-only first pass, capped at 4000 characters,
+    rejected (never truncated) if oversized. A fresh, internally-
+    generated `idempotencyKey` per send; at most ONE transmission per
+    logical send, always. A genuinely uncertain delivery (request
+    transmitted, no trustworthy response) is reported as such and never
+    automatically retried — a same-day hardening pass removed an
+    earlier same-key retry after review found the real Gateway's
+    in-memory dedupe cache does not survive a Gateway process restart,
+    so a resend isn't provably safe (see `CHANGELOG.md`'s hardening
+    entry). Messaging pairing normalized separately from M1's own, never
+    auto-approved. One new tool, `send_message_via_openclaw`
+    (permission_level=3, side_effect=True,
+    requires_live_confirmation=True, matching `send_email`'s existing
+    external-communication convention; exactly `channel`/`target`/
+    `message`, no `account_id`/`thread_id` — narrowed out in the
+    hardening pass since neither has its own independent allowlist
+    yet). A dedicated `agent/verification.py` verifier parses this
+    tool's JSON result directly so an uncertain/failed delivery is never
+    mistaken for confirmed success. See `CHANGELOG.md` for full detail
+    and exact current test counts.
 
 ## In progress
 
@@ -243,23 +280,18 @@ discussed most recently:
   `agent/usage.py`'s *estimated* costs against actual billed amounts.
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
-- **OpenClaw M2 — messaging bridge** — PLANNED, not started, not
-  implemented. OpenClaw M0 (research audit) and M1 (read-only bridge:
-  `openclaw_status`/`openclaw_list_nodes`) are complete — see
-  "Completed" above. M2 is the next OpenClaw increment: sending a
-  message through an explicitly configured channel, requiring
-  `operator.write` scope (a real, deliberate scope increase over M1's
-  `operator.read`-only bridge), recipient validation, confirmation rules
-  (matching `send_email`'s existing permission_level=3 +
-  `requires_live_confirmation` treatment — sending a message to a real
-  person via a real channel is not a read), and full audit logging.
-  **Jarvis remains the sole orchestrator** throughout — this constraint
-  does not relax as OpenClaw gains capability. Still to hold for every
-  future OpenClaw milestone: no OpenClaw model-routing authority, no
-  arbitrary OpenClaw-initiated Jarvis tool execution, no shared secrets/
-  memory store between the two systems, no third-party OpenClaw plugin
+- **OpenClaw M2 follow-up — a real messaging channel.** M2's own
+  outbound-send implementation is complete and under review (see
+  "Completed" above) — text only, no real channel configured or tested
+  yet. The next increment is choosing and configuring the FIRST real
+  channel (Telegram is the presumed first candidate but not yet
+  decided) after this pass is reviewed. Still to hold for every future
+  OpenClaw milestone: no OpenClaw model-routing authority, no arbitrary
+  OpenClaw-initiated Jarvis tool execution, no shared secrets/memory
+  store between the two systems, no third-party OpenClaw plugin
   dependency (OpenClaw plugins execute with full host privileges, no
-  sandboxing — confirmed in the M0 audit).
+  sandboxing — confirmed in the M0 audit), no `node.invoke`/device
+  capabilities.
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring

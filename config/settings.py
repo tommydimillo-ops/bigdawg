@@ -341,6 +341,27 @@ class Settings:
     # query, not a long-running operation.
     openclaw_timeout_seconds: float = 10.0
 
+    # --- OpenClaw outbound messaging (optional, Phase 9 OpenClaw M2) ---
+    # A SEPARATE opt-in from openclaw_enabled -- a machine with the
+    # read-only bridge enabled must not automatically gain the ability to
+    # send messages. Disabled by default; no channel is authorized until
+    # both this AND the allowlists below are explicitly configured.
+    openclaw_messaging_enabled: bool = False
+    # Comma-separated exact channel names (e.g. "telegram" or
+    # "telegram,discord") -- deliberately a flat allowlist, not a
+    # wildcard or pattern. agent/openclaw_messaging.py is the only reader
+    # of this value; it never trusts a model-supplied channel string
+    # alone.
+    openclaw_allowed_channels: str = ""
+    # Comma-separated exact "channel:target" pairs (e.g.
+    # "telegram:123456789"). No wildcards, no regex, no fuzzy/name-based
+    # matching -- every recipient this bridge can ever reach must be
+    # listed here verbatim. Human-friendly aliases, if ever added, must
+    # resolve deterministically to one of these exact pairs through
+    # Jarvis's own contacts layer, never through OpenClaw's own
+    # channel-side directory lookups.
+    openclaw_allowed_targets: str = ""
+
     # --- Debug / development mode ---
     # Wired to agent/observability.py's log level (DEBUG vs INFO).
     debug: bool = False
@@ -411,6 +432,9 @@ class Settings:
             openclaw_enabled=_env_bool("OPENCLAW_ENABLED", cls.openclaw_enabled),
             openclaw_gateway_url=_env_str("OPENCLAW_GATEWAY_URL", cls.openclaw_gateway_url),
             openclaw_timeout_seconds=_env_float("OPENCLAW_TIMEOUT_SECONDS", cls.openclaw_timeout_seconds),
+            openclaw_messaging_enabled=_env_bool("OPENCLAW_MESSAGING_ENABLED", cls.openclaw_messaging_enabled),
+            openclaw_allowed_channels=_env_str("OPENCLAW_ALLOWED_CHANNELS", cls.openclaw_allowed_channels),
+            openclaw_allowed_targets=_env_str("OPENCLAW_ALLOWED_TARGETS", cls.openclaw_allowed_targets),
             debug=_env_bool("DEBUG", cls.debug),
         )
 

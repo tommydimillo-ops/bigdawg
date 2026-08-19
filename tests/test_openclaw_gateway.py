@@ -264,7 +264,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
 
     def test_health_round_trip_with_real_signature_verification(self):
         self._serve(_make_handler({"health": {"runtime": "running"}}))
-        result = gw._call("health")
+        result = gw._call("health", profile=gw._READ_PROFILE)
         self.assertEqual(result, {"runtime": "running"})
 
     def test_signed_at_uses_the_connect_challenge_timestamp_not_wall_clock(self):
@@ -281,7 +281,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self._serve(_make_handler(
             {"health": {}}, challenge_ts=distinctive_challenge_ts, capture=captured,
         ))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         self.assertEqual(captured["params"]["device"]["signedAt"], distinctive_challenge_ts)
 
     def test_signed_at_falls_back_to_wall_clock_when_challenge_omits_timestamp(self):
@@ -293,7 +293,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         captured = {}
         before_ms = int(time.time() * 1000)
         self._serve(_make_handler({"health": {}}, omit_challenge_ts=True, capture=captured))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         after_ms = int(time.time() * 1000)
         signed_at = captured["params"]["device"]["signedAt"]
         self.assertGreaterEqual(signed_at, before_ms)
@@ -309,7 +309,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         # setup credential Jarvis does not hold).
         captured = {}
         self._serve(_make_handler({"health": {}}, capture=captured))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         auth = captured["params"]["auth"]
         self.assertEqual(auth.get("token"), "fake-bootstrap-token")
         self.assertNotIn("bootstrapToken", auth)
@@ -326,7 +326,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         # byte-for-byte on darwin/linux/win32).
         captured = {}
         self._serve(_make_handler({"health": {}}, capture=captured))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         client = captured["params"]["client"]
         self.assertEqual(client.get("platform"), sys.platform)
         self.assertTrue(client.get("platform"))
@@ -344,7 +344,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         # present and consistent.
         captured = {}
         self._serve(_make_handler({"health": {}}, capture=captured))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         client = captured["params"]["client"]
         self.assertEqual(client.get("deviceFamily"), gw._CLIENT_DEVICE_FAMILY)
 
@@ -359,7 +359,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self._serve(_make_handler(
             {"health": {}}, expect_device_token="issued-device-token", capture=captured,
         ))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         auth = captured["params"]["auth"]
         self.assertEqual(auth.get("deviceToken"), "issued-device-token")
         self.assertNotIn("token", auth)
@@ -379,14 +379,14 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self._serve(_make_handler(
             {"health": {}}, expect_device_token="issued-device-token", capture=captured,
         ))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         auth = captured["params"]["auth"]
         device = captured["params"]["device"]
         sent_credential = auth.get("deviceToken") or auth.get("token")
         self.assertEqual(sent_credential, "issued-device-token")
         expected_payload = gw._build_device_auth_payload_v3(
             device_id=device["id"], client_id=gw._CLIENT_ID, client_mode=gw._CLIENT_MODE,
-            role=gw._ROLE, scopes=gw._SCOPES, signed_at_ms=device["signedAt"],
+            role=gw._ROLE, scopes=gw._READ_PROFILE.scopes, signed_at_ms=device["signedAt"],
             token=sent_credential, nonce=device["nonce"], platform=gw._CLIENT_PLATFORM,
             device_family=gw._CLIENT_DEVICE_FAMILY,
         )
@@ -396,12 +396,12 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
 
     def test_status_round_trip(self):
         self._serve(_make_handler({"status": {"runtime": "running", "version": "test-1"}}))
-        result = gw._call("status")
+        result = gw._call("status", profile=gw._READ_PROFILE)
         self.assertEqual(result["version"], "test-1")
 
     def test_node_list_round_trip(self):
         self._serve(_make_handler({"node.list": {"nodes": [{"id": "n1", "platform": "macos"}]}}))
-        result = gw._call("node.list")
+        result = gw._call("node.list", profile=gw._READ_PROFILE)
         self.assertEqual(result["nodes"][0]["id"], "n1")
 
     def test_get_status_end_to_end_through_real_server(self):
@@ -427,12 +427,12 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         # longer matches what was actually signed.
         self._serve(_make_handler({"health": {}}, require_wrong_nonce_in_payload=True))
         with self.assertRaises(gw.OpenClawAuthError):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_missing_operator_read_scope_fails_closed(self):
         self._serve(_make_handler({"health": {"runtime": "running"}}, grant_operator_read=False))
         with self.assertRaises(gw.OpenClawScopeError):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_pairing_required_is_normalized_and_never_auto_approved(self):
         self._serve(_make_handler(connect_error={
@@ -440,7 +440,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
             "details": {"requestId": "req-abc123", "reason": "not-paired"},
         }))
         try:
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
             self.fail("expected OpenClawPairingRequired")
         except gw.OpenClawPairingRequired as error:
             self.assertEqual(error.request_id, "req-abc123")
@@ -464,35 +464,35 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
     def test_unsupported_protocol_is_normalized(self):
         self._serve(_make_handler({"health": {}}, protocol=99))
         with self.assertRaises(gw.OpenClawUnsupportedCapability):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_unrecognized_error_code_falls_back_to_protocol_error(self):
         self._serve(_make_handler({}))  # no response configured for "health"
         with self.assertRaises(gw.OpenClawProtocolError):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_timeout_waiting_for_challenge_is_normalized(self):
         object.__setattr__(settings, "openclaw_timeout_seconds", 0.5)
         self._serve(_make_handler(hang_after_challenge=False, omit_challenge=True))
         with self.assertRaises(gw.OpenClawTimeout):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_timeout_waiting_for_hello_is_normalized(self):
         object.__setattr__(settings, "openclaw_timeout_seconds", 0.5)
         self._serve(_make_handler(hang_after_challenge=True))
         with self.assertRaises(gw.OpenClawTimeout):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_gateway_not_running_is_unavailable_not_a_crash(self):
         object.__setattr__(settings, "openclaw_gateway_url", "ws://127.0.0.1:1")
         object.__setattr__(settings, "openclaw_timeout_seconds", 1.0)
         with self.assertRaises(gw.OpenClawUnavailable):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
     def test_error_message_never_contains_the_bootstrap_token(self):
         self._serve(_make_handler(connect_error={"code": "AUTH_TOKEN_MISMATCH", "message": "token mismatch"}))
         try:
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
             self.fail("expected OpenClawAuthError")
         except gw.OpenClawAuthError as error:
             self.assertNotIn("fake-bootstrap-token", str(error))
@@ -502,12 +502,12 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self._serve(_make_handler(
             {"health": {"runtime": "running"}}, expect_device_token="issued-device-token",
         ))
-        result = gw._call("health")
+        result = gw._call("health", profile=gw._READ_PROFILE)
         self.assertEqual(result["runtime"], "running")
 
     def test_new_device_token_from_hello_ok_is_persisted(self):
         self._serve(_make_handler({"health": {}}, issue_device_token="brand-new-device-token"))
-        gw._call("health")
+        gw._call("health", profile=gw._READ_PROFILE)
         self.assertEqual(self._secrets.get("OPENCLAW_DEVICE_TOKEN"), "brand-new-device-token")
 
     def test_stale_device_token_is_cleared_and_retried_once_with_shared_token(self):
@@ -520,7 +520,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
         self._serve(_make_handler(
             {"health": {"runtime": "running"}}, expect_device_token="a-token-that-is-not-stale",
         ))
-        result = gw._call("health")
+        result = gw._call("health", profile=gw._READ_PROFILE)
         self.assertEqual(result["runtime"], "running")
         # Stale token cleared (set to empty string via _clear_device_token).
         self.assertEqual(self._secrets.get("OPENCLAW_DEVICE_TOKEN"), "")
@@ -534,7 +534,7 @@ class TestRealFakeGatewayServer(RealGatewayTestCase):
             {"health": {}}, expect_device_token="a-token-nothing-will-match", reject_shared_token=True,
         ))
         with self.assertRaises(gw.OpenClawAuthError):
-            gw._call("health")
+            gw._call("health", profile=gw._READ_PROFILE)
 
 
 class TestConfiguration(unittest.TestCase):
@@ -589,22 +589,22 @@ class TestDeviceIdentity(unittest.TestCase):
 
     def test_generates_and_persists_a_new_identity(self):
         self.assertNotIn("OPENCLAW_DEVICE_PRIVATE_KEY", self._secrets)
-        _, device_id, public_key_b64url = gw._load_or_create_device_identity()
+        _, device_id, public_key_b64url = gw._load_or_create_device_identity(gw._READ_PROFILE)
         self.assertIn("OPENCLAW_DEVICE_PRIVATE_KEY", self._secrets)
         self.assertTrue(self._secrets["OPENCLAW_DEVICE_PRIVATE_KEY"].startswith("-----BEGIN PRIVATE KEY-----"))
         self.assertEqual(len(device_id), 64)  # sha256 hex digest length
         self.assertTrue(public_key_b64url)
 
     def test_identity_persists_and_is_deterministic_across_calls(self):
-        _, device_id_1, public_key_1 = gw._load_or_create_device_identity()
-        _, device_id_2, public_key_2 = gw._load_or_create_device_identity()
+        _, device_id_1, public_key_1 = gw._load_or_create_device_identity(gw._READ_PROFILE)
+        _, device_id_2, public_key_2 = gw._load_or_create_device_identity(gw._READ_PROFILE)
         self.assertEqual(device_id_1, device_id_2)
         self.assertEqual(public_key_1, public_key_2)
 
     def test_different_key_produces_a_different_device_id(self):
-        _, device_id_1, _ = gw._load_or_create_device_identity()
+        _, device_id_1, _ = gw._load_or_create_device_identity(gw._READ_PROFILE)
         del self._secrets["OPENCLAW_DEVICE_PRIVATE_KEY"]
-        _, device_id_2, _ = gw._load_or_create_device_identity()
+        _, device_id_2, _ = gw._load_or_create_device_identity(gw._READ_PROFILE)
         self.assertNotEqual(device_id_1, device_id_2)
 
     def test_reloads_an_existing_stored_key_rather_than_regenerating(self):
@@ -614,7 +614,7 @@ class TestDeviceIdentity(unittest.TestCase):
         raw_public = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         expected_device_id = __import__("hashlib").sha256(raw_public).hexdigest()
 
-        _, device_id, _ = gw._load_or_create_device_identity()
+        _, device_id, _ = gw._load_or_create_device_identity(gw._READ_PROFILE)
         self.assertEqual(device_id, expected_device_id)
 
     def test_known_public_key_produces_the_expected_device_id(self):
@@ -631,7 +631,7 @@ class TestDeviceIdentity(unittest.TestCase):
             "-----END PRIVATE KEY-----\n"
         )
         self._secrets["OPENCLAW_DEVICE_PRIVATE_KEY"] = fixed_pem
-        _, device_id, _ = gw._load_or_create_device_identity()
+        _, device_id, _ = gw._load_or_create_device_identity(gw._READ_PROFILE)
         self.assertEqual(
             device_id,
             "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
@@ -640,7 +640,7 @@ class TestDeviceIdentity(unittest.TestCase):
         self.assertEqual(device_id, device_id.lower())
 
     def test_private_key_material_never_appears_in_the_device_id_or_public_key(self):
-        private_key, device_id, public_key_b64url = gw._load_or_create_device_identity()
+        private_key, device_id, public_key_b64url = gw._load_or_create_device_identity(gw._READ_PROFILE)
         pem = self._secrets["OPENCLAW_DEVICE_PRIVATE_KEY"]
         self.assertNotIn(pem, device_id)
         self.assertNotIn(pem, public_key_b64url)
@@ -713,35 +713,75 @@ class TestSignature(unittest.TestCase):
             public_key_b.verify(_b64url_decode(signature_b64url), payload.encode("utf-8"))
 
 
+_FORBIDDEN_METHODS = (
+    "node.invoke", "chat.send", "chat.inject", "chat.abort", "tools.invoke",
+    "config.get", "config.set", "exec.run", "approval.resolve", "plugin.install",
+    "sessions.list", "agents.list", "cron.add", "system.info", "literally.anything.else",
+)
+
+
 class TestSecurityAllowlist(unittest.TestCase):
+    """Both profiles are tested against the SAME forbidden-method list --
+    neither _READ_PROFILE nor _MESSAGE_PROFILE may ever reach any of
+    these, and each profile's own allowed method is exactly one specific
+    thing, never the other profile's."""
 
     @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
-    def test_node_invoke_is_rejected(self, mock_configured):
-        with self.assertRaises(gw.OpenClawProtocolError):
-            gw._call("node.invoke")
-
-    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
-    def test_chat_send_is_rejected(self, mock_configured):
-        with self.assertRaises(gw.OpenClawProtocolError):
-            gw._call("chat.send")
-
-    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
-    def test_config_exec_approval_plugin_methods_are_rejected(self, mock_configured):
-        for method in ("config.get", "config.set", "exec.run", "approval.resolve", "plugin.install"):
+    def test_forbidden_methods_rejected_for_read_profile(self, mock_configured):
+        for method in _FORBIDDEN_METHODS:
             with self.subTest(method=method):
                 with self.assertRaises(gw.OpenClawProtocolError):
-                    gw._call(method)
+                    gw._call(method, profile=gw._READ_PROFILE)
 
     @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
-    def test_unknown_arbitrary_method_is_rejected(self, mock_configured):
+    def test_forbidden_methods_rejected_for_message_profile(self, mock_configured):
+        for method in _FORBIDDEN_METHODS:
+            with self.subTest(method=method):
+                with self.assertRaises(gw.OpenClawProtocolError):
+                    gw._call(method, profile=gw._MESSAGE_PROFILE)
+
+    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
+    def test_read_profile_cannot_call_send(self, mock_configured):
+        # Load-bearing: a read-only connection must not be able to reach
+        # the messaging RPC even though "send" is a real, known method.
         with self.assertRaises(gw.OpenClawProtocolError):
-            gw._call("literally.anything.else")
+            gw._call("send", profile=gw._READ_PROFILE)
 
-    def test_allowlist_is_exactly_health_status_node_list(self):
-        self.assertEqual(gw._ALLOWED_METHODS, frozenset({"health", "status", "node.list"}))
+    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
+    def test_message_profile_cannot_call_read_methods(self, mock_configured):
+        # Load-bearing, the other direction: a write-scoped messaging
+        # connection must not be able to reach health/status/node.list
+        # either -- each profile's allowlist is independently exact, not
+        # a superset/subset relationship.
+        for method in ("health", "status", "node.list"):
+            with self.subTest(method=method):
+                with self.assertRaises(gw.OpenClawProtocolError):
+                    gw._call(method, profile=gw._MESSAGE_PROFILE)
 
-    def test_scopes_never_include_write_or_admin_or_pairing(self):
-        self.assertEqual(gw._SCOPES, ["operator.read"])
+    def test_read_allowlist_is_exactly_health_status_node_list(self):
+        self.assertEqual(gw._READ_PROFILE.allowed_methods, frozenset({"health", "status", "node.list"}))
+
+    def test_message_allowlist_is_exactly_send(self):
+        self.assertEqual(gw._MESSAGE_PROFILE.allowed_methods, frozenset({"send"}))
+
+    def test_read_profile_scopes_are_exactly_operator_read(self):
+        self.assertEqual(gw._READ_PROFILE.scopes, ("operator.read",))
+
+    def test_message_profile_scopes_are_exactly_operator_write(self):
+        # Confirmed against real primary source (openclaw@2026.7.1-2's
+        # operator-scope-compat module) that operator.write already
+        # satisfies an operator.read check server-side -- this profile
+        # must never separately request operator.read, and must never
+        # request operator.admin/operator.approvals/operator.pairing/
+        # operator.talk/operator.talk.secrets or any other scope.
+        self.assertEqual(gw._MESSAGE_PROFILE.scopes, ("operator.write",))
+
+    def test_read_and_message_profiles_use_distinct_secrets(self):
+        # STEP 3's load-bearing requirement: the read-only identity must
+        # remain independently scoped and revocable from the messaging
+        # identity, and vice versa.
+        self.assertNotEqual(gw._READ_PROFILE.private_key_secret, gw._MESSAGE_PROFILE.private_key_secret)
+        self.assertNotEqual(gw._READ_PROFILE.device_token_secret, gw._MESSAGE_PROFILE.device_token_secret)
 
     def test_client_identity_is_not_the_reserved_gateway_client(self):
         self.assertNotEqual(gw._CLIENT_ID, "gateway-client")
@@ -752,6 +792,80 @@ class TestSecurityAllowlist(unittest.TestCase):
         self.assertNotIn("openclaw_raw_rpc", public_names)
         self.assertNotIn("call_rpc", public_names)
         self.assertNotIn("invoke", public_names)
+        self.assertNotIn("send_raw", public_names)
+
+    def test_send_raw_only_exists_as_a_private_name(self):
+        # There must be no public-looking side-effecting transport
+        # function for general Jarvis callers -- only the private
+        # _send_raw, sanctioned for use exclusively by
+        # agent/openclaw_messaging.py (see that function's own docstring).
+        self.assertFalse(hasattr(gw, "send_raw"))
+        self.assertTrue(hasattr(gw, "_send_raw"))
+        self.assertTrue(callable(gw._send_raw))
+
+
+class TestProfileIdentityEnforcement(RealGatewayTestCase):
+    """_call() must fail closed on anything that isn't one of the two
+    real module-level _Profile constants, checked by identity (`is`),
+    not by equality -- a forged _Profile with identical field values to
+    a real one would otherwise pass a naive `==` check."""
+
+    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
+    def test_forged_read_like_profile_is_rejected(self, mock_configured):
+        forged = gw._Profile(
+            name="read",
+            private_key_secret=gw._READ_PROFILE.private_key_secret,
+            device_token_secret=gw._READ_PROFILE.device_token_secret,
+            scopes=gw._READ_PROFILE.scopes,
+            allowed_methods=gw._READ_PROFILE.allowed_methods,
+        )
+        self.assertEqual(forged, gw._READ_PROFILE)  # equal by value...
+        with self.assertRaises(gw.OpenClawProtocolError):
+            gw._call("health", profile=forged)  # ...but still rejected by identity
+
+    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
+    def test_forged_message_like_profile_is_rejected(self, mock_configured):
+        forged = gw._Profile(
+            name="message",
+            private_key_secret=gw._MESSAGE_PROFILE.private_key_secret,
+            device_token_secret=gw._MESSAGE_PROFILE.device_token_secret,
+            scopes=gw._MESSAGE_PROFILE.scopes,
+            allowed_methods=gw._MESSAGE_PROFILE.allowed_methods,
+        )
+        self.assertEqual(forged, gw._MESSAGE_PROFILE)
+        with self.assertRaises(gw.OpenClawProtocolError):
+            gw._call("send", profile=forged)
+
+    @patch("agent.openclaw_gateway.openclaw_configured", return_value=True)
+    def test_forged_broader_scope_profile_is_rejected(self, mock_configured):
+        forged = gw._Profile(
+            name="admin",
+            private_key_secret="OPENCLAW_DEVICE_PRIVATE_KEY",
+            device_token_secret="OPENCLAW_DEVICE_TOKEN",
+            scopes=("operator.admin",),
+            allowed_methods=frozenset({"health", "status", "node.list", "send", "config.set"}),
+        )
+        with self.assertRaises(gw.OpenClawProtocolError):
+            gw._call("health", profile=forged)
+        with self.assertRaises(gw.OpenClawProtocolError):
+            gw._call("send", profile=forged)
+
+    def test_legitimate_profiles_are_unaffected_by_the_identity_check(self):
+        # Confirms the fail-closed check itself doesn't reject the two
+        # real profiles: pointed at a closed local port (nothing
+        # listening, so the connection fails fast, same pattern as
+        # test_gateway_not_running_is_unavailable_not_a_crash above),
+        # both still fail -- but only with OpenClawUnavailable, never the
+        # profile-identity error, proving the identity check passed them
+        # through to the (here, deliberately failing) connection step.
+        object.__setattr__(settings, "openclaw_gateway_url", "ws://127.0.0.1:1")
+        object.__setattr__(settings, "openclaw_timeout_seconds", 1.0)
+        with self.assertRaises(gw.OpenClawUnavailable) as read_ctx:
+            gw._call("health", profile=gw._READ_PROFILE)
+        self.assertNotIn("sanctioned identities", str(read_ctx.exception))
+        with self.assertRaises(gw.OpenClawUnavailable) as message_ctx:
+            gw._call("send", profile=gw._MESSAGE_PROFILE)
+        self.assertNotIn("sanctioned identities", str(message_ctx.exception))
 
 
 class TestNodeDataMinimization(unittest.TestCase):

@@ -9,54 +9,113 @@ this file.
 Last updated: 2026-08-17, a session that continued from Phase 9
 Milestone 3 (committed, pushed, CI-verified as `4265f55`) into a new,
 separate initiative — OpenClaw interoperability. OpenClaw M1 (the
-read-only Gateway bridge, across five internal passes documented in
-prior CHANGELOG.md entries) is committed as `d1eb813`, pushed, and
-CI-verified (GitHub Actions run `31963970515`). This session then ran
-**OpenClaw M1.5 — a real loopback Gateway smoke test**: installed an
-actual `openclaw@2026.7.1-2` process (isolated, temporary, never a
-daemon), and called Jarvis's real `openclaw_status`/`openclaw_list_nodes`
-tools against it through the normal `tools.registry.dispatch()` path.
-This found and fixed two real bugs (`client.platform` and
-`client.deviceFamily` both required on the wire, not just in the signed
-payload — see CHANGELOG.md's M1.5 entry for full detail) that neither
-extensive source-reading nor the local fake test server had caught.
-With both fixed, the real smoke test succeeded end to end. **M1.5's
-fixes are verified and awaiting this session's finalization commit.**
+read-only Gateway bridge) is committed as `d1eb813`, and **OpenClaw
+M1.5** (a real loopback Gateway smoke test against an actual
+`openclaw@2026.7.1-2` process, which found and fixed two real bugs —
+`client.platform`/`client.deviceFamily` both required on the wire, not
+just in the signed payload) is committed as `8502c03`, pushed, and
+CI-verified (GitHub Actions run `32073836073`, completed/success). Both
+are done.
 
-## OpenClaw M1 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE (M1.5 real-Gateway-verified)
+This session then implemented **OpenClaw M2 — outbound text
+messaging**: a `send_message_via_openclaw` tool backed by the real
+Gateway `send` RPC (never `chat.send`), a completely separate
+`operator.write` device identity from M1's `operator.read` one,
+Jarvis-side channel/target allowlists (disabled and empty by default),
+idempotency-key generation, and full test coverage. **M2 is
+implementation + tests only — no real channel has been configured, no
+real message has been sent, and nothing from this pass has been
+committed or pushed, per explicit instruction.**
 
-- **M1 commit**: `d1eb8130609d03e0f4f68a3f2cc46c4e3d66ade2` (pushed,
-  CI-verified, GitHub Actions run `31963970515`)
-- **M1.5 status**: real-Gateway smoke test passed; two bug fixes
-  verified locally (1098/1098 tests) but not yet committed as of this
-  writing — confirm with `git status` whether this session's
-  finalization commit has landed since this was written.
-- **Current OpenClaw capabilities**: an optional, disabled-by-default,
+A same-day **hardening/review pass** (still part of this same
+uncommitted diff) then corrected several issues a review found in that
+first implementation — most importantly, removed an automatic same-key
+retry on uncertain delivery that the review correctly identified as
+unsafe across a Gateway process restart (the Gateway's dedupe cache is
+in-memory and does not survive one). See the "OpenClaw M2" section
+below for the corrected, current design — the paragraph above describes
+the original implementation for history's sake; where the two disagree,
+the hardening-pass section below is what the code actually does.
+
+## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
+
+- **M1 commit**: `d1eb8130609d03e0f4f68a3f2cc46c4e3d66ade2`
+- **M1.5 commit**: `8502c03b396d774e8e1f41f1ace7e87383ec429b` (pushed,
+  CI-verified, GitHub Actions run `32073836073`, unittest step
+  completed/success)
+- **Current OpenClaw M1 capabilities**: an optional, disabled-by-default,
   read-only Gateway bridge — authenticated loopback WebSocket, stable
-  compatibility target `openclaw@2026.7.1-2` (now verified against an
+  compatibility target `openclaw@2026.7.1-2` (verified against an
   actual running instance of that exact version, not just its source),
   protocol version 4, a persistent Jarvis Ed25519 device identity, a
   human-only pairing flow, `operator.read`-only scope, a fixed RPC
   allowlist (`health`/`status`/`node.list`), and two Jarvis tools
   (`openclaw_status`/`openclaw_list_nodes`).
 
-**Security boundaries**: Jarvis remains the sole orchestrator; no raw
-RPC; no `node.invoke`; no `operator.write`/admin/pairing scope; no
-automatic pairing approval by Jarvis (the real Gateway auto-approved
-pairing itself in the M1.5 dev/loopback test configuration — a real
-OpenClaw default for that config shape, not anything Jarvis did); no
-third-party OpenClaw plugins; no OpenClaw model-routing authority; no
-OpenClaw memory authority; no shared secrets store.
-
 **Automated vs. real-world testing**: M1 has extensive mocked and
 local-fake-Gateway protocol tests (real Ed25519 signature verification
 against a genuine local WebSocket server, never a stub), **and** as of
-M1.5, has now also been verified against a real, running
+M1.5, has also been verified against a real, running
 `openclaw@2026.7.1-2` process (temporary, isolated, removed afterward —
-no OpenClaw installation persists on this machine). OpenClaw M2
-(messaging) is **not implemented**. Device capabilities are **not
-implemented**. Phase 9 Milestone 4 (FTS5) remains deferred until after
-the OpenClaw work currently planned.
+no OpenClaw installation persists on this machine).
+
+## OpenClaw M2 — OUTBOUND TEXT MESSAGING ⏳ IMPLEMENTED, TESTED, HARDENED, UNCOMMITTED (awaiting review)
+
+- **Status**: code- and test-complete (see this session's final report
+  for the exact current test count), **not committed, not pushed** —
+  per explicit "implement + test only, do not commit" instruction, now
+  followed by a same-day hardening/review pass, also uncommitted.
+- **What it adds**: `send_message_via_openclaw` (permission_level=3,
+  side_effect=True, requires_live_confirmation=True — matching
+  `send_email`'s convention). Input is exactly `channel`/`target`/
+  `message`, all required — no `account_id`/`thread_id` in this first
+  release (both are optional in the real `SendParamsSchema` but not yet
+  independently allowlisted; narrowed out of the public surface in the
+  hardening pass). Backed by `agent/openclaw_messaging.py` (new) and a
+  profile-based extension to `agent/openclaw_gateway.py`.
+- **Security boundaries** (in addition to M1's, all still true): the
+  messaging identity is a SEPARATE Ed25519 device identity/token from
+  M1's read identity (`OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY`/
+  `OPENCLAW_MESSAGE_DEVICE_TOKEN`, never `OPENCLAW_DEVICE_PRIVATE_KEY`/
+  `OPENCLAW_DEVICE_TOKEN`); requests only `operator.write`; its own RPC
+  allowlist is exactly `{send}` (the read identity cannot reach `send`;
+  the messaging identity cannot reach `health`/`status`/`node.list`
+  either — independently exact, not a superset), and `_call()` now
+  enforces this by identity (`is`, not `==`) against a fail-closed
+  check for exactly `_READ_PROFILE`/`_MESSAGE_PROFILE`, rejecting any
+  forged `_Profile`, even one copying valid scopes/methods.
+  **Precise wording on read authority** (corrected in the hardening
+  pass — see CHANGELOG.md's hardening entry for the full three-way
+  distinction): the read identity is genuinely incapable of any write
+  through Jarvis. The reverse claim — that a compromised messaging
+  credential carries no read authority at all — is NOT accurate at the
+  Gateway's own server-side scope-semantics level (`operator.write`
+  already satisfies an `operator.read` check there); what actually
+  keeps the messaging identity from reading anything is Jarvis's own
+  RPC confinement (the `{send}`-only allowlist above), not the
+  credential's cryptographic scope. `chat.send`/`message.action`/
+  `node.invoke` remain structurally unreachable; no raw-RPC tool
+  exists, and the transport function once named `send_raw()` is now
+  private (`_send_raw()`), used only by `agent/openclaw_messaging.py`;
+  messaging is globally disabled by default
+  (`openclaw_messaging_enabled = False`) with empty channel/target
+  allowlists, so a fresh install cannot send anywhere.
+- **Delivery semantics (corrected in the hardening pass)**: at most ONE
+  transmission per logical send. An `OpenClawUncertainDelivery` (frame
+  transmitted, no trustworthy response) is reported as
+  `delivery_status: "uncertain"` and never automatically retried — the
+  original implementation retried once with the same idempotencyKey,
+  reasoning the Gateway's in-memory dedupe cache made that safe; review
+  found that reasoning doesn't hold across a Gateway process restart,
+  so the retry was removed. A dedicated verifier
+  (`agent/verification.py`'s `_verify_send_message_via_openclaw`,
+  registered in `_VERIFIERS`) parses this tool's JSON result directly
+  so `uncertain`/`failed` are never mistaken for `confirmed` by the
+  generic failure-marker string check.
+- **Not done in this pass**: no real channel (Telegram/Discord/
+  WhatsApp/Slack/Signal/iMessage/...) configured or logged into, no
+  real outbound message sent — every automated test uses the same
+  local-fake-Gateway-server pattern as M1/M1.5, never a real channel.
 
 ## Current project status
 
@@ -67,37 +126,80 @@ after OpenClaw.
 
 **OpenClaw** (a separate, real, independently-developed open-source
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
-subsystem): **M0** complete, approved, no code. **M1** (read-only
-Gateway bridge with real Ed25519 device-identity authentication) is
-**complete, committed (`d1eb813`), pushed, and CI-verified**. **M1.5**
-(real loopback Gateway smoke test) passed, with two real bug fixes
-verified locally, pending this session's finalization commit — see the
-section above and CHANGELOG.md's M1.5 entry for full detail.
+subsystem): **M0** complete, approved, no code. **M1** and **M1.5**
+complete, committed, pushed, CI-verified — see the section above.
+**M2** (outbound text messaging) implemented and tested this session,
+**uncommitted, awaiting the user's review** — see the section above and
+CHANGELOG.md's M2 entry for full detail.
 
-**Working tree status depends on whether this session's M1.5
-finalization commit has landed** — confirm with a live `git status`/
-`git log` rather than trusting this file. **1098 tests pass,
-0 failures** as of the M1.5 fixes (1096 at M1's own commit; 1093 before
-the stable-compatibility pass + 3 new; 1090 before the beta
-re-verification pass; 1075 before the device-auth correction pass; 1024
-before OpenClaw M1 first landed), no live/paid API calls during testing.
-A real, temporary `openclaw@2026.7.1-2` process WAS installed and run
-during M1.5's smoke test, then fully removed — no OpenClaw installation
-persists on this machine as of this writing.
+**Working tree is NOT clean as of this writing** — M2's files are
+uncommitted. Confirm with a live `git status`/`git log` rather than
+trusting this file. **1160 tests pass, 0 failures** (1098 at the M1.5
+commit; 1096 at M1's own commit; earlier counts in prior CHANGELOG.md
+entries), no live/paid API calls during testing. No real OpenClaw
+installation persists on this machine; M1.5's temporary smoke-test
+process was fully removed after that pass.
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M1.5's real-Gateway fixes are
-complete and tested; this session's remaining work is documentation +
-the finalization commit/push/CI-verify sequence. The user has not yet
-said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
-(FTS5) next; both are explicitly deferred until asked for.
+Nothing actively mid-task — OpenClaw M2's implementation and tests are
+complete; this session's remaining work is documentation (this file
+included) and reporting back to the user for review. **Do not commit
+or push M2. Do not configure a real messaging channel. Do not start
+OpenClaw device capabilities, OpenClaw agent/model-routing integration,
+or Phase 9 Milestone 4 (FTS5)** until the user explicitly says so.
 
 ## What was completed (this session, most recent first)
 
-0. **OpenClaw M1.5 — real loopback Gateway smoke test** (new session,
-   2026-08-17, follows M1's own commit/push/CI-verify from the prior
-   session): ran an actual `openclaw@2026.7.1-2` process for the first
+-1. **OpenClaw M2 hardening/review pass** (same session, still
+    uncommitted, no real channel): a review of the M2 diff below found
+    several issues, all fixed — see CHANGELOG.md's dedicated 2026-08-19
+    entry for full detail. Summary: removed the automatic same-key retry
+    on uncertain delivery (unsafe across a Gateway restart); added a
+    dedicated JSON-parsing verifier for `send_message_via_openclaw` in
+    `agent/verification.py`; enforced the closed `_Profile` set by
+    Python identity (`is`) in `_call()`, not `==`; renamed `send_raw()`
+    to private `_send_raw()`; corrected documentation that overstated a
+    compromised messaging credential as having no read authority at all
+    (the Gateway's own server-side scope semantics are asymmetric);
+    narrowed `account_id`/`thread_id` out of the public tool surface.
+    Ran targeted + full regression tests; nothing committed or pushed.
+0. **OpenClaw M2 — outbound text messaging bridge** (new session,
+   implementation + tests only, uncommitted): the real Gateway `send`
+   RPC, never `chat.send` (`ChatSendParamsSchema` requires a
+   `sessionKey` and is part of OpenClaw's own agent/session execution
+   surface — confirmed via real `openclaw@2026.7.1-2` server source,
+   not just followed on instruction) or `message.action` (a broader CLI
+   action-dispatch RPC). Added a small, closed `_Profile` type to
+   `agent/openclaw_gateway.py` — exactly two instances
+   (`_READ_PROFILE`, unchanged from M1; new `_MESSAGE_PROFILE`, its own
+   separate Ed25519 device identity/token
+   `OPENCLAW_MESSAGE_DEVICE_PRIVATE_KEY`/`OPENCLAW_MESSAGE_DEVICE_TOKEN`,
+   `operator.write` only — confirmed against real source that this
+   already satisfies `operator.read`, so never both — `{send}`-only RPC
+   allowlist). New `agent/openclaw_messaging.py`: Jarvis-side channel/
+   target allowlists (disabled and empty by default — no wildcards, no
+   OpenClaw-side name resolution), message validation (4000-char cap,
+   rejects rather than truncates), a fresh internally-generated
+   `idempotencyKey` per send. **Corrected in a same-day hardening pass**
+   (see the item above and CHANGELOG.md): this originally included one
+   bounded same-key retry on a genuinely uncertain delivery, reasoned
+   safe against the real Gateway's in-memory, 5-minute-TTL idempotency
+   cache — review found that reasoning doesn't survive a Gateway process
+   restart, so the retry was removed; a genuinely uncertain delivery is
+   now reported as such and left there, never auto-retried. New tool
+   `send_message_via_openclaw` (permission_level=3, side_effect=True,
+   requires_live_confirmation=True, matching `send_email`'s
+   convention; `account_id`/`thread_id` also later narrowed out of its
+   input in the hardening pass). New tests in
+   `tests/test_openclaw_messaging.py` (see the hardening item above and
+   this session's final report for exact current counts). **Explicitly
+   not done**: no real channel configured/logged into, no real message
+   sent, nothing committed or pushed.
+1. **OpenClaw M1.5 — real loopback Gateway smoke test** (prior session
+   within the same overall OpenClaw initiative, committed as `8502c03`,
+   pushed, CI-verified — GitHub Actions run `32073836073`): ran an
+   actual `openclaw@2026.7.1-2` process for the first
    time — isolated npm install under `/tmp`, isolated
    `OPENCLAW_STATE_DIR`, loopback-only bind, test token stored via
    `agent/secrets.py`. First attempt (`--dev`) exposed a real isolation
@@ -120,9 +222,9 @@ said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
    preserved. 2 new tests (1098 total, up from 1096); the fake test
    server's signature verification was also corrected to reconstruct
    from actual captured wire values instead of duplicate constants.
-1. **OpenClaw M1 re-verification #2 — stable compatibility: auth-field
+2. **OpenClaw M1 re-verification #2 — stable compatibility: auth-field
    bug fixed for real, device-ID CONFIRMED** (same session, follow-up to
-   item 2 below): re-verification #1 (also this session, folded below)
+   item 3 below): re-verification #1 (also this session, folded below)
    had checked a claimed `signedAt` bug against the beta client packages
    and correctly left `signedAt` unchanged, but its OWN fix — sending
    Jarvis's shared `OPENCLAW_GATEWAY_TOKEN` under `auth.bootstrapToken`
@@ -180,8 +282,8 @@ said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
    token, a payload/wire-value consistency check (STEP 4: never sign one
    credential while sending another), and a known-answer test for the
    device-ID algorithm (fixed test keypair → fixed expected 64-char hex).
-2. **OpenClaw M1 re-verification #1 — signedAt checked, superseded auth
-   fix** (same session, folded into item 1 above for the corrected final
+3. **OpenClaw M1 re-verification #1 — signedAt checked, superseded auth
+   fix** (same session, folded into item 2 above for the corrected final
    state): a claim surfaced that `device.signedAt` must always be the
    client's current wall-clock time and must never be copied from the
    `connect.challenge` event's own `ts`. Checked directly against a
@@ -195,9 +297,9 @@ said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
    `test_signed_at_falls_back_to_wall_clock_when_challenge_omits_timestamp`).
    This same pass's OWN auth-field fix (sending credentials under
    `auth.bootstrapToken`/`auth.deviceToken` based on client-side schema
-   field existence alone) was itself incorrect, as item 1 above found
+   field existence alone) was itself incorrect, as item 2 above found
    and corrected.
-3. **OpenClaw M1 correction — real Ed25519 device-identity auth**
+4. **OpenClaw M1 correction — real Ed25519 device-identity auth**
    (replaces the shared-token-only design from the pass below): the
    original M1 explicitly flagged its auth as an unverified assumption.
    Verified against the actual published `@openclaw/gateway-client` and
@@ -248,8 +350,8 @@ said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
    up from 36). The RPC allowlist, `operator.read`-only scope ceiling,
    and the two tools (`openclaw_status`/`openclaw_list_nodes`) are
    unchanged from the original M1 pass.
-4. **OpenClaw M1 v1 — read-only Gateway bridge, shared-token auth**
-   (same session, superseded by items 1-3 above, kept here for full
+5. **OpenClaw M1 v1 — read-only Gateway bridge, shared-token auth**
+   (same session, superseded by items 2-4 above, kept here for full
    session history): `agent/openclaw_gateway.py` (new), a fixed RPC
    allowlist (`health`/`status`/`node.list` only), normalized errors,
    two tools (`openclaw_status`/`openclaw_list_nodes`,
@@ -257,35 +359,78 @@ said whether to start OpenClaw M2 (messaging) or Phase 9 Milestone 4
    `websockets==16.1.1` added (was already an incidental transitive
    dependency of `streamlit`, now pinned directly). 51 tests at this
    stage (36 + 15 across the two new test files).
-5. **OpenClaw M0 — research/architecture audit** (no code changes) —
+6. **OpenClaw M0 — research/architecture audit** (no code changes) —
    see `CHANGELOG.md`/`ROADMAP.md` for the full finding list (Intel
    macOS support, loopback-WebSocket local default, protocol version 4,
    the 7-scope operator model, unsandboxed plugin execution).
 
 ## What is partially completed
 
-Nothing mid-implementation. OpenClaw M1.5's real-Gateway bug fixes are
-complete and fully tested; the only thing not done as this file was
-written is this session's own finalization commit/push/CI-verify
-sequence (in progress in the same session that wrote this update).
+Nothing mid-implementation. OpenClaw M2 is complete and fully tested;
+the only thing not done is the user's review/commit decision, plus
+choosing and configuring a first real messaging channel afterward.
 
 ## Current bugs / known issues
 
 None remaining. The two real bugs M1.5's smoke test found
 (`client.platform`, `client.deviceFamily` both missing from the wire
 `connect` params) are fixed and verified against a real Gateway — see
-item 0 in "What was completed" above. The device-ID hash algorithm
+item 1 in "What was completed" above. The device-ID hash algorithm
 (flagged in a prior session) remains CONFIRMED against real primary
 source. No other open issues.
 
 ## Current blockers
 
-None technical. This session's M1.5 finalization commit/push/CI-verify
-sequence may or may not have completed depending on when this file is
-read — confirm with `git status`/`git log`.
+None technical. The only blocker is a decision: whether the user wants
+OpenClaw M2 (outbound text messaging, implemented and tested this
+session) committed as-is after review, and separately, which real
+messaging channel (if any) to configure next.
 
 ## Recent architectural decisions
 
+- **A separate device identity per scope tier, not a scope upgrade of
+  an existing one.** OpenClaw M2 needs `operator.write` for `send`; M1's
+  device identity holds only `operator.read`. Rather than request a
+  broader scope on the same credential, M2 holds its own Ed25519
+  keypair/device token entirely — a compromised read credential can
+  never send a message through Jarvis. The reverse claim needs more
+  care: a compromised messaging credential cannot escalate *through
+  Jarvis* (its RPC allowlist is exactly `{send}`), but the real
+  Gateway's own server-side scope semantics are asymmetric
+  (`operator.write` already satisfies an `operator.read` check there),
+  so it is not accurate to claim the credential itself is
+  cryptographically incapable of read authority — see the hardening-
+  pass entry in CHANGELOG.md for the full three-way distinction.
+  Implemented as a small, closed `_Profile` type
+  (`agent/openclaw_gateway.py`) with exactly two fixed instances, now
+  enforced by identity (`is`, not `==`) in `_call()` so a forged
+  `_Profile` with copied field values is still rejected; there is no
+  public API to construct a third or request an arbitrary scope list.
+- **`send`, never `chat.send` — verified against real source, not just
+  followed on instruction.** The Gateway's real `chat.send` RPC requires
+  a `sessionKey` and is part of OpenClaw's own agent/session execution
+  surface; using it for Jarvis's outbound messages would mean an
+  OpenClaw agent loop processes them, exactly the architectural blurring
+  this project avoids. Confirmed directly against
+  `openclaw@2026.7.1-2`'s compiled server source that `send` is a
+  genuinely separate, simpler RPC method with no session/agent concept
+  at all.
+- **A retry that looked verified-safe, then wasn't, on closer review.**
+  Before implementing any automatic retry for a side-effecting `send`
+  call, the real Gateway's idempotency-cache behavior was read directly
+  from its compiled server source (a real, in-memory, 5-minute-TTL,
+  `idempotencyKey`-keyed cache that replays cached results on a repeat
+  key) — a one-time same-key retry was then implemented on that basis.
+  A subsequent hardening/review pass identified the gap: that cache is
+  in-memory and single-process, so it does not survive a Gateway
+  process restart. If the Gateway delivers the message and then dies/
+  restarts before Jarvis receives the response, a same-key resend is no
+  longer provably deduplicated and could send a real duplicate. The
+  automatic retry was removed entirely as a result — for an external,
+  user-visible side effect, correctness beats speculative automatic
+  recovery of an ambiguous outcome. Lesson: verifying a mechanism is
+  real is not the same as verifying it's durable enough for the
+  specific safety property being relied on — both need checking.
 - **Source-reading and a careful local fake server are not a substitute
   for testing against the real thing at least once.** M1.5's real
   loopback Gateway smoke test found two real bugs (`client.platform`,
@@ -403,13 +548,30 @@ read — confirm with `git status`/`git log`.
 **OpenClaw M1** committed as `d1eb813` ("Add read-only OpenClaw gateway
 bridge"), pushed to `origin/main`, CI-verified.
 
-**OpenClaw M1.5** (this session, being finalized — check `git status`
-for current state; by the time this finalization commit lands, expect
-it as one new commit):
+**OpenClaw M1.5** committed as `8502c03` ("Fix OpenClaw bridge against
+real Gateway"), pushed, CI-verified (GitHub Actions run `32073836073`).
+
+**OpenClaw M2 + hardening pass** (this session — implementation, tests,
+and a same-day hardening/review pass, all uncommitted; confirm current
+state with a live `git status`):
 ```
-modified: agent/openclaw_gateway.py (client.platform/deviceFamily fix)
-modified: tests/test_openclaw_gateway.py (2 new regression tests, fake
-          server signature verification now uses captured wire values)
+new:      agent/openclaw_messaging.py
+new:      tests/test_openclaw_messaging.py
+modified: agent/openclaw_gateway.py (profile abstraction now enforced
+          by identity; _send_raw (renamed private);
+          OpenClawUncertainDelivery, no longer auto-retried)
+modified: agent/verification.py (new _verify_send_message_via_openclaw,
+          registered in _VERIFIERS)
+modified: config/settings.py (openclaw_messaging_enabled,
+          openclaw_allowed_channels, openclaw_allowed_targets)
+modified: tools/schemas/openclaw.py (send_message_via_openclaw, no
+          account_id/thread_id)
+modified: tests/test_openclaw_gateway.py (profile abstraction;
+          TestSecurityAllowlist restructured; new
+          TestProfileIdentityEnforcement for forged-profile rejection)
+modified: tests/test_openclaw_tool.py (new tool registration/dispatch
+          tests)
+modified: tests/test_verification.py (new verifier tests)
 modified: ROADMAP.md
 modified: ARCHITECTURE.md
 modified: CHANGELOG.md
@@ -417,53 +579,57 @@ modified: SESSION_LOG.md
 modified: HANDOFF.md (this file)
 ```
 
-**Committed history**, most recent first: `d1eb813` (OpenClaw M1),
-`4265f55` (Phase 9 Milestone 3), `8d4da44` (Phase 9 Milestone 2),
-`7b67bf0` (Phase 9 Milestone 1), `d0f791c` (Obsidian vault integration),
+**Committed history**, most recent first: `8502c03` (OpenClaw M1.5),
+`f370c00` (M1 handoff doc update), `d1eb813` (OpenClaw M1), `4265f55`
+(Phase 9 Milestone 3), `8d4da44` (Phase 9 Milestone 2), `7b67bf0`
+(Phase 9 Milestone 1), `d0f791c` (Obsidian vault integration),
 `d3481fc` (Phase 9 Milestone 0 — GitHub Actions CI). See
 `CHANGELOG.md` / `git log` for full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests` → **1098 passed, 0 failed** (run
-at the end of this session, after the M1.5 real-Gateway bug fixes). No
-paid API calls. Both mocked/local-fake-Gateway tests AND a real,
-temporary `openclaw@2026.7.1-2` process were used this session — the
-real process was fully removed afterward, no OpenClaw installation
-persists on this machine. This number will be stale the moment new
+`python -m unittest discover -s tests` → **1160 passed, 0 failed** (run
+at the end of this session, after implementing OpenClaw M2). No paid
+API calls, no real OpenClaw installation used or required for M2 (every
+M2 test uses the same local-fake-Gateway-server pattern as M1/M1.5,
+never a real channel). This number will be stale the moment new
 tests are added — re-run, don't trust it blindly.
 
 ## What still needs to be done
 
-1. **Nothing outstanding for OpenClaw M1 itself** — committed (`d1eb813`),
-   pushed to `origin/main`, CI-verified (GitHub Actions run
-   `31963970515`, event=push, conclusion=success; unittest step:
+1. **Nothing outstanding for OpenClaw M1 or M1.5** — both committed
+   (`d1eb813`, `8502c03`), pushed to `origin/main`, CI-verified (M1.5's
+   run: `32073836073`, event=push, conclusion=success; unittest step
    completed/success).
-2. **OpenClaw M1.5** (real-Gateway smoke test + two bug fixes): verified
-   locally; confirm with `git log`/`git status` whether this session's
-   own finalization commit/push/CI-verify has completed.
-3. **Do not start OpenClaw M2** (messaging, `operator.write`) until the
-   user says so.
-4. **Do not start Phase 9 Milestone 4** (FTS5) until OpenClaw work is
-   complete or explicitly deprioritized.
-4. **Done** — the real-Gateway smoke test (M1.5) has now run
-   successfully (see item 0 in "What was completed" above). A future
-   session could re-run one against a newer OpenClaw release if useful,
-   but that would be validating a different compatibility target, not
-   filling a gap in this one.
+2. **OpenClaw M2 (outbound text messaging) is implemented and tested,
+   NOT committed** — 1160/1160 tests passing locally, but per explicit
+   instruction for this pass ("implement + test only") nothing was
+   committed or pushed. Get the user's explicit review/go-ahead before
+   committing.
+3. **Do not configure a real messaging channel** (Telegram/Discord/
+   WhatsApp/Slack/Signal/iMessage/...) until M2 is reviewed and a
+   specific channel is chosen.
+4. **Do not start OpenClaw device capabilities, OpenClaw agent/model-
+   routing integration, or Phase 9 Milestone 4 (FTS5)** until the user
+   explicitly says so.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm `git log`/`git status` show the M1.5
-   finalization commit landed, in sync with `origin/main`, and that the
-   test suite still passes (expect 1098+).
-2. If the user wants to proceed with OpenClaw M2 (messaging), that is a
-   real scope increase (`operator.write`) and should get the same
-   explicit-approval treatment M1/M1.5 themselves did.
-3. If a compatibility check against a newer OpenClaw release (beyond
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status` show whether
+   OpenClaw M2 has since been committed, in sync with `origin/main`, and
+   that the test suite still passes (expect 1160+ if M2 is still
+   uncommitted, or check the actual count if it has landed).
+2. If the user approves OpenClaw M2 as reviewed, follow the same
+   commit→push→CI-verify sequence M1/M1.5 themselves used.
+3. If the user wants to proceed with configuring a real messaging
+   channel, that is a real, separate, higher-risk step (real external
+   service credentials, a real live send) and should get the same
+   explicit-approval treatment every OpenClaw milestone so far has had
+   — do not silently fold it into a "review M2" approval.
+4. If a compatibility check against a newer OpenClaw release (beyond
    `2026.7.1-2`) becomes useful, the M1.5 real-Gateway smoke-test
    approach documented in `ARCHITECTURE.md`'s "Real-Gateway smoke-test
    isolation" note is the one to reuse (no `--dev`, explicit workspace
