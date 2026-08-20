@@ -7,7 +7,122 @@ needed.
 
 ---
 
-## 2026-08-19 (most recent) — Graphify G0: development codebase graph baseline
+## 2026-08-19 (most recent) — Graphify G1: four narrow, read-only Jarvis code-graph tools (uncommitted, awaiting review)
+
+**What**: Building on G0's evaluation (below), gave Jarvis four narrow,
+read-only tools over the locally generated Graphify graph. The
+`graphify`/`graphifyy` package/executable itself is still never invoked
+from Jarvis runtime — `agent/code_graph.py` (new) parses
+`graphify-out/graph.json` with the standard library only (`json`, `os`),
+never imports `graphifyy`, never shells out to `graphify`/`graphify-mcp`.
+The one subprocess call anywhere in the module is a fixed-argv,
+`shell=False` `git` invocation (`git rev-parse HEAD` / `git status
+--porcelain --untracked-files=no`, 5-second timeout, cwd pinned to the
+repo root) used only to decide whether the on-disk graph is still
+trustworthy relative to the current commit and tracked working-tree
+state.
+
+Determined the real graphify 0.9.47 schema by direct inspection of a
+generated graph.json/manifest.json/.graphify_analysis.json (not assumed
+from documentation): node shape (`id`/`label`/`_callable`/
+`_callable_class`/`file_type`/`norm_label`/`source_file`/
+`source_location`/`community`), edge shape (`source`/`target`/
+`relation`/`confidence`/`confidence_score`/`context`/`weight`), and
+confirmed no "version" field exists anywhere in any of the three files
+— the only on-disk version hint is the `graphify-out/cache/ast/v<N>`
+cache-directory name, read as a best-effort, informational-only value.
+
+**Staleness model** (agent/code_graph.py's `CodeGraphReader.status()`):
+`fresh` only when the graph parses, `built_at_commit` equals the real
+current git HEAD, AND the tracked working tree is clean (`git status
+--porcelain --untracked-files=no` returns nothing -- untracked files,
+including gitignored `graphify-out/` itself, never count as dirty,
+matching the exact spec: a graph can be stale even at `built_at_commit
+== HEAD` if tracked source has since changed). `stale` on either a
+commit mismatch or a dirty tracked tree (or if git itself couldn't be
+queried -- never silently treated as fresh). `unavailable` if
+graph.json is missing. `invalid` on malformed JSON or a graph missing
+the minimal required schema (`nodes`/`links`/`built_at_commit`).
+`search_code_graph`/`analyze_code_impact`/`find_code_path` all refuse to
+run any traversal unless state is exactly `fresh`, returning the same
+small structured refusal shape (`ok: false`, `state`, `built_at_commit`,
+`current_commit`, `reason`, `rebuild_required`) instead. Nothing
+auto-rebuilds a stale graph -- that stays a manual step.
+
+**Four ToolSpecs** (`tools/schemas/graphify.py`, registered through the
+normal `tools/registry.py` path, no separate dispatch mechanism): all
+`permission_level=0`, `side_effect=False`, `unattended_allowed=True`,
+`parallel_safe=True`, no live confirmation -- matching
+`get_system_status`'s risk class exactly.
+- `code_graph_status` -- no input; always reports true state regardless
+  of freshness.
+- `search_code_graph` -- deterministic exact/prefix/substring matching
+  against node id/label/norm_label/qualified `source_file:label`,
+  capped at 20 results (hard cap), explicit `ambiguous: true` when
+  multiple distinct nodes share an exact bare name rather than silently
+  picking one (this is exactly how the module-name-collision limitation
+  from G0 stays *visible* rather than hidden -- both `tools/registry.py`
+  and `agent/skills/registry.py` surface distinctly for a `registry.py`
+  query).
+- `analyze_code_impact` -- reverse-adjacency BFS from an exact
+  `node_id` (bounded depth, hard cap 3; bounded results, hard cap 100),
+  cycle-safe via a visited-set, direct (depth 1) vs indirect
+  distinguished, EXTRACTED/INFERRED confidence preserved per edge,
+  sorted direct-before-indirect and EXTRACTED-before-INFERRED within a
+  depth tier for determinism.
+- `find_code_path` -- forward BFS shortest path between two exact node
+  IDs (bounded depth, hard cap 10), cycle-safe, one path returned (not
+  every path), clean `found: false` with no path.
+
+**Never authoritative, by construction**: every result carries
+`authoritative: false` and G0's exact known-limitations list (module-
+basename collisions, missed `register(ToolSpec(..., handler=...))`
+wiring, ambiguous bare-name resolution). A result touching
+`tools/registry.py`, `ToolSpec`, `tools/schemas/`, `agent/autonomy.py`,
+or a permission/credential-keyword path additionally carries
+`source_verification_required: true` -- deterministic path-prefix/
+keyword matching (`agent/code_graph.py`'s `_is_critical`), never a model
+judgment call. Impact/path results are worded as structural
+relationships only ("not proof of runtime behavior" / "not proof of
+runtime call order"), never a guaranteed-effect claim.
+
+**Security**: no caller-supplied filesystem path, CLI subcommand, or raw
+query surface in any of the four `input_schema`s (verified by test); no
+fifth generic "run a graph command" tool; `graphifyy` remains outside
+`requirements.txt` and CampusPilot's `.venv`; no MCP registration, no
+`graphify install`/hooks, no `graphify-mcp` invocation, no automatic
+graph regeneration; no permission/autonomy/routing decision is ever
+based on graph content -- `agent/autonomy.py` and `tools/registry.py`
+remain untouched and are the only real enforcement points.
+
+**Validation**: a synthetic-fixture test suite (`tests/test_code_graph.py`,
+`tests/test_graphify_tools.py`) exercises every status/search/impact/
+path/security/registration scenario without needing the real
+`graphifyy` package, network, or the real 11MB graph. Additionally
+validated read-only against the real local `graphify-out/graph.json`:
+correctly reported `stale` (built at the prior commit `d270dc4`, current
+HEAD `7b4d0b6`, and -- once this implementation's own tracked
+`tools/schemas/__init__.py` edit landed -- a genuinely dirty tracked
+tree too), and all three analysis tools correctly refused with the
+structured stale shape -- proving the fail-closed path against a real
+scenario, not only a mock. The real graph was deliberately **not**
+rebuilt, per explicit instruction, so this stale state is expected and
+will be addressed in a separate, deliberate refresh after this pass is
+reviewed.
+
+**Files affected**: `agent/code_graph.py` (new), `tools/schemas/graphify.py`
+(new), `tools/schemas/__init__.py` (registers the new module),
+`tests/test_code_graph.py` (new), `tests/test_graphify_tools.py` (new),
+`docs/GRAPHIFY.md`, `ARCHITECTURE.md` (tool count/list, a short
+`agent/code_graph.py` paragraph), `ROADMAP.md`, `SESSION_LOG.md`,
+`HANDOFF.md`. `CLAUDE.md` deliberately not modified. No commit/push in
+this pass, per explicit instruction.
+
+**Verification**: see this session's final report for exact targeted/
+full-suite test counts (policy: full suite must stay green at the
+pre-G1 baseline of 1176 or higher).
+
+## 2026-08-19 — Graphify G0: development codebase graph baseline
 
 **What**: Evaluated and approved Graphify (`graphifyy` on PyPI,
 `graphify` CLI, `Graphify-Labs/graphify` on GitHub) as an optional,

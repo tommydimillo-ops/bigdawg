@@ -16,11 +16,21 @@ in-flight or awaiting review.
 
 This same session then ran **Graphify G0** — evaluating and approving
 Graphify as an optional, local, development-time structural-code-graph
-tool for this repo (not a Jarvis runtime subsystem). See the "Graphify
-G0" section below and `docs/GRAPHIFY.md` for full detail. G0 finalized
-as commit-worthy documentation only (`.gitignore` entry,
-`docs/GRAPHIFY.md`, and these project records) — no Jarvis source file
-changed.
+tool for this repo (not a Jarvis runtime subsystem). G0 finalized as
+commit-worthy documentation only (`.gitignore` entry, `docs/GRAPHIFY.md`,
+and these project records) — no Jarvis source file changed — and is
+committed as `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local
+Graphify development integration"), pushed, CI-verified (GitHub Actions
+run `32312885286`, success).
+
+This same session then implemented **Graphify G1** — four narrow,
+read-only Jarvis tools over the locally generated Graphify graph
+(`agent/code_graph.py`, `tools/schemas/graphify.py`). **G1 is
+implementation + tests only, uncommitted, awaiting review** — see the
+"Graphify G1" section below and `docs/GRAPHIFY.md` for full detail. The
+`graphify`/`graphifyy` package/executable is still never invoked from
+Jarvis runtime; only the graph *data* it already wrote is read, with the
+standard library only.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -105,7 +115,11 @@ no OpenClaw installation persists on this machine).
   Choosing/configuring the first real channel is a separate, not-yet-
   started future step (see ROADMAP.md's "Next" section).
 
-## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ EVALUATED, APPROVED, DOCUMENTED
+## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
+
+- **Commit**: `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local
+  Graphify development integration"), pushed, CI-verified (GitHub
+  Actions run `32312885286`, success).
 
 Not a Jarvis subsystem — an optional, local, development-time
 structural code graph (`graphify` CLI, `graphifyy` on PyPI,
@@ -140,13 +154,65 @@ limitations: `docs/GRAPHIFY.md`.
   rebuilt on demand (~12s, free) — not committed, since this repo is
   public and the graph would be a large, low-diff-signal blob mapping
   exactly where the security-relevant logic lives.
-- **Not enabled**: `graphify-mcp`, MCP registration, `graphify install`/
-  `claude install`, `PreToolUse` hooks (soft or strict), `watch` mode,
-  semantic/document extraction, any Jarvis runtime integration. `CLAUDE.md`
-  was deliberately not modified.
-- **Next**: Graphify G1 (a possible narrow read-only Jarvis `ToolSpec`
-  over the graph) is a distinct, separate, not-yet-approved decision —
-  see ROADMAP.md's "Next" section.
+- **Not enabled (at G0)**: `graphify-mcp`, MCP registration, `graphify
+  install`/`claude install`, `PreToolUse` hooks (soft or strict), `watch`
+  mode, semantic/document extraction, any Jarvis runtime integration.
+  `CLAUDE.md` was deliberately not modified.
+
+## Graphify G1 — FOUR NARROW READ-ONLY JARVIS CODE-GRAPH TOOLS ⏳ IMPLEMENTED, TESTED, UNCOMMITTED (awaiting review)
+
+- **Status**: code- and test-complete (see this session's final report
+  for the exact current test count), **not committed, not pushed** —
+  per explicit "implement + test only, do not commit" instruction.
+- **What it adds**: `agent/code_graph.py` (new) — a read-only reader
+  over `graphify-out/graph.json`, standard library only (`json`, `os`);
+  never imports `graphifyy`, never invokes the `graphify`/`graphify-mcp`
+  executables. The only subprocess call anywhere in the module is a
+  fixed-argv, `shell=False` `git rev-parse HEAD` / `git status
+  --porcelain --untracked-files=no` (5-second timeout, cwd pinned to the
+  repo root), used only to decide graph freshness — never to run
+  Graphify itself. Four ToolSpecs (`tools/schemas/graphify.py`,
+  registered through the normal `tools/registry.py` path, no separate
+  dispatch mechanism): `code_graph_status`, `search_code_graph`,
+  `analyze_code_impact`, `find_code_path` — all `permission_level=0`,
+  `side_effect=False`, `unattended_allowed=True`, `parallel_safe=True`,
+  no live confirmation (same risk class as `get_system_status`). Total
+  registered tools: 64 (up from 60).
+- **Staleness enforcement**: `fresh` only when the graph parses AND
+  `built_at_commit` equals current git HEAD AND the tracked working tree
+  is clean (untracked files, including gitignored `graphify-out/`
+  itself, never count as dirty — only tracked modifications do).
+  `search_code_graph`/`analyze_code_impact`/`find_code_path` all refuse
+  to run any traversal unless state is exactly `fresh`, returning a
+  structured `{"ok": false, "state": ..., "reason": ...,
+  "rebuild_required": ...}` shape instead. Nothing auto-rebuilds a stale
+  graph — that stays a manual, deliberate step.
+- **Never authoritative, by construction**: every result carries
+  `authoritative: false` and G0's exact known-limitations list. A result
+  touching `tools/registry.py`, `ToolSpec`, `tools/schemas/`,
+  `agent/autonomy.py`, or permission/credential-keyword paths
+  additionally carries `source_verification_required: true` —
+  deterministic path-prefix/keyword matching, never a model judgment
+  call. Impact/path results are worded as structural relationships only,
+  never a guaranteed-runtime-effect claim.
+- **Bounds enforced**: search ≤20 results (hard cap); impact ≤depth 3
+  (hard cap), ≤100 results (hard cap); path ≤depth 10 (hard cap), one
+  shortest path only. No caller-supplied filesystem path, CLI
+  subcommand, or raw query surface in any of the four `input_schema`s;
+  no fifth generic "run a graph command" tool.
+- **Real-graph validation (read-only, graph not modified)**: the actual
+  local `graphify-out/graph.json` (built at commit `d270dc4`) correctly
+  reported `stale` once checked against current HEAD (`7b4d0b6`, then
+  this implementation's own uncommitted changes) — proving the
+  fail-closed staleness path against a real scenario, not only a mock.
+  **The real graph was deliberately NOT rebuilt** in this pass, per
+  explicit instruction — refreshing it is a separate, later step after
+  this implementation is reviewed and (if approved) committed.
+- **Not enabled (still, at G1)**: `graphify-mcp`, MCP registration,
+  `graphify install`/`claude install`, `PreToolUse` hooks, `watch` mode,
+  automatic graph regeneration, any permission/autonomy/routing decision
+  based on graph content. `CLAUDE.md` deliberately not modified.
+  `graphifyy` still not in `requirements.txt`/CampusPilot's `.venv`.
 
 ## Current project status
 
@@ -161,28 +227,49 @@ subsystem): **M0** complete, approved, no code. **M1**, **M1.5**, and
 **M2** (including its hardening pass) all complete, committed, pushed,
 CI-verified — see the section above.
 
-**Graphify G0**: evaluated, approved as supplementary tooling, and
-documented this same session — see the section above and
-`docs/GRAPHIFY.md`. Not a Jarvis runtime integration.
+**Graphify**: **G0** (evaluation) complete, committed, pushed,
+CI-verified. **G1** (four narrow read-only Jarvis tools) implemented and
+tested this session, **uncommitted, awaiting the user's review** — see
+the section above and `docs/GRAPHIFY.md`. Still not a Jarvis runtime
+dependency — `graphifyy` itself is never imported or invoked; only its
+already-generated graph.json is read.
 
-**Working tree**: clean as of this writing, aside from this
-documentation pass itself (`.gitignore`, `docs/GRAPHIFY.md`, and these
-project records). Confirm with a live `git status`/`git log` rather
-than trusting this file. **1176 tests pass, 0 failures** (1160 at the
-OpenClaw M2 hardening commit; earlier counts in prior CHANGELOG.md
-entries), no live/paid API calls during testing. No real OpenClaw
-installation persists on this machine.
+**Working tree is NOT clean as of this writing** — Graphify G1's files
+are uncommitted. Confirm with a live `git status`/`git log` rather than
+trusting this file. **See this session's final report for the exact
+current test count** (1176 at the last committed state, OpenClaw M2
+hardening + Graphify G0; higher now with G1's new tests — earlier
+counts in prior CHANGELOG.md entries), no live/paid API calls during
+testing, no real `graphifyy`/`graphify` CLI use anywhere in the new
+tests. No real OpenClaw installation persists on this machine.
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M1/M1.5/M2 and Graphify G0 are both
-complete and committed. **Do not start Graphify G1, a real OpenClaw
-messaging channel, OpenClaw device capabilities, OpenClaw agent/
-model-routing integration, or Phase 9 Milestone 4 (FTS5)** until the
-user explicitly says so.
+Nothing actively mid-task — Graphify G1's implementation and tests are
+complete; this session's remaining work is documentation (this file
+included) and reporting back to the user for review. **Do not commit or
+push G1. Do not rebuild the real local graph (it is expected to be
+stale — see the "Graphify G1" section above). Do not start Graphify G2,
+a real OpenClaw messaging channel, OpenClaw device capabilities,
+OpenClaw agent/model-routing integration, or Phase 9 Milestone 4
+(FTS5)** until the user explicitly says so.
 
 ## What was completed (this session, most recent first)
 
+-3. **Graphify G1 — four narrow, read-only Jarvis code-graph tools**
+    (same session, implementation + tests only, uncommitted): see the
+    "Graphify G1" section above and `docs/GRAPHIFY.md` for full detail.
+    Summary: `agent/code_graph.py` (new, standard-library-only reader,
+    one fixed-argv `git` subprocess call for freshness only, never
+    invokes `graphify`/`graphify-mcp`); four ToolSpecs
+    (`tools/schemas/graphify.py`) registered through the normal
+    `tools/registry.py` path; strict fail-closed staleness (fresh only
+    at matching HEAD + clean tracked tree); every result marked
+    `authoritative: false` with `source_verification_required: true` on
+    security-relevant results; bounded search/impact/path with hard
+    caps; validated against both synthetic fixtures and (read-only) the
+    real local graph, which correctly showed as stale. Not committed —
+    awaiting review.
 -2. **Graphify G0 — development codebase graph baseline** (new session):
     evaluated and approved Graphify as optional, local, development-time
     tooling — see the "Graphify G0" section above and `docs/GRAPHIFY.md`
@@ -418,10 +505,12 @@ source. No other open issues.
 
 ## Current blockers
 
-None technical. OpenClaw M1/M1.5/M2 and Graphify G0 are all committed.
-Open decisions (none urgent): which real messaging channel (if any) to
-configure for OpenClaw next, and whether/when to pursue Graphify G1 (a
-possible narrow read-only Jarvis tool over the graph).
+None technical. OpenClaw M1/M1.5/M2 and Graphify G0 are committed;
+Graphify G1 is implemented/tested and awaiting the user's review before
+commit. Open decisions (none urgent): whether to approve G1 as-is, which
+real messaging channel (if any) to configure for OpenClaw next, and
+whether/when to pursue a further Graphify milestone (MCP/hooks/
+auto-rebuild — none implemented or assumed by G1).
 
 ## Recent architectural decisions
 
@@ -613,30 +702,46 @@ modified: ROADMAP.md, ARCHITECTURE.md, CHANGELOG.md, SESSION_LOG.md,
           HANDOFF.md
 ```
 
-**Graphify G0** (this session — documentation only, kept local
-`graphify-out/` never staged; confirm current state with a live
-`git status`):
+**Graphify G0** committed as `7b4d0b6` ("Document local Graphify
+development integration"), pushed, CI-verified (GitHub Actions run
+`32312885286`):
 ```
 new:      docs/GRAPHIFY.md
 modified: .gitignore (graphify-out/ entry)
 modified: ROADMAP.md, CHANGELOG.md, SESSION_LOG.md, HANDOFF.md
 ```
 
-**Committed history**, most recent first: `d270dc4` (OpenClaw M2 +
-hardening pass), `8502c03` (OpenClaw M1.5), `f370c00` (M1 handoff doc
-update), `d1eb813` (OpenClaw M1), `4265f55` (Phase 9 Milestone 3),
-`8d4da44` (Phase 9 Milestone 2), `7b67bf0` (Phase 9 Milestone 1),
-`d0f791c` (Obsidian vault integration), `d3481fc` (Phase 9 Milestone 0
-— GitHub Actions CI). See `CHANGELOG.md` / `git log` for full history.
+**Graphify G1** (this session — implementation + tests, uncommitted;
+confirm current state with a live `git status`):
+```
+new:      agent/code_graph.py
+new:      tools/schemas/graphify.py
+new:      tests/test_code_graph.py
+new:      tests/test_graphify_tools.py
+modified: tools/schemas/__init__.py (registers the new graphify module)
+modified: docs/GRAPHIFY.md (G1 section)
+modified: ARCHITECTURE.md (tool count/list, agent/code_graph.py paragraph)
+modified: ROADMAP.md, CHANGELOG.md, SESSION_LOG.md, HANDOFF.md
+```
+
+**Committed history**, most recent first: `7b4d0b6` (Graphify G0),
+`d270dc4` (OpenClaw M2 + hardening pass), `8502c03` (OpenClaw M1.5),
+`f370c00` (M1 handoff doc update), `d1eb813` (OpenClaw M1), `4265f55`
+(Phase 9 Milestone 3), `8d4da44` (Phase 9 Milestone 2), `7b67bf0` (Phase
+9 Milestone 1), `d0f791c` (Obsidian vault integration), `d3481fc` (Phase
+9 Milestone 0 — GitHub Actions CI). See `CHANGELOG.md` / `git log` for
+full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests` → **1176 passed, 0 failed** (run
-both before and after Graphify graph generation this session — identical
-result, confirming zero runtime impact). No paid API calls; no real
-OpenClaw installation used; no LLM/API calls during Graphify's code-only
-graph build either. This number will be stale the moment new tests are
-added — re-run, don't trust it blindly.
+`python -m unittest discover -s tests` — see this session's final report
+for the exact current count (1176 at the last committed state; Graphify
+G1 adds new tests on top of that, run live rather than trusting a
+hardcoded number here). No paid API calls; no real OpenClaw installation
+used; no LLM/API calls during Graphify's code-only graph build; no real
+`graphifyy`/`graphify` CLI needed by any G1 test (synthetic fixtures
+only). This number will be stale the moment new tests are added —
+re-run, don't trust it blindly.
 
 ## What still needs to be done
 
@@ -644,32 +749,45 @@ added — re-run, don't trust it blindly.
    (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
    CI-verified.
 2. **Nothing outstanding for Graphify G0** — evaluated, approved,
-   documented (`docs/GRAPHIFY.md`), committed this session.
-3. **Do not configure a real OpenClaw messaging channel** (Telegram/
+   documented (`docs/GRAPHIFY.md`), committed as `7b4d0b6`.
+3. **Graphify G1 (four narrow read-only Jarvis code-graph tools) is
+   implemented and tested, NOT committed** — per explicit instruction
+   for this pass ("implement + test only"), nothing was committed or
+   pushed. Get the user's explicit review/go-ahead before committing.
+4. **Do not rebuild the real local graph** — it is currently, correctly,
+   reported as stale (built at `d270dc4`, HEAD has since moved). This is
+   expected and intentional; refreshing it is a separate, deliberate
+   step to take only after G1 is reviewed/committed.
+5. **Do not configure a real OpenClaw messaging channel** (Telegram/
    Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
    is explicitly chosen.
-4. **Do not start Graphify G1**, OpenClaw device capabilities, OpenClaw
-   agent/model-routing integration, or Phase 9 Milestone 4 (FTS5) until
-   the user explicitly says so.
+6. **Do not start a further Graphify milestone** (MCP, hooks,
+   auto-rebuild — none implemented or assumed by G1), OpenClaw device
+   capabilities, OpenClaw agent/model-routing integration, or Phase 9
+   Milestone 4 (FTS5) until the user explicitly says so.
 
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
-   match what this file claims before trusting it.
-2. If the user wants to proceed with configuring a real OpenClaw
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status` show whether
+   Graphify G1 has since been committed, in sync with `origin/main`, and
+   that the test suite still passes (expect the count in this session's
+   final report or higher if G1 is still uncommitted, or check the
+   actual count if it has landed).
+2. If the user approves Graphify G1 as reviewed, follow the same
+   commit→push→CI-verify sequence every prior milestone here has used,
+   **then** deliberately rebuild the real local graph (`graphify extract
+   . --code-only` + `graphify cluster-only . --no-label`) so it reflects
+   the new commit — this was intentionally left stale during
+   implementation/review to prove the staleness path against a real
+   scenario.
+3. If the user wants to proceed with configuring a real OpenClaw
    messaging channel, that is a real, separate, higher-risk step (real
    external service credentials, a real live send) and should get the
    same explicit-approval treatment every OpenClaw milestone so far has
    had.
-3. If the user wants to pursue Graphify G1 (a possible narrow read-only
-   Jarvis tool over the local Graphify graph), that is a distinct,
-   separate, not-yet-approved decision — see `docs/GRAPHIFY.md` and
-   ROADMAP.md's "Next" section for the scope and known limitations to
-   account for (module-basename collisions, missed ToolSpec-registration
-   wiring) before designing it.
 4. If a compatibility check against a newer OpenClaw release (beyond
    `2026.7.1-2`) becomes useful, the M1.5 real-Gateway smoke-test
    approach documented in `ARCHITECTURE.md`'s "Real-Gateway smoke-test

@@ -1,17 +1,22 @@
 # Graphify (development tooling — not a Jarvis subsystem)
 
-An optional, local, developer-facing structural code graph of this repo,
-used by a Claude Code session working on Jarvis to answer "what calls
-what" / "what depends on X" faster than repeated grep/Read round-trips.
-Evaluated and approved as of **Graphify G0** (2026-08-19). It is **not**
-part of Jarvis's runtime — nothing in `agent/`, `tools/`, or any other
-Jarvis source path depends on it, imports it, or calls out to it.
+An optional, local, developer-facing structural code graph of this repo.
+Evaluated and approved as of **Graphify G0** (2026-08-19), then given
+four narrow, read-only Jarvis tools in **Graphify G1** (2026-08-19,
+same day). The `graphify`/`graphifyy` package/CLI itself is still **not**
+part of Jarvis's runtime and never will be invoked from it — see "G1"
+below for exactly what *is* now wired in (a small standard-library
+reader over the generated graph *data*, nothing more).
 
 **What Graphify is not**: not Jarvis's source of truth, not a
-permission/autonomy authority, not a runtime dependency, not an
-orchestrator, not (yet) an MCP integration, not (yet) a Claude Code
+permission/autonomy authority, not a runtime dependency (the
+`graphifyy` package is not in `requirements.txt` and never will be —
+G1's reader only parses the JSON `graphify extract` already wrote to
+disk), not an orchestrator, not an MCP integration, not a Claude Code
 hook. Direct source inspection remains authoritative whenever accuracy
-actually matters — see Limitations below.
+actually matters — see Limitations below, and G1's
+`source_verification_required` field, which encodes exactly that rule
+into every tool result.
 
 ## Package and installation
 
@@ -119,7 +124,63 @@ questions are answered by `tools/registry.py`, `agent/autonomy.py`, and
 direct source reading — Graphify is a navigation aid on top of that, not
 a replacement for it.
 
-## Not enabled (deliberately, as of G0)
+## G1 — four narrow, read-only Jarvis tools
+
+`agent/code_graph.py` reads `graphify-out/graph.json` directly with the
+standard library (`json`, `os`) — it never imports `graphifyy`, never
+invokes the `graphify`/`graphify-mcp` executables, and the only
+subprocess call anywhere in the module is a fixed-argv, `shell=False`
+`git` invocation (`git rev-parse HEAD` / `git status --porcelain
+--untracked-files=no`, both bounded by a 5-second timeout and pinned to
+this repo's root) used solely to decide whether the on-disk graph is
+still trustworthy. The graph itself is treated purely as **data** that
+`graphify extract` already wrote — G1 never re-runs extraction, never
+starts a process, never watches anything.
+
+Four `tools/registry.py` ToolSpecs (`tools/schemas/graphify.py`), all
+`permission_level=0`, `side_effect=False`, `unattended_allowed=True`,
+`parallel_safe=True`, no live confirmation — the same risk class as
+`get_system_status`:
+
+- **`code_graph_status`** — availability/freshness report. No input.
+- **`search_code_graph`** — deterministic exact/prefix/substring symbol
+  search, capped at 20 results, explicit ambiguity reporting (never
+  silently resolves a bare name shared by multiple nodes).
+- **`analyze_code_impact`** — bounded reverse-dependency traversal from
+  an exact `node_id` (max depth 3, max 100 results), direct vs indirect
+  and EXTRACTED vs INFERRED preserved.
+- **`find_code_path`** — bounded BFS shortest path between two exact
+  node IDs (max depth 10), one path returned, or a clean "no path".
+
+None accept a caller-supplied filesystem path, CLI subcommand, or raw
+query string of any kind — the graph location is always resolved
+internally to `graphify-out/` under the repo root. There is no fifth,
+generic "run a graph command" tool.
+
+**Staleness is enforced, not advisory.** `code_graph_status` always
+reports the graph's true state (`fresh` / `stale` / `unavailable` /
+`invalid`); the other three tools refuse to run any traversal unless
+the graph is exactly `fresh` — built at the current git HEAD **and** a
+clean tracked working tree (an untracked file, including
+`graphify-out/` itself, never counts as "dirty"; only tracked
+modifications do). A `stale`/`unavailable`/`invalid` graph makes all
+three return the same small structured refusal shape instead of doing
+any work. Nothing in G1 auto-rebuilds a stale graph — that stays a
+manual, deliberate step (`graphify extract . --code-only` then
+`graphify cluster-only . --no-label`, as above).
+
+**Never authoritative.** Every result carries `authoritative: false`
+and the same `limitations` list as G0's findings (A/B/C above). A
+result touching `tools/registry.py`, `ToolSpec`, `tools/schemas/`,
+`agent/autonomy.py`, or anything permission/credential-related
+additionally carries `source_verification_required: true` — not a
+block, just an explicit signal that direct source reading is mandatory
+before acting on that particular conclusion. Impact/path results are
+phrased as structural relationships ("structurally related", "not
+proof of runtime behavior") — never as a guarantee of actual runtime
+effect.
+
+## Not enabled (deliberately, as of G1)
 
 - `graphify-mcp` (a binary bundled with the package) — not started, not
   registered anywhere.
@@ -130,11 +191,11 @@ a replacement for it.
 - No `graphify hook install` (post-commit/post-checkout auto-rebuild).
 - No `graphify watch` background process.
 - No semantic/document/PDF/image extraction (`--code-only` only).
-- No Jarvis runtime integration: no ToolSpec registered, no
-  `agent/executor.py` change, no coworker agent, no change to model
-  routing/autonomy/permissions/OpenClaw/Obsidian.
-
-A future **G1** may expose a narrow, read-only Jarvis `ToolSpec` over
-this graph (through `tools/registry.py`, like every other tool — never
-a parallel dispatch path), but that is a separate, not-yet-approved
-decision. Nothing in G0 assumes or depends on G1 happening.
+- No automatic graph regeneration of any kind (G1 only reads whatever
+  is already on disk; a stale graph is refused, never silently rebuilt).
+- No permission/autonomy/routing decision is ever based on graph
+  content — `agent/autonomy.py` and `tools/registry.py` are untouched
+  and remain the actual enforcement points.
+- `graphifyy` is not a CampusPilot runtime dependency and is not in
+  `requirements.txt` — G1 parses graph.json with the standard library
+  only.

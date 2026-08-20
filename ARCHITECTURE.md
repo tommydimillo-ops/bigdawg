@@ -37,7 +37,7 @@ Perplexity/Apple frameworks (xAI/Perplexity optional, Phase 9 Milestone 2
         ┌────────────────────┼────────────────────────┐
         ▼                    ▼                         ▼
   agent/model_router   tools/registry.py         agent/agents/
-  (task-aware, cost-   (53 tools, permission     manager.py
+  (task-aware, cost-   (64 tools, permission     manager.py
    ranked, 4 providers: levels, dispatch)         (coworker agents,
    Anthropic/OpenAI/                               subprocess-isolated)
    xAI/Perplexity)
@@ -467,13 +467,14 @@ that path fix was removed in a repository cleanup pass (see
 **`tools/registry.py`** is the single source of truth for every tool: name,
 description, JSON schema, `permission_level` (0-5), and four gating flags
 (`requires_live_confirmation`, `unattended_allowed`, `side_effect`,
-`parallel_safe`). 59 tools as of OpenClaw M1 (re-verify with
+`parallel_safe`). 64 tools as of Graphify G1 (re-verify with
 `len(tools.registry.all_names())` rather than trusting this number
 blindly — it drifts every time a tool is added), grouped by theme into
 `tools/schemas/*.py` (`agents`, `browsing`, `computer_use`,
-`execution_control`, `logins_and_email`, `memory_and_learning`,
-`obsidian`, `openclaw`, `productivity`, `reasoning`, `scheduling`,
-`skills`, `system`) — each calls `register(ToolSpec(...))` at import time.
+`execution_control`, `graphify`, `logins_and_email`,
+`memory_and_learning`, `obsidian`, `openclaw`, `productivity`,
+`reasoning`, `scheduling`, `skills`, `system`) — each calls
+`register(ToolSpec(...))` at import time.
 `agent/brain.py`'s `TOOLS` list, `agent/permissions.py`'s lookups, and
 `agent/executor.py`'s dispatch are all *derived* from this registry, not
 separately maintained. See `docs/ADDING_A_TOOL.md`.
@@ -492,6 +493,20 @@ dir), `reminders.py`/`calendar.py`/`notes.py` (AppleScript against native
 macOS apps), `weather.py`, `music.py`, `agenda.py`, `credential_store.py`/
 `manage_logins.py`/`manage_secrets.py` (Keychain-backed, CLI-only setup,
 deliberately kept out of chat).
+
+**`agent/code_graph.py`** (Graphify G1, `tools/schemas/graphify.py`,
+4 tools, all `permission_level=0`): a read-only reader over the locally
+generated `graphify-out/graph.json` — a third-party static-analysis
+tool's (Graphify, external, `uv`-installed, never a runtime dependency)
+structural map of this codebase, parsed with the standard library only,
+never by importing `graphifyy` or invoking the `graphify` executable.
+Fails closed on staleness (graph must be built at the current git HEAD
+with a clean tracked working tree, or `code_graph_status`/
+`search_code_graph`/`analyze_code_impact`/`find_code_path` refuse to
+analyze); every result is marked `authoritative: False`, with
+`source_verification_required: True` on anything touching
+`tools/registry.py`/`agent/autonomy.py`/permission or credential code.
+Full detail: `docs/GRAPHIFY.md`.
 
 ## 8. Skills
 

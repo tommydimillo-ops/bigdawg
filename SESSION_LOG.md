@@ -5,7 +5,58 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-19 (latest) — Graphify G0: development codebase graph baseline
+### 2026-08-19 (latest) — Graphify G1: four narrow, read-only Jarvis code-graph tools (uncommitted)
+
+- **Objective**: Give Jarvis four narrow, read-only tools over the
+  locally generated Graphify graph, without ever making the `graphify`/
+  `graphifyy` package/executable itself a Jarvis runtime dependency or
+  authority. No MCP, no hooks, no auto-rebuild, no permission/autonomy
+  decision based on graph content.
+- **Work completed**: Determined the real graphify 0.9.47 graph.json/
+  manifest.json/.graphify_analysis.json schema by direct inspection
+  (no version field embedded anywhere in any of the three files — only
+  a best-effort hint in the cache directory name). Built
+  `agent/code_graph.py`: standard-library-only reader, one subprocess
+  call total (fixed-argv `git`, `shell=False`, bounded timeout, pinned
+  cwd) for freshness checking only. Implemented the exact staleness
+  algorithm specified (fresh only at matching HEAD + clean tracked
+  tree; stale/unavailable/invalid all refuse further analysis).
+  Registered four ToolSpecs (`tools/schemas/graphify.py`) through the
+  normal registry path: `code_graph_status`, `search_code_graph`,
+  `analyze_code_impact`, `find_code_path` — all permission_level=0, no
+  side effects, unattended/parallel safe. Every result carries
+  `authoritative: false` and G0's known-limitations list;
+  `source_verification_required: true` on anything touching the tool
+  registry/autonomy/permission/credential code. Bounded throughout
+  (search ≤20, impact ≤depth 3/≤100 results, path ≤depth 10).
+- **Decisions**: No caller-supplied graph path, CLI subcommand, or raw
+  query surface anywhere — no fifth generic tool. `graphifyy` stays out
+  of `requirements.txt`/`.venv`. Mocked `subprocess.run` at the
+  boundary in tests (project convention) rather than building a second
+  injectable git abstraction.
+- **Problems encountered**: None in the core logic; found and fixed
+  several bugs in my own *test* assertions during a smoke-test pass
+  (wrong `inspect.Parameter` enum name, a naive whole-file substring
+  search that misfired on the module's own docstring legitimately
+  discussing `graphify-mcp`) — none were bugs in `agent/code_graph.py`
+  itself.
+- **Real-graph validation**: read-only against the actual local
+  `graphify-out/graph.json` (not just synthetic fixtures) — correctly
+  reported `stale` (built at commit `d270dc4`, current HEAD `7b4d0b6`,
+  and this implementation's own tracked `tools/schemas/__init__.py`
+  edit made the tree genuinely dirty too), and all three analysis tools
+  correctly refused. The real graph was deliberately left un-rebuilt,
+  per instruction — this proves the fail-closed path against a real
+  scenario, and refreshing it is a separate, later step.
+- **Tests**: see this session's final report for exact counts; new
+  synthetic-fixture suites in `tests/test_code_graph.py` and
+  `tests/test_graphify_tools.py`, no real `graphifyy`/network needed.
+- **Next session objective**: See `HANDOFF.md`. Awaiting review before
+  commit; the real graph should be rebuilt deliberately afterward.
+
+---
+
+### 2026-08-19 — Graphify G0: development codebase graph baseline
 
 - **Objective**: Evaluate and establish Graphify as an optional,
   local, development-time structural-intelligence layer for the Jarvis

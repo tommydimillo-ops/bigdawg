@@ -290,6 +290,39 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   `docs/GRAPHIFY.md` for why. No MCP integration, no Claude Code hooks,
   no CLAUDE.md changes, no Jarvis runtime integration in this pass.
 
+- **Graphify G1 — four narrow, read-only Jarvis code-graph tools.**
+  `agent/code_graph.py` (new): a standard-library-only reader over the
+  locally generated `graphify-out/graph.json` — never imports
+  `graphifyy`, never invokes the `graphify`/`graphify-mcp` executables;
+  the only subprocess call in the module is a fixed-argv, `shell=False`
+  `git rev-parse HEAD`/`git status --porcelain --untracked-files=no`
+  (bounded timeout, pinned cwd) used to decide graph freshness.
+  Registered through the normal `tools/registry.py` path
+  (`tools/schemas/graphify.py`, no separate dispatch path):
+  `code_graph_status`, `search_code_graph`, `analyze_code_impact`,
+  `find_code_path` — all `permission_level=0`, `side_effect=False`,
+  `unattended_allowed=True`, `parallel_safe=True`. Staleness is
+  enforced, not advisory: a graph must be built at the current git HEAD
+  with a clean tracked working tree (untracked files, including
+  `graphify-out/` itself, never count as dirty) to be used at all;
+  search/impact/path all refuse with a structured stale/unavailable/
+  invalid result otherwise, and nothing auto-rebuilds a stale graph.
+  Every result carries `authoritative: false` and G0's known-limitations
+  list; results touching `tools/registry.py`/`ToolSpec`/
+  `tools/schemas/`/`agent/autonomy.py`/permission or credential code
+  additionally carry `source_verification_required: true`. Bounded
+  throughout (search ≤20 results, impact ≤depth 3/≤100 results, path
+  ≤depth 10, one shortest path) — no giant graph dump ever reaches model
+  context. No caller-supplied filesystem path, CLI subcommand, or raw
+  query surface exists; no fifth generic "run a graph command" tool.
+  `graphifyy` remains outside `requirements.txt` and CampusPilot's
+  `.venv`. Validated against a small synthetic fixture suite (no real
+  `graphifyy`/network needed in CI) and, read-only, against the real
+  local graph — which the tool correctly reported as stale (built at the
+  prior commit, working tree modified by this same implementation work),
+  proving the fail-closed staleness path for real rather than only in a
+  mock. Full detail: `docs/GRAPHIFY.md`.
+
 ## In progress
 
 - Nothing mid-flight as of the last session update — see `HANDOFF.md`
@@ -302,13 +335,10 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 Candidates raised but not yet started, roughly in order of what's been
 discussed most recently:
 
-- **Graphify G1** — a possible narrow, read-only Jarvis `ToolSpec` over
-  the local Graphify graph (through `tools/registry.py`, never a
-  parallel dispatch path), scoped by G0's evaluation (`docs/GRAPHIFY.md`)
-  — not started, not yet approved. If pursued, must not let the graph or
-  an LLM's reading of it become an enforced permission/routing/autonomy
-  decision, and must account for G0's two verified accuracy limitations
-  (module-basename collisions, missed ToolSpec-registration wiring).
+- **Graphify G2 (not yet scoped)** — possible future direction: MCP
+  exposure, Claude Code hooks, or automatic graph regeneration, none of
+  which G1 implements or assumes. Not started, not approved; would need
+  its own explicit scoping the same way G0 → G1 each did.
 - **Provider admin-key cost reconciliation** — link real OpenAI/Anthropic
   Admin API keys (checked live, confirmed the project's regular keys
   can't reach either provider's usage/billing endpoint) to reconcile
