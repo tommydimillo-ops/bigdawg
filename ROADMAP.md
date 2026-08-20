@@ -323,6 +323,33 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   proving the fail-closed staleness path for real rather than only in a
   mock. Full detail: `docs/GRAPHIFY.md`.
 
+- **Graphify G1.1 — incremental-vs-full extraction consistency audit.**
+  A narrow reliability investigation, prompted by a real accuracy
+  question found while validating G1 against the live graph. Confirmed,
+  via two isolated local clones (`git clone --local --no-hardlinks`) —
+  one reproducing the exact old-commit-to-G1 incremental transition, one
+  a clean extraction with no prior cache at the same commit — that
+  Graphify 0.9.47's incremental mode can silently omit a direct
+  per-symbol `imports` edge when a newly-added Python file imports a
+  named symbol from an old/unchanged (cached) module, even when
+  `built_at_commit`/clean-tree/`fresh` all check out. Confirmed on two
+  independent instances (`tools/schemas/graphify.py` → `ToolSpec`/
+  `register`; `tests/test_graphify_tools.py` → `_run_tool`) and ruled
+  out a one-file fluke via four unrelated peer-module controls, all
+  clean. Every node and every `contains`/`calls`/`inherits`/`method`
+  relation for the new G1 files was 100% identical between modes —
+  narrow, not broad. Read (never modified) the installed Graphify
+  source and identified the likely mechanism: incremental extraction
+  shares "unchanged corpus" context with several call-resolution passes
+  but not with the plain `from X import Y` symbol-binding pass. Replaced
+  the live local graph with a clean full rebuild (old graph backed up
+  outside the repo, validated, backup then deleted): 3157 nodes, 6650
+  edges, 152 communities. No `agent/code_graph.py`/ToolSpec/test change
+  — its existing `authoritative: false` design already covers this
+  regardless of extraction mode. Documented in `docs/GRAPHIFY.md`: the
+  finding, a terminology clarification that `fresh` never implies
+  structural completeness, and a 5-step precision rebuild workflow.
+
 ## In progress
 
 - Nothing mid-flight as of the last session update — see `HANDOFF.md`
@@ -332,8 +359,20 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 
 ## Next
 
-Candidates raised but not yet started, roughly in order of what's been
-discussed most recently:
+**Designated next major milestone: Phase 9 / M4 — Conversation &
+History Intelligence.** Not started. Its currently-known scope
+(carried forward from the prior "Phase 9 Milestone 4 — FTS5
+conversation/history search" framing, not yet re-scoped under the new
+name): full-text search over conversation/execution history (see
+`agent/conversation_store.py`/`agent/execution_history.py` for the
+current, non-searchable stores this would index) using SQLite's FTS5
+extension rather than a new external search dependency. Sequenced after
+OpenClaw interoperability and the Graphify G0/G1/G1.1 work, both now
+complete. Not designed in detail yet — treat as a fresh planning
+conversation with the user before implementing anything.
+
+Other candidates raised but not yet started, roughly in order of what's
+been discussed most recently:
 
 - **Graphify G2 (not yet scoped)** — possible future direction: MCP
   exposure, Claude Code hooks, or automatic graph regeneration, none of
@@ -372,14 +411,6 @@ discussed most recently:
 Larger, not-yet-started capabilities, matching the long-term architecture
 this project is meant to grow into:
 
-- **Phase 9 Milestone 4 — FTS5 conversation/history search** — later in
-  Phase 9, after Milestone 3 (complete) and after the OpenClaw
-  interoperability work now sequenced ahead of it (see "Next" above).
-  Not started, not designed in detail yet; intended to give full-text
-  search over conversation/execution history (see
-  `agent/conversation_store.py`/`agent/execution_history.py` for the
-  current, non-searchable stores this would index) using SQLite's FTS5
-  extension rather than a new external search dependency.
 - **Phase 10 — Real CodingAgent capability + checkpoint/rollback** —
   CodingAgent is currently a stub
   (`metadata={"deferred_to_executor": True}` for everything). Real

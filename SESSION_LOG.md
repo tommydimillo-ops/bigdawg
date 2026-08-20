@@ -5,7 +5,46 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-19 (latest) — Graphify G1: four narrow, read-only Jarvis code-graph tools (uncommitted)
+### 2026-08-20 (latest) — Graphify G1.1: incremental-vs-full extraction audit, documented (docs-only)
+
+- **Objective**: Investigate an observation from G1's own finalization
+  (a possible incremental-extraction completeness gap for
+  `tools/schemas/graphify.py`), determine if it was real/reproducible,
+  and document the finding — narrow reliability audit, no new feature.
+- **Work completed**: Reproduced the gap deterministically via two
+  isolated local clones (old-commit incremental transition vs. clean
+  full extraction at the same G1 commit). Confirmed real, narrow: newly
+  added Python files importing named symbols from old/unchanged cached
+  modules can miss the direct per-symbol `imports` edge, even though
+  `built_at_commit`/clean-tree/`fresh` all check out. Confirmed on two
+  independent instances (`ToolSpec`/`register`, `_run_tool`) and ruled
+  out a one-file fluke via four peer-module controls, all clean. Read
+  the installed Graphify 0.9.47 source (not modified) and found the
+  likely mechanism: incremental mode shares "unchanged corpus" context
+  with call-resolution passes but not the plain import-symbol-binding
+  pass. Replaced the live local graph with a clean full rebuild
+  (backed up old graph outside the repo first, validated, then deleted
+  the backup) — final: 3157 nodes, 6650 edges, 152 communities. This
+  session recorded that finding in `docs/GRAPHIFY.md` (a new section
+  plus a terminology clarification that `fresh` never implies
+  structural completeness) and a recommended precision-rebuild
+  workflow, and updated project records — no runtime code, ToolSpec,
+  or test changed.
+- **Decisions**: No `agent/code_graph.py` change — its
+  `authoritative: false`/`limitations` design already covers this
+  regardless of which extraction mode produced the on-disk graph.
+  `--force`'s documented scope doesn't confirm AST-cache bypass, so the
+  verified workflow stays "empty `graphify-out/` first," not `--force`.
+- **Problems encountered**: None — audit reproduced cleanly on the
+  first controlled attempt.
+- **Tests**: 1253 passed, 0 failed (docs-only change; suite re-run to
+  confirm no regression risk from the pass).
+- **Next session objective**: See `HANDOFF.md`. Next major milestone is
+  Phase 9 / M4 (Conversation & History Intelligence) — not started.
+
+---
+
+### 2026-08-19 — Graphify G1: four narrow, read-only Jarvis code-graph tools (committed as `c99e792`)
 
 - **Objective**: Give Jarvis four narrow, read-only tools over the
   locally generated Graphify graph, without ever making the `graphify`/

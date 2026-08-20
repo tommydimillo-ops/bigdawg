@@ -7,7 +7,82 @@ needed.
 
 ---
 
-## 2026-08-19 (most recent) — Graphify G1: four narrow, read-only Jarvis code-graph tools (uncommitted, awaiting review)
+## 2026-08-20 (most recent) — Graphify G1.1: verified incremental-vs-full extraction audit, documented rebuild workflow
+
+**What**: A narrow, documentation-only finalization of the G1.1
+investigation (itself a reliability audit, no tracked-source change) —
+recorded the verified findings in `docs/GRAPHIFY.md` and confirmed the
+live local graph (already replaced with a clean full build during the
+audit) is in a known-good state. No Jarvis runtime code, ToolSpec, or
+test changed in this pass.
+
+**Verified finding**: Graphify 0.9.47's incremental extraction mode
+(the default behavior of `graphify extract . --code-only`, which reuses
+its on-disk manifest/AST cache) can silently omit a direct per-symbol
+`imports` edge when a newly-added/changed Python file imports a named
+symbol from an old/unchanged (cached) module — even though the graph's
+`built_at_commit` matches HEAD, the tracked working tree is clean, and
+`code_graph_status` reports `fresh`. Confirmed via a controlled audit:
+two isolated local clones (`git clone --local --no-hardlinks`, outside
+the repo), one reproducing the exact old-commit-to-G1 incremental
+transition (3157 nodes / 6655 edges), one a clean extraction with no
+prior cache at the identical G1 commit (3157 nodes / 6650 edges).
+`tools_schemas_graphify --imports--> tools_registry_toolspec`/
+`tools_registry_register` were present only in the clean extraction;
+a second, independent instance (`tests_test_graphify_tools --imports-->
+agent_executor_run_tool`) confirmed the pattern generalizes, not a
+one-file fluke. Four unrelated pre-existing `tools/schemas/*.py`
+modules were checked as a control and showed zero difference between
+incremental and full extraction. Every node, and every `contains`/
+`calls`/`inherits`/`method` relation for the four new G1 files, was
+100% identical between the two modes — the gap is real but narrow, not
+broad graph corruption. Likely mechanism, confirmed by reading (not
+modifying) the installed `graphify` package source: incremental
+extraction shares "unchanged corpus" context with several call-
+resolution passes (direct calls, indirect calls, member-call
+resolution) but not with the plain `from X import Y` symbol-binding
+pass that produces direct `imports`-relation edges — that pass's lookup
+table is built only from the current incremental batch.
+
+**Action taken during the audit (not this docs pass)**: the live local
+`graphify-out/` was already replaced with a clean full rebuild (old
+graph backed up outside the repo first, validated, backup then
+deleted) — final graph: 3157 nodes, 6650 edges, 152 communities, built
+at `c99e792`, `code_graph_status` reported `fresh` and `authoritative:
+false` immediately after. This documentation pass records that finding
+and workflow; it does not repeat the rebuild.
+
+**Documentation added** (`docs/GRAPHIFY.md`): a new "Known
+incremental-extraction limitation" section explaining the finding, a
+terminology clarification that `fresh` means "matches current HEAD with
+a clean tracked tree" and never "structurally complete" or "built via a
+clean extraction," and a 5-step recommended precision rebuild workflow
+(clean tracked tree → move existing `graphify-out/` to a temp backup
+outside the repo → re-extract from a clean directory → validate
+`built_at_commit`/`fresh`/secret-scan/ignored-status/clean-tree → only
+then delete the backup). Also notes that `graphify extract --force` is
+documented as skipping "the incremental manifest gate and semantic
+cache reads" but this audit did not establish whether it also bypasses
+the AST cache — so a genuinely empty `graphify-out/` directory remains
+the verified way to force a clean full extraction, not `--force` alone.
+
+**Why no runtime change**: `agent/code_graph.py` already marks every
+result `authoritative: false` with a `limitations` list, regardless of
+which extraction mode produced the graph on disk — the existing
+fail-closed design already covers this finding's practical
+consequence. The fix here is informing the human/future-session
+workflow around rebuilding, not the tool's own trust model.
+
+**Files affected**: `docs/GRAPHIFY.md`, `CHANGELOG.md`, `SESSION_LOG.md`,
+`HANDOFF.md`, `ROADMAP.md`. No `.py` file, `requirements.txt`,
+`.gitignore`, `CLAUDE.md`, or generated `graphify-out/` content
+committed.
+
+**Verification**: `git diff --check` clean; secret scan of the tracked
+diff found nothing; full suite confirmed green at the unchanged
+1253-test baseline (docs-only change, no regression risk).
+
+## 2026-08-19 — Graphify G1: four narrow, read-only Jarvis code-graph tools (committed as `c99e792`)
 
 **What**: Building on G0's evaluation (below), gave Jarvis four narrow,
 read-only tools over the locally generated Graphify graph. The
