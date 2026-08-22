@@ -5,7 +5,145 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-20 (latest) — Graphify G1.1: incremental-vs-full extraction audit, documented (docs-only)
+### 2026-08-22 (latest) — Phase 9 / M4.1 hardening: FTS5's own secure-delete layer (BUILT, TESTED, still UNCOMMITTED)
+
+- **Objective**: A review of the M4.1 work below (same session, same
+  uncommitted slice) found one privacy gap: `PRAGMA secure_delete=ON`
+  only protects ordinary SQLite table storage, not an FTS5 index's own
+  b-tree segments — official SQLite docs are explicit that deleted/
+  updated full-text entries may remain forensically reconstructable
+  without FTS5's own, separate `secure-delete` config option (added in
+  SQLite 3.42.0). Close that gap without redesigning M4.1, starting
+  M4.2, or committing anything.
+- **Work completed**: Empirically probed the real mechanism first
+  (this session's runtime is SQLite 3.50.4): confirmed the documented
+  special-command insert (`INSERT INTO history_turn_fts(history_turn_fts,
+  rank) VALUES ('secure-delete', 1)`) works, and — unlike the core
+  pragma — persists in the table's own `_config` shadow table across a
+  full close/reopen rather than resetting per-connection. Added this to
+  `_create_schema_v1()` right after the FTS table is created, inside the
+  same schema-init transaction. Added real feature probing (attempt the
+  command, catch `sqlite3.OperationalError` — confirmed empirically to
+  be exactly what an unrecognized FTS5 special command raises) so an
+  unsupported runtime fails the whole schema-init transaction closed via
+  a new `HistoryUnsupportedRuntime` exception, rather than silently
+  shipping a history database without the protection.
+- **Decisions**: No schema version bump — M4.1 has never shipped, so
+  there's nothing to migrate, staying at v1 per the task's own
+  instruction not to invent a v2 for code that's never been committed.
+  Both secure-delete layers (core pragma + FTS5 config) are required
+  together, neither is a substitute for the other.
+- **Problems encountered**: A direct attempt to reproduce the
+  *underlying* forensic-residue risk (show a deleted FTS term's raw
+  bytes surviving *without* the new protection, as a before/after
+  contrast) did not reliably reproduce at unit-test scale — SQLite's own
+  segment-merge behavior seems to clean up old segments quickly enough
+  under the write volumes a compact test can generate. Reported honestly
+  rather than fabricated: this doesn't contradict the documented risk
+  (SQLite's own docs say entries *may* remain reconstructable, not that
+  they always do), and the protection was implemented regardless since
+  it's officially documented, free at this project's scale, and the
+  downside of skipping it is worth closing even without a forced lab
+  reproduction.
+- **Tests**: 11 new tests added to `tests/test_history_store.py` (83
+  total, up from 72) — FTS secure-delete enabled at init and confirmed
+  via direct shadow-table inspection (test-only, never exposed via the
+  public API), persistence across reopen, fail-closed behavior against a
+  simulated pre-3.42.0 runtime (leaves no working schema behind), an
+  update-privacy test (old token unsearchable + scrubbed from raw bytes,
+  new token searchable + present, FTS `integrity-check` passes), a
+  delete-privacy test (both storage layers lose the row, raw bytes
+  scrubbed after checkpoint), and a regression test protecting the
+  already-known per-connection pragma trap across all four public write
+  functions. Full suite: `python -m unittest discover -s tests -v` →
+  **1336 passed, 0 failed** (1325 prior baseline + 11 new). No paid
+  provider calls. Confirmed the real production `history.db` was still
+  not created.
+- **Next session objective**: See `HANDOFF.md`. Still uncommitted, still
+  waiting on user review — this hardening pass doesn't change that
+  status, just what's included in the review. Do not start M4.2.
+
+---
+
+### 2026-08-22 — Phase 9 / M4A audit + M4.1 durable history store implementation (BUILT, TESTED, UNCOMMITTED)
+
+- **Objective**: Two gated steps in one session. First, a
+  design-only audit (Phase 9 / M4A) of every existing history/memory/
+  state store, conversation flow across all UIs, and SQLite/FTS5
+  capability on this project's real runtime, to produce a storage-
+  boundary recommendation for Phase 9 / M4 (Conversation & History
+  Intelligence) — no implementation, no commits. Second, once that
+  audit's recommendation was reviewed, a scoped first implementation
+  slice (M4.1) building only the durable history database core, with
+  explicit instructions not to wire capture, backfill, register tools,
+  or commit.
+- **Work completed**: M4A delivered an in-conversation architecture
+  report recommending a dedicated SQLite database (not another JSON
+  file, not piggybacking on `agent/personal_context.py`'s read-only
+  pattern) with an external-content FTS5 index, and empirically proved
+  (not assumed) several load-bearing claims against this project's real
+  SQLite 3.50.4 runtime: `PRAGMA secure_delete = ON` genuinely scrubs
+  deleted row bytes from a real file-backed database even without
+  `VACUUM`; it's compatible with WAL mode and external-content FTS5
+  tables; pre-creating the DB file with `os.open(..., 0o600)` before
+  SQLite ever opens it gives 0600 permissions on the main file and its
+  WAL/SHM sidecars; and a "extract terms, individually double-quote,
+  join as AND" strategy safely neutralizes FTS5 operator syntax against
+  ten hostile test inputs. M4.1 then implemented exactly that design in
+  a new `agent/history_store.py`: schema v1 (`history_session`/
+  `history_turn` canonical tables + `history_turn_fts` derived index),
+  `PRAGMA user_version`-based fail-closed schema versioning, connection-
+  per-operation SQLite access (`foreign_keys=ON`, `journal_mode=WAL`,
+  bounded `busy_timeout`, `synchronous=FULL`, `secure_delete=ON`),
+  write-time redaction reusing `agent.memory.safety.redact_secrets()`
+  (no forked secret list), a safe FTS5 query builder, and six public
+  functions (`initialize_history_store`, `create_session`,
+  `close_session`, `record_turn`, `history_status`, `search_history`) —
+  no raw-SQL surface. Caught and fixed during self-review before tests
+  were written: a fresh-database bug in `record_turn` (fixed by making
+  every writable connection self-initializing), an inconsistent lock-
+  timeout failure mode across four `BEGIN IMMEDIATE` call sites (fixed
+  by routing all four through one `_begin_immediate()` helper that
+  raises a distinct `HistoryBusy`), an unused `time` import, and a
+  missing `created_at DESC` tie-breaker in the search ranking (the spec
+  required bm25-primary + recency-tiebreak, not just bm25 alone).
+- **Decisions**: HISTORY (`agent/history_store.py`) and MEMORY
+  (`agent/memory/`) are explicitly separate systems — the former is
+  append-only evidence, never superseded; the latter is distilled and
+  superseding. Neither module imports from the other. History retention
+  defaults to indefinite (no automatic age-based deletion in M4.1).
+  `conversation.json` backfill, executor/UI capture wiring, and Jarvis-
+  facing search tools are each their own explicitly-gated future
+  milestone (M4.2/M4.3), not folded into this pass. The M4A report's
+  speculative `0.7*BM25 + 0.3*recency` ranking formula was deliberately
+  not implemented — bm25 isn't a normalized score, and inventing weights
+  without observing real retrieval quality first would be premature.
+- **Problems encountered**: One real test-writing pitfall, not a module
+  bug: an early draft of the secure-delete byte-scan test performed a
+  raw `DELETE` through a manually opened `sqlite3.connect()` that never
+  set `PRAGMA secure_delete = ON` on that connection — the pragma is
+  per-connection, not persisted in the database file the way
+  `journal_mode` is, so the test initially (correctly) failed until the
+  test itself was fixed to set the pragma before deleting, matching what
+  a real future deletion path would also need to do.
+- **Tests**: New `tests/test_history_store.py`, 72 tests, covering
+  schema versioning, session/turn CRUD + idempotency, FK integrity, FTS
+  sync, the secure-delete proof, the safe query builder against ten
+  hostile inputs, search filtering/ranking, distinct error semantics,
+  file permissions, threaded concurrency, transaction integrity, and
+  privacy (no raw secret in stored content, search results, error
+  messages, or raw DB/WAL/SHM bytes). Full suite:
+  `python -m unittest discover -s tests -v` → **1325 passed, 0 failed**
+  (1253 prior baseline + 72 new). No paid provider calls. Confirmed the
+  real production `history.db` was not created by any test.
+- **Next session objective**: See `HANDOFF.md`. M4.1 is built and
+  tested but deliberately left **uncommitted** for review. Do not start
+  M4.2 (executor/UI capture wiring) until M4.1 is reviewed, committed,
+  and CI-verified.
+
+---
+
+### 2026-08-20 — Graphify G1.1: incremental-vs-full extraction audit, documented (docs-only)
 
 - **Objective**: Investigate an observation from G1's own finalization
   (a possible incremental-extraction completeness gap for

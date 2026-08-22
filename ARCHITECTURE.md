@@ -455,6 +455,11 @@ nothing that already imports them needed to change): `agent/lessons.py`
   Streamlit multi-device UI, not long-term memory.
 - `agent/execution_history.py` — bounded metadata about past *requests*
   (status, duration, tools used), not personal facts.
+- `agent/history_store.py` (Phase 9 M4.1) — durable, searchable
+  *evidence* of what was actually said, when; never superseded the way a
+  memory is. See §12a for the full HISTORY-vs-MEMORY boundary and the
+  module's own scope. This module never imports from or writes to
+  `agent/memory/`, and the reverse is expected to remain true.
 
 The real, live memory store is the absolute,
 `~/Library/Application Support/CampusPilot/`-based path in
@@ -581,16 +586,131 @@ the same backend code directly (import, not RPC).
 
 ## 12. Database / storage
 
-No database server, no ORM, no SQL (one narrow exception: read-only
-`sqlite3` access to the macOS Photos library's own database in
-`agent/personal_context.py`, for aggregate stats only). Every store is a
-flat JSON file under `~/Library/Application Support/CampusPilot/`:
-`memory.json`, `execution_history.json`, `usage_history.json`,
-`scheduled_tasks.json`, `quiet_mode.json`, `conversation.json`,
-`jarvis_state.json`, `personal_context.json`, `audit.log` (JSON-lines),
-`tts.pid`. Writes use tmp-file-then-`os.replace`; several add an
-`fcntl.flock`-guarded read-modify-write cycle for cross-process safety
-(memory, execution history, usage history, scheduled tasks).
+No database server, no ORM. Every general-purpose store is a flat JSON
+file under `~/Library/Application Support/CampusPilot/`: `memory.json`,
+`execution_history.json`, `usage_history.json`, `scheduled_tasks.json`,
+`quiet_mode.json`, `conversation.json`, `jarvis_state.json`,
+`personal_context.json`, `audit.log` (JSON-lines), `tts.pid`. Writes use
+tmp-file-then-`os.replace`; several add an `fcntl.flock`-guarded
+read-modify-write cycle for cross-process safety (memory, execution
+history, usage history, scheduled tasks).
+
+Two narrow, deliberate `sqlite3` exceptions exist, both documented so
+neither is mistaken for a general SQL layer: `agent/personal_context.py`
+opens the macOS Photos library's own database read-only (`mode=ro` URI)
+for aggregate stats only; `agent/history_store.py` (§12a) owns a real,
+Jarvis-written SQLite database — the only one in this project.
+
+### 12a. History store (Phase 9 M4.1)
+
+`agent/history_store.py` owns `~/Library/Application
+Support/CampusPilot/history.db`, a dedicated SQLite database — the
+implementation slice that follows the Phase 9 M4A audit's storage-boundary
+recommendation. **As of M4.1, this module is built but not wired in**: no
+code path calls it yet (see below).
+
+**HISTORY vs MEMORY, the boundary that governs this design**: memory
+(`agent/memory/`, §6) is *distilled, superseding* — "the user prefers X"
+replaces "the user prefers Y" because only one can currently be true.
+History is *append-only evidence* — what was actually said, when, is
+never superseded by a later, unrelated turn; each row is independently
+true forever. Running conversation content through memory's same-subject
+supersession logic would be actively wrong for this reason, which is why
+the two modules never import from each other.
+
+**Why a dedicated SQLite database instead of another JSON file**: this is
+the first store in the project that needs full-text search over
+free-form conversation content at retrieval time; grep-equivalent
+scanning of an ever-growing JSON file doesn't scale the way SQLite's
+FTS5 extension does, and FTS5 needs a real SQLite database to attach to.
+
+**Schema (`PRAGMA user_version = 1`)** — two canonical tables, one
+derived index:
+- `history_session(session_id PK, source, started_at, ended_at)`
+- `history_turn(turn_id PK, session_id FK, request_id, role, content,
+  created_at, redacted, truncated)`, indexed on `session_id`,
+  `request_id`, `created_at`, `role`, plus a partial unique index on
+  `(request_id, role) WHERE request_id IS NOT NULL` giving idempotent
+  writes (a retried request never double-records a turn) without
+  deduplicating `request_id IS NULL` backfill rows against each other.
+- `history_turn_fts` — an external-content FTS5 table
+  (`content='history_turn'`, `content_rowid='turn_id'`, `tokenize='porter
+  unicode61'`) kept in sync purely by `AFTER INSERT/UPDATE/DELETE`
+  triggers. Canonical rows are the only authoritative data; losing the
+  FTS index would only lose search capability, never real data.
+
+**Connection policy**: stdlib `sqlite3` only (no new dependency),
+connection-per-operation (never one shared global handle, matching this
+project's load/modify/save-per-call convention everywhere else). Every
+write connection sets `foreign_keys=ON`, `journal_mode=WAL`, a bounded
+`busy_timeout`, `synchronous=FULL` (reliability over the throughput this
+project has no need for), and `secure_delete=ON`. Read-only operations
+(`history_status`, `search_history`) open via a `file:...?mode=ro` URI —
+the same pattern `agent/personal_context.py` established — which
+structurally cannot create a missing database file, so the read-only
+surface provably has no creation side effects.
+
+**Two-layer secure deletion**: a single hardening pass over M4.1 found
+that the core pragma above is not sufficient on its own. Two
+independent layers are both required:
+- **Core `PRAGMA secure_delete=ON`** — per-*connection*, not persisted
+  in the database file the way `journal_mode` is; every write connection
+  this module opens sets it explicitly (see `_connect_writable`).
+  Empirically verified (not assumed) to scrub a deleted row's bytes from
+  the raw file, even without `VACUUM`, only a `wal_checkpoint(TRUNCATE)`,
+  and compatible with WAL. This layer covers ordinary SQLite table
+  storage — it does **not** by itself guarantee an FTS5 index's own
+  b-tree segments stop retaining old term data after a logical
+  delete/update, which official SQLite documentation calls out
+  explicitly.
+- **FTS5's own `secure-delete` config** — a property of the
+  `history_turn_fts` table itself (persisted in its `_config` shadow
+  table, not the connection — set once at schema creation via
+  `INSERT INTO history_turn_fts(history_turn_fts, rank) VALUES
+  ('secure-delete', 1)`, it survives every future reopen without being
+  set again). Requires SQLite >= 3.42.0. Enabled inside the same
+  `_ensure_schema()` transaction that creates the table, via real
+  feature probing (attempting the actual command and handling failure)
+  rather than a version-string comparison — an unrecognized FTS5
+  special command was verified to raise `sqlite3.OperationalError`, and
+  that failure is translated into `HistoryUnsupportedRuntime` (a new,
+  distinct `HistoryStoreError` subclass) and fails the whole
+  schema-initialization transaction closed. A history database is never
+  created with an FTS index that lacks this invariant, regardless of
+  runtime — there is no silent degradation path.
+- Both layers were verified together against a synthetic token pushed
+  through the real `record_turn()` → update/delete → FTS trigger path,
+  followed by `wal_checkpoint(TRUNCATE)` and a raw byte-scan of the
+  `.db`/`-wal`/`-shm` files. This is a SQLite/FTS logical and file-level
+  deletion claim only — not a claim of cryptographic secure erasure
+  against underlying storage hardware (SSD wear-leveling, etc.), which
+  no SQLite-level pragma can guarantee.
+
+**Redaction**: reuses `agent.memory.safety.redact_secrets()` — no
+separate secret-pattern list. Every turn is redacted, then length-bounded
+(4000 chars) before it ever reaches `sqlite3.execute()`; the unredacted
+form is never persisted. `redacted`/`truncated` flags on each row record
+whether either happened.
+
+**Safe search**: `search_history()` never lets caller text reach FTS5's
+`MATCH` syntax unescaped — terms are extracted, individually quoted, and
+joined as a literal AND expression, neutralizing FTS5 operator/column/
+wildcard/exclusion syntax. Ranking is `bm25()` ascending (FTS5's bm25
+returns more-negative values for better matches) with `created_at DESC`
+as a tie-breaker only — no weighted BM25/recency formula is invented
+here; that's deferred to a later milestone once real retrieval quality
+can be observed.
+
+**What M4.1 deliberately does not do yet** (each a distinct, later,
+explicitly-gated milestone): no automatic capture from
+`agent/executor.py`/`app.py`/`ui/menu_bar.py`/`agent/voice_session.py`/
+`agent/scheduler_daemon.py` — every write today happens only because a
+caller (currently just this module's own test suite) explicitly calls
+`create_session()`/`record_turn()`; no backfill of the existing
+`conversation.json`; no Jarvis-facing ToolSpec (`search_history`/
+`history_status` are plain Python functions, not registered tools); no
+proactive context injection; no automatic age-based deletion (retention
+defaults to indefinite).
 
 ## 13. Authentication / security
 

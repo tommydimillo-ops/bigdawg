@@ -7,7 +7,198 @@ needed.
 
 ---
 
-## 2026-08-20 (most recent) — Graphify G1.1: verified incremental-vs-full extraction audit, documented rebuild workflow
+## 2026-08-22 (most recent) — Phase 9 / M4.1 hardening: FTS5's own secure-delete layer (built, tested, UNCOMMITTED)
+
+**What**: A review of the M4.1 slice below found one privacy gap: the
+core `PRAGMA secure_delete=ON` already set on every write connection
+only covers ordinary SQLite table storage — official SQLite
+documentation is explicit that it does not by itself guarantee an FTS5
+index's own b-tree segments stop retaining old term data after a
+logical delete/update. FTS5 has its own, separate `secure-delete`
+configuration option (added in SQLite 3.42.0) that covers exactly that
+gap. This pass adds that second layer. Same uncommitted M4.1 slice,
+same two files (`agent/history_store.py`, `tests/test_history_store.py`)
+— no new files, no schema version bump (M4.1 has never shipped, so
+there is nothing to migrate).
+
+**What changed in `agent/history_store.py`**: `_create_schema_v1()` now
+enables FTS5's own secure-delete immediately after creating
+`history_turn_fts`, via the documented special-command insert:
+`INSERT INTO history_turn_fts(history_turn_fts, rank) VALUES
+('secure-delete', 1)`. Verified empirically (not assumed) that this
+command actually works against the real runtime, and that the setting
+is a property of the *table* (persisted in its `_config` shadow table),
+not the connection — unlike the core pragma, it survives closing and
+reopening the database without being set again. A new exception,
+`HistoryUnsupportedRuntime(HistoryStoreError)`, is raised and fails the
+whole schema-initialization transaction closed if this SQLite/FTS5
+build doesn't support the command — verified via real feature probing
+(attempting the actual command and catching `sqlite3.OperationalError`,
+confirmed empirically to be exactly what an unrecognized FTS5 special
+command raises on this runtime) rather than a brittle version-string
+comparison. No history database is ever created with an FTS index
+missing this invariant; there is no silent-degradation path.
+
+**Verified**: 11 new tests in `tests/test_history_store.py` (83 total,
+up from 72) covering: FTS5 secure-delete is enabled at schema init and
+confirmed via the real `_config` shadow table (read-only inspection in
+tests only — never exposed through the public API, verified by
+source-inspection); the setting persists across a full close/reopen
+with a connection that sets nothing itself; a simulated pre-3.42.0
+runtime (a `sqlite3.Connection` subclass reproducing the exact
+`OperationalError` an unrecognized FTS5 command raises) causes
+`initialize_history_store()`/`create_session()` to fail closed with
+`HistoryUnsupportedRuntime`, leaving no working schema behind
+(`user_version` stays 0, no tables created); an update-privacy test
+pushes a unique synthetic token through the real `record_turn()` path,
+updates the canonical row through the same trigger a real update would
+use, confirms the old token is no longer searchable and the new one is,
+runs FTS5's own `integrity-check` special command to confirm the index
+stayed internally consistent, checkpoints, and confirms the old token's
+bytes are absent from the raw `.db`/`-wal`/`-shm` files while the new
+content's bytes are present; a delete-privacy test does the same for a
+canonical-table delete through the existing trigger, confirming both
+storage layers (canonical row + FTS index) lose the row and the raw
+bytes don't survive a checkpoint; and a regression test protects the
+already-known per-connection trap (`secure_delete` resets on every new
+connection) by intercepting every connection all four public write
+functions open and asserting each one executed the pragma. Full suite:
+**1336 passed, 0 failed** (1325 prior baseline + 11 new). No paid
+provider calls. Confirmed the real production `history.db` was still
+not created.
+
+**Caveat honestly reported, not glossed over**: an attempt to
+independently reproduce the underlying forensic-residue risk itself
+(construct a database where a deleted FTS term's bytes remain
+recoverable *without* the FTS5 secure-delete layer, to show a clean
+before/after contrast) did not reliably succeed at the scale of a
+compact test — SQLite's own automatic segment-merge behavior appears to
+scrub old segments quickly enough under the write volumes a unit test
+can practically generate. This does not contradict the documented risk
+(which SQLite's own docs describe as index entries *may* remain
+reconstructable, not that they always do, under access patterns a small
+test can't easily reproduce — e.g. a mostly-idle database with sparse
+deletes and no natural merge activity for a long stretch). The
+protection is implemented regardless, since it's officially documented,
+costs nothing at this project's write volume, and the downside of
+skipping it is exactly the kind of risk that's prudent to close even
+without being able to force-demonstrate it in a lab test.
+
+---
+
+## 2026-08-22 — Phase 9 / M4.1: durable history store + FTS5 core (built, tested, UNCOMMITTED)
+
+**What**: The first implementation slice of Phase 9 / M4 (Conversation &
+History Intelligence), following the M4A audit's storage-boundary
+recommendation. New module `agent/history_store.py` owns a dedicated
+SQLite database at `~/Library/Application
+Support/CampusPilot/history.db` — the only Jarvis-*written* SQLite
+database in the project (`agent/personal_context.py`'s existing
+`sqlite3` use is read-only against Apple's own Photos database). **Not
+committed** — left for review per the task's own explicit instruction;
+see `git status` for current state.
+
+**Schema (`PRAGMA user_version = 1`)**: two canonical tables —
+`history_session(session_id PK, source, started_at, ended_at)` and
+`history_turn(turn_id PK, session_id FK, request_id, role, content,
+created_at, redacted, truncated)`, indexed on `session_id`,
+`request_id`, `created_at`, `role`, plus a partial unique index on
+`(request_id, role) WHERE request_id IS NOT NULL` giving idempotent
+turn recording without deduplicating future backfilled
+(`request_id IS NULL`) rows against each other — and one derived index,
+`history_turn_fts`, an external-content FTS5 table
+(`content='history_turn'`, `content_rowid='turn_id'`,
+`tokenize='porter unicode61'`) kept in sync purely by `AFTER
+INSERT/UPDATE/DELETE` triggers. Canonical rows are the only
+authoritative data; the FTS index can be lost/rebuilt without losing
+real data.
+
+**Connection policy**: stdlib `sqlite3` only (no new dependency),
+connection-per-operation. Every write connection sets
+`foreign_keys=ON`, `journal_mode=WAL`, a bounded `busy_timeout`,
+`synchronous=FULL`, and `secure_delete=ON`. The last was verified
+empirically against this project's real SQLite 3.50.4 runtime, not
+assumed from documentation: a synthetic secret written then deleted
+from a real file-backed temp database was unrecoverable from the raw
+file bytes (even without `VACUUM`, only a `wal_checkpoint(TRUNCATE)`)
+with the pragma on, and recoverable with it off — and it was confirmed
+compatible with WAL mode and external-content FTS5 tables. A brand-new
+database file is pre-created with `os.open(..., 0o600)` before SQLite
+ever opens it, so there is no window where it exists at default
+(often group/world-readable) permissions; WAL/SHM sidecar files were
+verified to inherit that same 0600 mode. Read-only operations
+(`history_status`/`search_history`) open via a `file:...?mode=ro` URI —
+the same pattern `agent/personal_context.py` already established —
+which structurally cannot create a missing database file, so those
+entry points provably have no creation side effects (tested directly:
+importing the module, calling `history_status()`, and calling
+`search_history()` against a nonexistent path all leave no file behind).
+
+**Redaction**: reuses `agent.memory.safety.redact_secrets()` — no
+separate secret-pattern list was created. Every turn's content is
+redacted, then bounded to 4000 characters, before it ever reaches
+`sqlite3.execute()`; the unredacted form is never persisted.
+`redacted`/`truncated` boolean flags on each row record whether either
+transformation actually changed anything.
+
+**Safe search**: `search_history()`'s query builder extracts literal
+`\w+` terms from caller input, individually double-quotes each one, and
+joins them as an implicit-AND FTS5 expression — verified against ten
+hostile/operator-shaped inputs (bare `or`, `cats OR dogs`, `NEAR miss`,
+`a NOT b`, `col:value`, parenthesized boolean expressions, embedded
+quotes, wildcards, minus-exclusion syntax, pre-quoted phrases) that none
+reach FTS5's `MATCH` parser as anything but literal terms. Ranking is
+`bm25()` ascending (FTS5's bm25 returns more-negative values for better
+matches) with `created_at DESC` as a tie-breaker only — the M4A report's
+speculative `0.7*BM25 + 0.3*recency` weighted formula was deliberately
+**not** implemented, since bm25 isn't naturally a normalized 0-1 score
+and inventing weights without observing real retrieval quality first
+would be premature.
+
+**Public API**: `initialize_history_store()`, `create_session()`,
+`close_session()`, `record_turn()`, `history_status()`,
+`search_history()` — no raw-SQL or generic execute/query surface, so a
+future ToolSpec can't be widened into arbitrary SQLite-file access.
+Distinct exception types (`HistoryUnavailable`, `HistorySchemaError`,
+`HistoryCorruption`, `HistoryValidationError`, `HistoryBusy`, all under
+`HistoryStoreError`) keep "the store doesn't exist yet" distinguishable
+from "your input was invalid" from "something is actually wrong with
+the database" from "a write lost a lock race" — collapsing these into a
+silent empty result would hide a real corruption/lock problem behind
+what looks like an ordinary empty search.
+
+**What this pass deliberately does not do** (each its own later,
+explicitly-gated milestone — M4.2 through M4.4): no automatic capture
+wiring into `agent/executor.py`/`app.py`/`ui/menu_bar.py`/
+`agent/voice_session.py`/`agent/scheduler_daemon.py` — every write
+today happens only because a caller (currently only this module's own
+test suite) explicitly calls `create_session()`/`record_turn()`; no
+backfill of `conversation.json`; no Jarvis-facing `search_history`/
+`history_status` ToolSpec registered in `tools/registry.py`; no
+proactive context injection; no automatic age-based deletion (retention
+defaults to indefinite, matching the product decision already made for
+this store).
+
+**Verified**: new `tests/test_history_store.py` (72 tests) covering
+schema versioning/fail-closed-on-newer-schema, session/turn CRUD and
+idempotency, FK integrity, FTS sync (insert/update/delete), the
+secure-delete byte-scan proof, the safe query builder against all ten
+hostile inputs, search filtering/ranking/snippet-bounding, distinct
+error semantics, file-permission checks (main DB + WAL + SHM sidecars),
+threaded concurrency (concurrent init, concurrent distinct writes,
+concurrent duplicate-request-id races), transaction/rollback integrity,
+and privacy (synthetic secrets never appear in stored content, search
+results, error messages, or raw DB/WAL/SHM bytes on disk). Full suite:
+`python -m unittest discover -s tests -v` → **1325 passed, 0 failed**
+(1253 prior baseline + 72 new). No paid provider calls. Confirmed the
+real production `history.db` was not created by any test or by
+importing the module; confirmed no other tracked file was modified
+except `ARCHITECTURE.md`/`ROADMAP.md`/`CHANGELOG.md`/`SESSION_LOG.md`/
+`HANDOFF.md` (this documentation pass) plus the two new files above.
+
+---
+
+## 2026-08-20 — Graphify G1.1: verified incremental-vs-full extraction audit, documented rebuild workflow
 
 **What**: A narrow, documentation-only finalization of the G1.1
 investigation (itself a reliability audit, no tracked-source change) —

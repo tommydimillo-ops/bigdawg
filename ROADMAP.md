@@ -81,8 +81,11 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   risks" below — this was previously listed there as unfixed.
 - **Phase 9 — Task-Aware Routing & Verification Hardening** (milestones
   tracked individually below; the phase overall is still in progress —
-  Milestone 4 has not started; OpenClaw interoperability is planned to
-  land between Milestone 3 and Milestone 4, see "Next" below):
+  Milestone 4 (now reframed as "Phase 9 / M4 — Conversation & History
+  Intelligence", audited and split into sub-milestones M4.1-M4.4; M4.1
+  is in progress, see "In progress" above) is not yet complete;
+  OpenClaw interoperability landed between Milestone 3 and Milestone 4,
+  see "Completed" above):
   - **Milestone 0 — GitHub Actions CI** (`d3481fc`) ✅: added
     `.github/workflows/tests.yml`, running the full suite
     (`python -m unittest discover -s tests -v`) on every push/PR against
@@ -352,24 +355,58 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 
 ## In progress
 
-- Nothing mid-flight as of the last session update — see `HANDOFF.md`
-  for the authoritative current state (this section will drift faster
-  than this file gets updated; `HANDOFF.md` is the source of truth for
-  "right now").
+- **Phase 9 / M4.1 — Durable History Store + FTS5 Core.** Built and
+  tested (`agent/history_store.py`, `tests/test_history_store.py`, 72
+  new tests, full suite 1325/1325 passing) but **uncommitted, pending
+  user review** — not yet on disk as a commit. Implements the dedicated
+  `~/Library/Application Support/CampusPilot/history.db` SQLite database
+  (canonical `history_session`/`history_turn` tables, an external-content
+  FTS5 index kept in sync by triggers, write-time redaction via
+  `agent.memory.safety.redact_secrets()`, a safe FTS5 query builder, and
+  read/write/search/status APIs) recommended by the M4A audit below.
+  Deliberately does **not** yet: wire automatic capture into
+  `agent/executor.py`/any UI, backfill `conversation.json`, register any
+  Jarvis-facing ToolSpec, or add proactive context injection — each is
+  its own later, explicitly-gated milestone. See `ARCHITECTURE.md` §12a
+  for the full design and `HANDOFF.md` for exact file-level status.
 
 ## Next
 
-**Designated next major milestone: Phase 9 / M4 — Conversation &
-History Intelligence.** Not started. Its currently-known scope
-(carried forward from the prior "Phase 9 Milestone 4 — FTS5
-conversation/history search" framing, not yet re-scoped under the new
-name): full-text search over conversation/execution history (see
-`agent/conversation_store.py`/`agent/execution_history.py` for the
-current, non-searchable stores this would index) using SQLite's FTS5
-extension rather than a new external search dependency. Sequenced after
-OpenClaw interoperability and the Graphify G0/G1/G1.1 work, both now
-complete. Not designed in detail yet — treat as a fresh planning
-conversation with the user before implementing anything.
+**Phase 9 / M4A — Conversation & History Intelligence Architecture
+Audit is complete** (an audit-and-design-only pass, delivered as an
+in-conversation report — no committable artifact of its own beyond the
+recommendation M4.1 above now implements). It inventoried every existing
+history/memory/state store, traced conversation flow across every UI,
+audited the typed memory system and execution/audit history, empirically
+proved SQLite/FTS5 capability on this project's real runtime, and
+recommended the dedicated-SQLite-database design M4.1 built. Full
+milestone breakdown (M4.1 through M4.4, each independently gated):
+
+- **M4.1 — Durable History Store + FTS5 Core** (in progress above).
+- **M4.2 — executor/UI capture wiring.** Only after M4.1 is reviewed,
+  committed, and CI-verified. Wires real writes from
+  `agent/executor.py`/`app.py`/`ui/menu_bar.py`/
+  `agent/voice_session.py`/`agent/scheduler_daemon.py` into
+  `history_store.create_session()`/`record_turn()` — none of these call
+  it yet. Voice/menu-bar conversations become durable starting here (a
+  product decision already made, not yet implemented).
+- **M4.3 — Jarvis-facing search tools.** Registers `search_history`/
+  `history_status` ToolSpecs through `tools/registry.py` (never a
+  special-cased dispatch path) so Jarvis itself can answer "what did we
+  decide about X" / "what was I working on yesterday" questions. Not
+  started; no ToolSpec exists yet.
+- **M4.4 — proactive context injection.** Bounded, relevance-gated,
+  provenance-visible, cost-aware, user-disableable retrieval that
+  surfaces relevant history automatically rather than only on explicit
+  search — intended to eventually be default-on, but only once M4.2/M4.3
+  are proven in real use. Not started, not designed in detail.
+
+`conversation.json` backfill (a product decision already made — it
+*will* eventually happen, just not as part of M4.1) and history
+retention (defaults to indefinite; no automatic age-based deletion
+planned without a separate, explicit design pass) are both still open
+for whichever milestone ends up needing them, not yet scheduled to a
+specific one.
 
 Other candidates raised but not yet started, roughly in order of what's
 been discussed most recently:
