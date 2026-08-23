@@ -894,6 +894,106 @@ in: `history_store.build_safe_match_query()`, already covered by §12a.
 `snippet()` call already caps at `_SNIPPET_TOKENS` (32 tokens); the tool
 passes `SearchResult.snippet` through unmodified — no double-truncation.
 
+### 12d. Proactive history retrieval (Phase 9 M4.4)
+
+`agent/history_context.py`'s `build_history_context(user_input, request_id,
+state)` is called from `agent.brain.build_system_prompt()`, right after the
+memory patterns block — the same "application infrastructure, not a model
+decision" trigger point M4.2 established for capture, now mirrored for
+retrieval. There is no ToolSpec and no model choice involved: every ordinary
+conversation turn either gets a history block appended to its system prompt
+or it doesn't, decided entirely by code before any provider call.
+
+**Built, wired, CI-verified, and off by default.** `config.settings.
+proactive_history_enabled` defaults to `False`; nobody gets this behavior
+until they set `PROACTIVE_HISTORY_ENABLED=true`. `build_history_context()`
+no-ops before even opening the history database when the feature is
+disabled or `user_input` is empty/whitespace — proven in
+`tests/test_history_context.py` via `mock_search.assert_not_called()`, and
+proven again at the `build_system_prompt()` level in `tests/test_brain.py`:
+the disabled-path prompt is asserted **byte-identical**, not merely "has no
+history section," to a prompt built with `build_history_context()` stubbed
+out entirely. That test is clean by construction rather than by effort —
+`HistoryContext.prompt_text` already owns its own full section text
+including the header, so `brain.py` only ever appends a separator plus that
+one string; "the call returned empty" and "the call was never made"
+collapse to the same code path.
+
+**The WAL finding — a design premise both the M4.4 design pass and its
+review initially accepted turned out to be wrong.** The original
+justification for adding a `busy_timeout_ms` override to `agent.
+history_store.search_history()` (see §12a/§12c) was that
+`_BUSY_TIMEOUT_MS = 5000` could stall an ordinary chat turn for up to five
+seconds if M4.2's capture write and M4.4's retrieval read ever contended for
+the same database. Writing `tests/test_history_store.py`'s
+`TestSearchHistoryBusyTimeoutOverride` forced this claim to be checked
+empirically rather than assumed, and it does not reproduce: under this
+store's real WAL journal mode, a read-only connection does **not** wait on
+another connection's open, uncommitted `BEGIN IMMEDIATE` write transaction
+at all — a read against a database with a held write lock returns in
+single-digit milliseconds, with or without the override. This is WAL's
+headline property (readers see the last-committed snapshot without
+contending with the single writer), not a bug or a race — see
+`test_a_held_write_lock_does_not_block_a_read_at_all_under_wal` for the
+proof. **`busy_timeout_ms` is kept as defense-in-depth for narrower cases
+(WAL recovery, platform/SQLite-build differences), not as a fix for a
+reproduced hazard** — both `_connect_readonly()`'s and that test class's
+docstrings say this plainly rather than the softer, inaccurate "added a
+timeout for safety."
+
+**The four settings** (`config/settings.py`, all `_env_*`-overridable):
+`proactive_history_enabled` (`bool`, default `False`),
+`history_context_budget_tokens` (`int`, default `500` — a hard ceiling on
+injected history text, word-count-approximated, not a real tokenizer; hits
+accumulate in rank order and the remainder is dropped whole the moment the
+next hit would exceed it, never truncated mid-snippet, never summarized),
+`history_context_timeout_ms` (`int`, default `150` — passed to
+`search_history()`'s `busy_timeout_ms` for this one caller only, every other
+caller keeps the store's normal 5000ms default), and
+`history_context_max_results` (`int`, default `3`, passed straight through
+to `search_history()`'s own `max_results`). **500 and 150 are starting
+points chosen without production data to tune against** — they are settings
+rather than constants specifically so they can be revised without a code
+change once real usage exists to calibrate against.
+
+**Failure isolation** matches M4.2's capture philosophy exactly, retrieval
+side: the whole `search_history()` attempt is wrapped in one
+`try/except HistoryStoreError`, never raises, and every one of the six
+subclasses maps to a log level rather than a generic catch-all —
+`HistoryUnavailable` silent (no history yet is the normal fresh-install
+state), `HistoryBusy` at DEBUG (expected, ordinary contention), everything
+else (`HistorySchemaError`, `HistoryCorruption`, `HistoryUnsupportedRuntime`,
+`HistoryValidationError`) at WARNING (real environment/deployment
+anomalies worth knowing about even though they must never interrupt a
+conversation). Proven in `tests/test_brain.py`'s
+`TestRetrievalFailureCannotBreakAPrompt`: with the feature enabled and the
+store mocked to raise each of the six errors in turn, `build_system_prompt()`
+still returns a valid, non-empty prompt every time.
+
+**Provenance in the prompt**: a `RELEVANT PAST CONVERSATIONS` section,
+same header style `build_system_prompt()` already uses for profile/patterns,
+with one `- [date, source, role] "snippet"` citation line per included hit
+— explicit instruction text tells the model to cite what it uses (e.g. "we
+talked about this on [date]") rather than presenting it as spontaneous
+recall, matching this store's evidence-not-memory framing from §12a.
+
+**What M4.4 deliberately did not build** (from the original design pass,
+still holding): no whole-session/ordered multi-turn retrieval (the store has
+no `get_session`/`get_turn` read function — extending that is a distinct,
+separately-gated milestone, only if an actual need shows up); no embeddings/
+vector search (standing project principle, not new here); no automatic
+history-to-memory promotion (a frequently-retrieved history hit is never
+turned into a memory fact — doing so would blur the History-vs-Memory
+boundary this project treats as foundational); no summarization of dropped
+or truncated hits (Q3's reasoning: FTS snippets are already small and
+complete, and summarization would add a second paid LLM call gating every
+ordinary turn); no adaptive/dynamic budget (fixed ceiling for v1); no
+review UI for what got injected (the `history_retrieved` log events make
+this buildable later without a backend change); no injection for
+`source="scheduled"` (unattended runs get more conservative treatment
+elsewhere in this project already, and there's no clear benefit case yet
+for injecting conversational context into an autonomous task).
+
 ## 13. Authentication / security
 
 - **Secrets**: `agent/secrets.py` — macOS Keychain first

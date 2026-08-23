@@ -114,7 +114,47 @@ Lightweight per-session record. Concise by design — for depth, see
   (GitHub Actions run `32659780845`, no rerun needed) — direct proof the
   root cause was correctly identified, not just avoided.
 
-### 2026-08-23 (latest) — Phase 9 / M4.3: read-only conversation history tools (`1519a51`, feature branch `phase9-m4.3-history-search`)
+### 2026-08-23 (latest) — Phase 9 / M4.4: proactive history retrieval (`c992432`, `6fbc076`) — M4 complete
+
+- **Objective**: the final M4 sub-milestone — proactive, relevance-gated
+  history retrieval into the system prompt, gated behind an off-by-
+  default setting, plus land M4.3 on `main` first (it had been sitting
+  on a feature branch pending merge/PR decision).
+- **Work completed**: `phase9-m4.3-history-search` merged to `main` via
+  a clean `--ff-only` merge (`b19f042`), CI-verified again on the merged
+  `main`. Then M4.4 in two commits: foundation (`c992432`) — a new
+  `busy_timeout_ms` override on `agent.history_store.search_history()`,
+  new `agent/history_context.py` (`build_history_context()`), four new
+  `config/settings.py` fields, all off/inert by default; then wiring
+  (`6fbc076`) — one call from `agent.brain.build_system_prompt()`, an
+  11-line diff.
+- **A real blocker, resolved, not worked around**: the `main` merge was
+  initially denied by Claude Code's own auto-mode permission classifier.
+  No workaround attempted; reported directly, retried cleanly once
+  outside auto mode.
+- **A design premise found wrong while testing, corrected rather than
+  shipped quietly**: the original justification for `busy_timeout_ms`
+  (a normal write blocking a normal read for up to 5 seconds) does not
+  reproduce under this store's real WAL journal mode — a held write
+  lock does not block a read at all. Found by a test failing twice,
+  investigated rather than patched around, docstrings corrected to say
+  "defense-in-depth, not a fix for a reproduced hazard." Full account:
+  `ARCHITECTURE.md` §12d.
+- **Verification**: the disabled-default path proven byte-identical to
+  a prompt built without the call present at all
+  (`tests/test_brain.py`), all six `HistoryStoreError` subclasses proven
+  unable to break a prompt build. New `tests/test_history_context.py`
+  (20), `tests/test_brain.py` (11), 4 new `tests/test_history_store.py`
+  tests. Full canonical suite run twice: 1492/1492 passing both times.
+  Both commits pushed directly to `main`, **CI-verified on the first
+  attempt** (GitHub Actions run `32672234602`). Documentation pass
+  (this file, `ARCHITECTURE.md` §12d, `HANDOFF.md`, `ROADMAP.md`,
+  `CHANGELOG.md`) committed separately, next.
+- **Phase 9 / M4 (M4.1 through M4.4) is now fully complete**, all four
+  sub-milestones on `main`, CI-verified. Next real work: `.relay/
+  BACKLOG.md`'s Obsidian vault population.
+
+### 2026-08-23 — Phase 9 / M4.3: read-only conversation history tools (`1519a51`, feature branch `phase9-m4.3-history-search`)
 
 - **Objective**: with S1.1 committed and CI-green, expose M4.1's
   history store to Jarvis itself via two narrow, read-only ToolSpecs —
@@ -150,8 +190,8 @@ Lightweight per-session record. Concise by design — for depth, see
   Committed as `1519a51` ("Add read-only conversation history tools") on
   feature branch `phase9-m4.3-history-search` (cut from `main` at
   `d38e794`), pushed, **CI-verified on the first attempt** (GitHub
-  Actions run `32663268361`). Not merged to `main` — held pending a
-  merge/PR decision. This same round's documentation correction (fixing
+  Actions run `32663268361`). Later merged to `main` as `b19f042` — see
+  the M4.4 entry above. This same round's documentation correction (fixing
   ~9 stale "S1.1 uncommitted" locations in `HANDOFF.md`, moving S1.1 to
   "Completed" in `ROADMAP.md`, correcting the Graphify counts, adding
   this file's own M4.3 documentation) is committed separately.

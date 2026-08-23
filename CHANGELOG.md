@@ -7,6 +7,103 @@ needed.
 
 ---
 
+## 2026-08-23 — Phase 9 / M4.4: proactive history retrieval (`c992432`, `6fbc076`)
+
+**What**: the final M4 sub-milestone — bounded, relevance-gated,
+provenance-visible, cost-aware, opt-in retrieval that surfaces relevant
+past-conversation excerpts into the system prompt automatically, rather
+than only on explicit `search_conversation_history` tool calls. New
+`agent/history_context.py` (`build_history_context(user_input,
+request_id, state)`), called from `agent.brain.build_system_prompt()`
+right after the memory patterns block — no ToolSpec, no model decision
+involved, matching M4.2's "the LLM never decides" framing for capture,
+now mirrored for retrieval. Four new `config/settings.py` fields, all
+`_env_*`-overridable: `proactive_history_enabled` (default `False`),
+`history_context_budget_tokens` (default `500`, a hard token ceiling —
+hits accumulate in rank order and the remainder is dropped whole once
+the next hit would overflow it, never truncated mid-snippet, never
+summarized), `history_context_timeout_ms` (default `150`, this one
+caller's override of `search_history()`'s normal 5-second busy-timeout),
+and `history_context_max_results` (default `3`).
+
+**Shipped off by default**, same posture as `openclaw_messaging_enabled`
+— nobody gets this behavior until `PROACTIVE_HISTORY_ENABLED=true` is
+set. The disabled path is proven **byte-identical**, not merely
+"produces no visible section," to a prompt built with the call stubbed
+out entirely (`tests/test_brain.py`) — clean by construction because
+`HistoryContext.prompt_text` already owns its full section text
+including the header, so nothing besides a separator is ever added
+around it.
+
+**A design premise found wrong while writing the tests, corrected
+rather than shipped quietly**: the original justification for adding a
+`busy_timeout_ms` parameter to `agent.history_store.search_history()`
+was that the store's normal 5-second busy-wait could stall an ordinary
+chat turn by up to 5 seconds if M4.2's capture write and M4.4's
+retrieval read ever contended for the database. This was accepted
+during design review without being checked. Writing
+`tests/test_history_store.py`'s `TestSearchHistoryBusyTimeoutOverride`
+forced an empirical check, and it does not reproduce: under this
+store's real WAL journal mode, a read-only connection does not wait on
+another connection's open, uncommitted write transaction at all — SQLite
+WAL's headline property (readers see the last-committed snapshot without
+contending with the single writer), not a bug. The parameter is kept as
+real defense-in-depth for narrower cases (WAL recovery, platform/SQLite-
+build differences) — both `_connect_readonly()`'s and the test class's
+docstrings now say plainly that it is defense-in-depth, not a fix for a
+reproduced hazard, rather than the softer and inaccurate "added a
+timeout for safety." Full account: `ARCHITECTURE.md` §12d.
+
+**Failure isolation** matches M4.2's capture philosophy exactly,
+retrieval side: the whole `search_history()` attempt is wrapped in one
+`try/except HistoryStoreError`, never raises, and each of the six
+subclasses maps to a log level rather than a generic catch-all
+(`HistoryUnavailable` silent, `HistoryBusy` DEBUG, everything else
+WARNING). Proven in `tests/test_brain.py`: with the feature enabled and
+the store mocked to raise each of the six errors in turn,
+`build_system_prompt()` still returns a valid, non-empty prompt every
+time.
+
+**What M4.4 deliberately did not build**: whole-session/ordered
+multi-turn retrieval, embeddings/vector search, automatic
+history-to-memory promotion (would blur the History-vs-Memory boundary
+this project treats as foundational), summarization of dropped/
+truncated hits (a second paid LLM call gating every ordinary turn),
+adaptive/dynamic budget, a review UI, or injection for
+`source="scheduled"`. Full list and reasoning: `ARCHITECTURE.md` §12d
+and `HANDOFF.md`'s dedicated M4.4 section.
+
+**Verification**: new `tests/test_history_context.py` (20 tests),
+`tests/test_brain.py` (11 tests), 4 new `tests/test_history_store.py`
+tests. Full canonical suite run twice: **1492 passed, 0 failed both
+times** (1457 M4.3-merge baseline + 24 foundation + 11 wiring).
+Committed in two steps and pushed directly to `main` (the branch was
+already merged, the feature is default-off): `c992432` ("Add bounded
+proactive history retrieval (inert)") then `6fbc076` ("Wire proactive
+history retrieval into the prompt builder"), **CI-verified on the first
+attempt** — GitHub Actions run `32672234602`, `run_attempt: 1`,
+1492/1492 passed.
+
+## 2026-08-23 — Phase 9 / M4.3 merge: read-only conversation history tools land on `main` (`b19f042`)
+
+**What**: `phase9-m4.3-history-search` merged into `main` via a clean
+`git merge --ff-only` (`d38e794..b19f042`, all 3 commits preserved:
+`1519a51` the tool code, `d78ba09` and `b19f042` documentation-only).
+No conflicts, no rebase needed. Pushed to `origin/main`, **CI-verified
+again on the merged `main`, first attempt** — GitHub Actions run
+`32670629815`, `run_attempt: 1`, 1457/1457 passed, direct proof the
+merge itself is CI-green, not just the feature branch in isolation. See
+the M4.3 entry below for full feature detail.
+
+**A real blocker, resolved, not worked around**: the initial
+`git merge --ff-only` attempt was denied by Claude Code's own auto-mode
+permission classifier before it ran. No workaround was attempted (no
+API-based merge, no manual ref manipulation) — that would have defeated
+the point of a permission boundary the user's own tooling put there.
+Reported directly instead of guessing at a resolution; the merge, push,
+and CI check all went through cleanly as normal permission-prompted
+actions once retried outside auto mode.
+
 ## 2026-08-23 — Phase 9 Reliability S1: structurally safe test harness (`e46f5bd`)
 
 **What**: fixes, at the root, the test-isolation gap M4.2's own pass
@@ -233,10 +330,10 @@ baseline + 34). Committed as `1519a51` ("Add read-only conversation
 history tools") on feature branch `phase9-m4.3-history-search` (cut
 from `main` at `d38e794`), pushed, **CI-verified on the first attempt**
 — GitHub Actions run `32663268361`, `run_attempt: 1`, 1457/1457 passed.
-Not merged to `main` — held pending a merge/PR decision. This
-documentation pass (correcting S1.1's stale "uncommitted" status, the
-stale Graphify counts, and documenting M4.3) is a second, separate
-commit on the same branch.
+This documentation pass (correcting S1.1's stale "uncommitted" status,
+the stale Graphify counts, and documenting M4.3) is a second, separate
+commit on the same branch. **Later merged to `main`** via a clean
+`--ff-only` merge as `b19f042` — see the entry above.
 
 ## 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 
