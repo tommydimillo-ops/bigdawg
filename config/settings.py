@@ -362,6 +362,34 @@ class Settings:
     # channel-side directory lookups.
     openclaw_allowed_targets: str = ""
 
+    # --- Proactive history retrieval (Phase 9 M4.4 foundation) ---
+    # Off by default until proven in real use (same posture as
+    # openclaw_messaging_enabled above) -- surfaces relevant past
+    # conversation excerpts into the system prompt automatically,
+    # touching real user data and adding real per-request token cost, so
+    # it doesn't turn on for anyone until it's actually been used and
+    # tuned. agent/history_context.py is the only reader.
+    proactive_history_enabled: bool = False
+    # Hard ceiling on injected history text, in tokens (word-count
+    # approximation, not a real tokenizer -- see agent/history_context.py).
+    # Hits are accumulated in rank order and the remainder is dropped
+    # whole once the next hit would exceed this; never truncated
+    # mid-snippet, never summarized. Starting value, not yet tuned
+    # against real usage data.
+    history_context_budget_tokens: int = 500
+    # Overrides agent.history_store.search_history()'s normal 5-second
+    # busy_timeout for this one caller specifically -- a proactive
+    # feature gating every ordinary conversation turn must fail fast
+    # rather than wait, even though a held write lock was empirically
+    # found not to block an ordinary read under this store's real WAL
+    # journal mode (see tests/test_history_store.py) -- this remains
+    # defense-in-depth against narrower busy conditions a read
+    # connection could still hit.
+    history_context_timeout_ms: int = 150
+    # Max FTS hits considered per request, passed straight through to
+    # search_history()'s own max_results.
+    history_context_max_results: int = 3
+
     # --- Debug / development mode ---
     # Wired to agent/observability.py's log level (DEBUG vs INFO).
     debug: bool = False
@@ -435,6 +463,14 @@ class Settings:
             openclaw_messaging_enabled=_env_bool("OPENCLAW_MESSAGING_ENABLED", cls.openclaw_messaging_enabled),
             openclaw_allowed_channels=_env_str("OPENCLAW_ALLOWED_CHANNELS", cls.openclaw_allowed_channels),
             openclaw_allowed_targets=_env_str("OPENCLAW_ALLOWED_TARGETS", cls.openclaw_allowed_targets),
+            proactive_history_enabled=_env_bool("PROACTIVE_HISTORY_ENABLED", cls.proactive_history_enabled),
+            history_context_budget_tokens=_env_int(
+                "HISTORY_CONTEXT_BUDGET_TOKENS", cls.history_context_budget_tokens,
+            ),
+            history_context_timeout_ms=_env_int("HISTORY_CONTEXT_TIMEOUT_MS", cls.history_context_timeout_ms),
+            history_context_max_results=_env_int(
+                "HISTORY_CONTEXT_MAX_RESULTS", cls.history_context_max_results,
+            ),
             debug=_env_bool("DEBUG", cls.debug),
         )
 

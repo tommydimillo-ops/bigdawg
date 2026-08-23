@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -850,6 +851,93 @@ class TestHistoryBusySemantics(IsolatedHistoryDbTestCase):
         # the failed attempt above.
         create_session("chat", session_id="after-lock-released", db_path=self.db_path)
         self._assert_schema_v1_fully_intact(self.db_path)
+
+
+class TestSearchHistoryBusyTimeoutOverride(IsolatedHistoryDbTestCase):
+    """Phase 9 M4.4 foundation: search_history()'s new busy_timeout_ms
+    parameter -- defense-in-depth for a future proactive-retrieval caller,
+    not a fix for a reproduced hazard. See
+    test_a_held_write_lock_does_not_block_a_read_at_all_under_wal below
+    for why: under WAL, a read-only connection never waits on another
+    connection's open write transaction in the first place, with or
+    without this override. Purely additive regardless -- these tests
+    exist specifically to prove every existing caller (including M4.3's
+    search_conversation_history tool, which never passes the new
+    parameter) is unaffected."""
+
+    def _hold_write_lock(self):
+        holder = sqlite3.connect(self.db_path, isolation_level=None)
+        holder.execute(f"PRAGMA busy_timeout = {history_store._BUSY_TIMEOUT_MS}")
+        holder.execute("BEGIN IMMEDIATE")
+        return holder
+
+    def test_default_omitted_falls_back_to_module_busy_timeout_ms(self):
+        # _connect_readonly's own PRAGMA busy_timeout read-back proves
+        # the fallback is real, not just "no error was raised".
+        initialize_history_store(db_path=self.db_path)
+        conn = history_store._connect_readonly(self.db_path)
+        try:
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], history_store._BUSY_TIMEOUT_MS)
+        finally:
+            conn.close()
+
+    def test_explicit_value_is_applied(self):
+        initialize_history_store(db_path=self.db_path)
+        conn = history_store._connect_readonly(self.db_path, busy_timeout_ms=777)
+        try:
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 777)
+        finally:
+            conn.close()
+
+    def test_a_held_write_lock_does_not_block_a_read_at_all_under_wal(self):
+        """A real finding from writing this test, not the behavior I
+        expected going in: under WAL (this store's real journal mode),
+        a read-only connection does NOT wait on another connection's
+        open BEGIN IMMEDIATE at all -- it succeeds immediately, every
+        time, regardless of busy_timeout_ms. This is WAL working exactly
+        as designed (a reader always sees the last-committed snapshot
+        without contending with the one writer), not a gap in the new
+        parameter. Proven with both no override and a short override, so
+        neither path is silently relying on the lock happening to clear
+        in time."""
+        initialize_history_store(db_path=self.db_path)
+        holder = self._hold_write_lock()
+        try:
+            start = time.monotonic()
+            results = search_history("anything", db_path=self.db_path)
+            elapsed = time.monotonic() - start
+            self.assertEqual(results, [])
+            self.assertLess(elapsed, 0.5)  # immediate, not a wait-then-succeed
+
+            start = time.monotonic()
+            results = search_history("anything", db_path=self.db_path, busy_timeout_ms=150)
+            elapsed = time.monotonic() - start
+            self.assertEqual(results, [])
+            self.assertLess(elapsed, 0.5)
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+    def test_history_status_unaffected_by_the_new_parameter(self):
+        # history_status() never gained a busy_timeout_ms parameter (out
+        # of scope for M4.4) and must keep using the module default.
+        initialize_history_store(db_path=self.db_path)
+        holder = self._hold_write_lock()
+        try:
+            with patch.object(history_store, "_BUSY_TIMEOUT_MS", 200):
+                start = time.monotonic()
+                status = history_status(db_path=self.db_path)
+                elapsed = time.monotonic() - start
+            # A read-only PRAGMA user_version check doesn't need the
+            # write lock at all, so this returns immediately either way
+            # -- the real point is that history_status() takes no new
+            # parameter and its behavior is completely untouched by this
+            # round's change.
+            self.assertTrue(status.available)
+            self.assertLess(elapsed, 2.0)
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
 
 
 class TestTransactionIntegrity(IsolatedHistoryDbTestCase):

@@ -382,19 +382,36 @@ def _connect_writable(db_path: str, *, ensure_schema: bool = True) -> sqlite3.Co
     return conn
 
 
-def _connect_readonly(db_path: str) -> sqlite3.Connection:
+def _connect_readonly(db_path: str, *, busy_timeout_ms: Optional[int] = None) -> sqlite3.Connection:
     """Structurally cannot create db_path -- SQLite's mode=ro URI raises
     rather than creating a missing file, which is how history_status()/
     search_history() prove (not just promise) they never create the
     database. Raises HistoryUnavailable for any failure to open,
-    including "does not exist"."""
+    including "does not exist".
+
+    `busy_timeout_ms` defaults to None, which falls back to the module's
+    own `_BUSY_TIMEOUT_MS` -- every existing caller (history_status(),
+    and search_history() when its own override isn't given) is
+    byte-for-byte unaffected. The override exists for a future caller
+    (Phase 9 M4.4's proactive retrieval) that must never let a real,
+    ordinary conversation turn wait on a slow read. Note this is
+    defense-in-depth, not a fix for a reproduced hazard: under this
+    store's real WAL journal mode, a read-only connection does NOT wait
+    on another connection's open write transaction at all (proven in
+    tests/test_history_store.py -- a held BEGIN IMMEDIATE never delays a
+    read, with or without this override) -- readers see the
+    last-committed snapshot immediately, which is WAL's whole point.
+    This parameter guards narrower cases a read connection could still
+    plausibly hit (e.g. platform/SQLite-version differences, WAL
+    recovery), not ordinary write/read contention."""
     if not os.path.isfile(db_path):
         raise HistoryUnavailable("no history database exists at this location")
     try:
         conn = sqlite3.connect(_sqlite_ro_uri(db_path), uri=True, timeout=_CONNECT_TIMEOUT_SECONDS)
     except sqlite3.OperationalError as error:
         raise HistoryUnavailable("history database could not be opened") from error
-    conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+    effective_timeout_ms = busy_timeout_ms if busy_timeout_ms is not None else _BUSY_TIMEOUT_MS
+    conn.execute(f"PRAGMA busy_timeout = {effective_timeout_ms}")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -747,9 +764,15 @@ def search_history(
     session_id: Optional[str] = None,
     max_results: int = _DEFAULT_SEARCH_RESULTS,
     db_path: Optional[str] = None,
+    busy_timeout_ms: Optional[int] = None,
 ) -> List[SearchResult]:
     """Read-only, never creates db_path. Raises HistoryUnavailable if no
-    usable database exists -- distinct from a real, empty result set."""
+    usable database exists -- distinct from a real, empty result set.
+
+    `busy_timeout_ms` defaults to None (the module's normal
+    `_BUSY_TIMEOUT_MS`) -- see `_connect_readonly()`'s own docstring.
+    Every existing caller that doesn't pass this explicitly, including
+    M4.3's `search_conversation_history` tool, is unaffected."""
     db_path = db_path if db_path is not None else HISTORY_DB
     if source is not None:
         source = _validate_source(source)
@@ -763,7 +786,7 @@ def search_history(
     if match_query is None:
         return []
 
-    conn = _connect_readonly(db_path)
+    conn = _connect_readonly(db_path, busy_timeout_ms=busy_timeout_ms)
     try:
         schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
         if schema_version > SCHEMA_VERSION:
