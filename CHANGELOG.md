@@ -104,7 +104,7 @@ unrelated to this pass's own diff, `test_concurrent_initialization_is_safe`;
 a re-run of the identical commit succeeded, 1417/1417; root-caused and
 fixed for real by the S1.1 entry below). M4.3 not started.
 
-## 2026-08-23 (most recent) — Phase 9 Reliability S1.1: history store concurrent initialization determinism (built, tested, UNCOMMITTED)
+## 2026-08-23 — Phase 9 Reliability S1.1: history store concurrent initialization determinism (`d38e794`)
 
 **What**: root-causes and deterministically fixes the exact flaky test
 S1's first CI attempt hit (see entry above) — a real production
@@ -165,8 +165,78 @@ held lock.
 **Touched**: `agent/history_store.py` (the fix),
 `tests/test_history_store.py` (regression coverage), plus documentation
 (`ARCHITECTURE.md`/`CHANGELOG.md`/`SESSION_LOG.md`/`HANDOFF.md`/
-`ROADMAP.md`). Not committed or pushed — pending user review. M4.3 not
-started.
+`ROADMAP.md`). Committed as `d38e794` ("Harden concurrent history
+initialization"), pushed to `origin/main`, **CI-verified on the first
+attempt** — GitHub Actions run `32659780845`, `run_attempt: 1`,
+1423/1423 passed, no rerun needed, directly proving the root-cause
+diagnosis (the exact class of failure S1's own first CI attempt hit did
+not recur). M4.3 began immediately after, on its own feature branch —
+see the entry above.
+
+## 2026-08-23 — Phase 9 / M4.3: read-only conversation history tools (`1519a51`, feature branch)
+
+**What**: two new Jarvis-facing ToolSpecs in `tools/schemas/history.py`
+wrapping M4.1's `agent/history_store.py` read-only — `history_status`
+(no input; availability, session/turn counts, schema version, date
+range) and `search_conversation_history` (`query` required;
+`source`/`role`/`session_id`/`max_results` optional; full-text search
+with complete provenance per hit). Both `permission_level=0`,
+`parallel_safe=True`, matching `tools/schemas/graphify.py`'s established
+precedent for a read-only tool group exactly. Registered through
+`tools/registry.py`, no special-cased dispatch path — added to
+`tools/schemas/__init__.py`'s side-effect import list alphabetically.
+
+**Deliberately narrow**: no session/turn direct-retrieval tools — the
+store has no `get_session`/`get_turn` read function, only
+create/close/record/status/search, so direct retrieval would have meant
+extending the store rather than just wrapping it. Deferred to M4.4 if
+proactive retrieval actually needs it.
+
+**Naming**: the ToolSpec is `search_conversation_history`, not the
+store's own `search_history()` — deliberate, not an oversight. The
+Jarvis-facing tool surface gets the disambiguated name specifically so
+it can never collide conceptually with `agent/memory/manager.py`'s
+`search_scored()`, given History vs. Memory is a stated architectural
+invariant.
+
+**Error-state mapping**: all six `history_store` exception classes
+(`HistoryUnavailable`, `HistorySchemaError`, `HistoryCorruption`,
+`HistoryBusy`, `HistoryValidationError`, `HistoryUnsupportedRuntime`)
+map to their own stable, machine-readable JSON `state` — never a generic
+error string, never an uncaught traceback.
+
+**A real bug found and fixed during review**: the first pass computed
+`int(tool_input.get("max_results") or 10)`, which let a non-numeric
+value (a model can emit `"max_results": "ten"` despite the schema) raise
+an uncaught `ValueError`/`TypeError` out of a permission-0 read-only
+tool — neither is a `HistoryStoreError`, so neither was caught — and let
+an explicit `0` silently become the default instead of clamping to 1
+like any other out-of-range number. Fixed: explicit `is None` check,
+`int()` wrapped in `try/except (TypeError, ValueError)` mapped to the
+existing `"invalid_input"` state.
+
+**Other invariants confirmed by review and locked in with a test**:
+`search_history()`'s snippet is already bounded by SQLite FTS5's own
+`snippet()` call (32 tokens) — the tool passes it through unmodified, no
+double-truncation. `db_path` never crosses the tool boundary — always
+passed explicitly from `history_store.HISTORY_DB` by the tool module
+itself, never accepted as input; an injected `db_path` key in a tool
+call is simply ignored. The schema's `source`/`role` enum lists are
+hardcoded (not imported from the store's private frozensets, since the
+input schema is Jarvis-facing API surface and the store's sets are an
+internal detail) with a dedicated drift test asserting they still match
+`history_store._VALID_SOURCES`/`_VALID_ROLES`.
+
+**Verification**: new `tests/test_history_tools.py`, 34 tests. Full
+canonical suite run multiple times: **1457 passed, 0 failed** (1423
+baseline + 34). Committed as `1519a51` ("Add read-only conversation
+history tools") on feature branch `phase9-m4.3-history-search` (cut
+from `main` at `d38e794`), pushed, **CI-verified on the first attempt**
+— GitHub Actions run `32663268361`, `run_attempt: 1`, 1457/1457 passed.
+Not merged to `main` — held pending a merge/PR decision. This
+documentation pass (correcting S1.1's stale "uncommitted" status, the
+stale Graphify counts, and documenting M4.3) is a second, separate
+commit on the same branch.
 
 ## 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 

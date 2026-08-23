@@ -21,12 +21,21 @@ complete, committed (`e46f5bd`, "Harden test isolation and block
 external network"), pushed, and CI-verified** (GitHub Actions run
 `32653067541` — see that section below for the one-flaky-test/retry
 detail). **Phase 9 Reliability S1.1 (History Store Concurrent
-Initialization Determinism) is built and tested but UNCOMMITTED** — a
-narrow follow-up that root-causes and fixes the exact flaky test S1's
-CI run hit. See the dedicated "Phase 9 Reliability S1.1" section below
-for full detail before anything else in this file. Everything else in
-this paragraph and below describes prior, already-committed work.
-OpenClaw M1/M1.5/M2 (including the M2
+Initialization Determinism) is ALSO now complete, committed (`d38e794`,
+"Harden concurrent history initialization"), pushed, and CI-verified —
+on the FIRST attempt, no rerun needed** (GitHub Actions run
+`32659780845`), directly proving the root-cause fix for the exact flake
+S1's own CI run hit. **Phase 9 / M4.3 (read-only conversation-history
+ToolSpecs) is built, tested, and committed on a feature branch**
+(`phase9-m4.3-history-search`, commits `1519a51` and — after this
+documentation pass lands — one more; `main` itself is still at `d38e794`
+and does not yet contain M4.3) — see the dedicated "Phase 9 / M4.3"
+section below for full detail. A prior version of this file described
+S1.1 as uncommitted long after `d38e794` actually landed; that staleness
+is corrected here (see CLAUDE.md's NEW SESSION PROTOCOL — trust `git
+log` over this file when they disagree). Everything else in this
+paragraph and below describes prior, already-committed work. OpenClaw
+M1/M1.5/M2 (including the M2
 hardening/review pass) are all now **complete, committed, pushed, and
 CI-verified** — HEAD (before S1) is
 `d270dc461b15d8bd79e013032fea9ba05a674f87` ("Add permission-gated
@@ -322,11 +331,12 @@ an accurate historical record of the S1 pass itself.
   `ARCHITECTURE.md` §18 (rewritten) and §12b (test-isolation paragraph
   corrected), `ROADMAP.md`, `CLAUDE.md`'s "How to test" section,
   `CHANGELOG.md`, `SESSION_LOG.md`.
-- **Reviewed and committed** as `e46f5bd`. **Do not start M4.3** until
-  Phase 9 Reliability S1.1 (immediately below) is also reviewed and
-  committed.
+- **Reviewed and committed** as `e46f5bd`. Phase 9 Reliability S1.1
+  (immediately below) is also reviewed, committed, and CI-verified —
+  M4.3 (further below) has since started and is itself committed on a
+  feature branch.
 
-## Phase 9 Reliability S1.1 — HISTORY STORE CONCURRENT INITIALIZATION DETERMINISM ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+## Phase 9 Reliability S1.1 — HISTORY STORE CONCURRENT INITIALIZATION DETERMINISM ✅ COMPLETE, COMMITTED (`d38e794`), PUSHED, CI-VERIFIED ON FIRST ATTEMPT
 
 - **What it does**: root-causes and fixes, deterministically, the exact
   flaky test S1's first CI run hit (see the S1 section above) — a real
@@ -392,8 +402,83 @@ an accurate historical record of the S1 pass itself.
   `tests/test_history_store.py` (regression coverage), plus
   documentation (`ARCHITECTURE.md`, `CHANGELOG.md`, `SESSION_LOG.md`,
   `HANDOFF.md`, `ROADMAP.md`).
-- **Not committed, not pushed** — pending user review. **Do not start
-  M4.3** until this is reviewed and committed.
+- **Committed** as `d38e794` ("Harden concurrent history initialization"),
+  pushed to `origin/main`, **CI-verified on the first attempt** — GitHub
+  Actions run `32659780845`, `run_attempt: 1`, 1423/1423 passed, no
+  rerun needed. This is the direct proof the root-cause diagnosis was
+  correct: the exact class of failure S1's own first CI attempt hit did
+  not recur.
+
+## Phase 9 / M4.3 — READ-ONLY CONVERSATION HISTORY TOOLS ✅ BUILT, TESTED, COMMITTED ON FEATURE BRANCH, CI-VERIFIED — NOT YET ON `main`
+
+- **Branch**: `phase9-m4.3-history-search`, cut from `main` at `d38e794`.
+  `main` itself does not contain M4.3 yet — this branch has not been
+  merged (deliberately; the user wants `main` untouched and green while
+  the branch proves itself).
+- **What it does**: two new Jarvis-facing ToolSpecs in
+  `tools/schemas/history.py`, wrapping `agent/history_store.py` (M4.1)
+  read-only — `history_status` (no input; availability, session/turn
+  counts, schema version, date range) and `search_conversation_history`
+  (full-text search; `query` required, `source`/`role`/`session_id`/
+  `max_results` optional). Both `permission_level=0`, `parallel_safe=
+  True`, `side_effect=False`, `unattended_allowed=True` (defaults),
+  matching `tools/schemas/graphify.py`'s established precedent for a
+  read-only tool group exactly.
+- **Deliberately narrow**: no session/turn direct-retrieval tools —
+  `history_store` has no `get_session`/`get_turn` read function, only
+  create/close/record/status/search, so adding direct retrieval would
+  have meant extending the store, turning a tool-wrapping milestone into
+  a store-extension milestone. Revisit under M4.4 only if proactive
+  retrieval actually needs it.
+- **Tool name vs. store function name is a deliberate mismatch**: the
+  ToolSpec is `search_conversation_history`, wrapping the store's
+  `search_history()`. The store keeps its short internal name; the
+  Jarvis-facing tool gets the disambiguated one so it can never collide
+  conceptually with `agent/memory/manager.py`'s `search_scored()` —
+  History vs. Memory is a stated architectural invariant.
+- **Every one of `history_store`'s six exception classes maps to its own
+  stable, machine-readable `state`** in the tool's JSON output — never a
+  generic error string, never an uncaught traceback:
+  `HistoryUnavailable→unavailable`, `HistorySchemaError→
+  schema_incompatible`, `HistoryCorruption→corrupt`, `HistoryBusy→busy`,
+  `HistoryValidationError→invalid_input`,
+  `HistoryUnsupportedRuntime→unsupported_runtime`.
+- **`max_results`**: default 10, hard cap 50, clamped silently
+  server-side and declared in the input schema. A real, self-caught bug
+  during review: the first pass computed `int(tool_input.get(
+  "max_results") or 10)`, which let a non-numeric value (a model can
+  emit `"max_results": "ten"` despite the schema) raise an uncaught
+  `ValueError`/`TypeError` out of a permission-0 read-only tool, and let
+  an explicit `0` silently become the default instead of clamping to 1.
+  Fixed: explicit `is None` check, `int()` wrapped in `try/except
+  (TypeError, ValueError)` mapped to the existing `invalid_input` state.
+- **Snippet already bounded by the store**: `search_history()`'s SQLite
+  FTS5 `snippet()` call already caps at 32 tokens (`_SNIPPET_TOKENS`);
+  the tool passes it through unmodified, no double-truncation.
+- **No `db_path` ever crosses the tool boundary** — `history_store.
+  HISTORY_DB` is always passed explicitly by the tool module itself
+  (matching `agent/history_capture.py`'s established pattern), never
+  accepted as a tool input; the input schema has no `db_path`/`path`/
+  `sql`/`match`/`raw_query` property, and a test proves an injected
+  `db_path` key in the tool input is simply ignored.
+- **Tests**: new `tests/test_history_tools.py`, 34 tests — registration/
+  permission-flags, status against an empty store, search with complete
+  provenance (turn_id/session_id/request_id/source/role/created_at/
+  snippet/rank/redacted/truncated — all passed through from
+  `SearchResult` unmodified), `max_results` clamping and every
+  never-raises edge case (non-numeric string, `None`, float, bool,
+  negative, `0`), all six error states individually, a hostile
+  FTS-operator-shaped query proven neutralized (not passed through
+  raw), a schema-enum-vs-store-validator drift tripwire, and real
+  dispatch through `agent/executor.py`'s `_run_tool` (no separate
+  dispatch path).
+- **Commits** (both on `phase9-m4.3-history-search`, pushed):
+  `1519a51` ("Add read-only conversation history tools") — CI-verified
+  on the first attempt, GitHub Actions run `32663268361`, `run_attempt:
+  1`, **1457/1457 passed**. A second, docs-only commit lands this
+  documentation pass (see below for its own SHA once committed).
+- **Not merged to `main`** — the branch is deliberately left open for
+  further review before any merge/PR decision.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -633,13 +718,15 @@ incremental-extraction limitation" section.
 Milestone 4 (reframed as "Phase 9 / M4 — Conversation & History
 Intelligence", audited and split into M4.1-M4.4): M4A (audit), M4.1
 (durable history store, `cd13e2a`), and M4.2 (deterministic history
-capture, `c0d5fc5`) are all complete, committed. **Phase 9 Reliability
-S1 (Structurally Safe Test Harness) is complete, committed (`e46f5bd`),
-pushed, and CI-verified. Phase 9 Reliability S1.1 (History Store
-Concurrent Initialization Determinism) is built and tested but
-UNCOMMITTED** — see the dedicated sections near the top of this file.
-OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 landed between Milestone 3
-and M4, both complete/committed.
+capture, `c0d5fc5`) are all complete, committed on `main`. **Phase 9
+Reliability S1 (`e46f5bd`) and S1.1 (`d38e794`) are both complete,
+committed on `main`, pushed, and CI-verified — S1.1 CI-green on the
+first attempt.** **Phase 9 / M4.3 (read-only conversation-history
+ToolSpecs) is built, tested, and committed on the feature branch
+`phase9-m4.3-history-search` (`1519a51`, CI-green on the first attempt)
+— not yet on `main`.** See the dedicated sections near the top of this
+file for all three. OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 landed
+between Milestone 3 and M4, both complete/committed on `main`.
 
 **OpenClaw** (a separate, real, independently-developed open-source
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
@@ -652,31 +739,35 @@ tools), and **G1.1** (incremental-vs-full extraction audit) all
 complete — see the sections above and `docs/GRAPHIFY.md`. Still not a
 Jarvis runtime dependency — `graphifyy` itself is never imported or
 invoked; only its already-generated graph.json is read. Refreshed
-against S1's commit (`e46f5bd`) during S1's finalization — 3514 nodes,
-7421 edges, 172 communities, `built_at_commit` matching HEAD, `state:
-fresh`. Not yet refreshed against S1.1 (still uncommitted, so HEAD
-hasn't moved for a committed graph to go stale against yet).
+against S1.1's commit (`d38e794`) during S1.1's finalization — **3532
+nodes, 7452 edges, 163 communities**, `built_at_commit` matching HEAD,
+`state: fresh` (a prior version of this file still showed the S1-era
+counts, 3514/7421/172 against `e46f5bd` — corrected here). Not yet
+refreshed against M4.3's tracked-file changes (`tools/schemas/history.py`
++ `__init__.py`) — deliberately deferred to its own step, not run as
+part of this documentation pass.
 
-**Working tree**: **not clean** — Phase 9 Reliability S1.1's changes are
-uncommitted (see that section; S1 itself is committed). Confirm with a
-live `git status`/`git log` rather than trusting this file. **1423 tests
-pass, 0 failures** under the canonical `python -m unittest discover -s
-tests -t . -v` (up from S1's 1417 — S1.1 added 6 net new tests),
-reproduced three consecutive times, no live/paid API calls during
-testing, zero production files touched. No real OpenClaw installation
-persists on this machine.
+**Working tree**: clean on `main` (`d38e794`). On the feature branch
+`phase9-m4.3-history-search`, clean as of commit `1519a51` plus this
+documentation commit. Confirm with a live `git status`/`git log` rather
+than trusting this file. **1457 tests pass, 0 failures** under the
+canonical `python -m unittest discover -s tests -t . -v` on the feature
+branch (1423 on `main` after S1.1, +34 from M4.3), reproduced multiple
+times, no live/paid API calls during testing, zero production files
+touched. No real OpenClaw installation persists on this machine.
 
 ## What we are currently building
 
-Phase 9 Reliability S1.1 (History Store Concurrent Initialization
-Determinism) is built, tested, and awaiting review — see the dedicated
-section near the top of this file. S1, M4.1, and M4.2 are now all
-complete and committed. Everything else is complete and committed:
-OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1. **Do not start Graphify G2
+Phase 9 / M4.3 (read-only conversation-history ToolSpecs) is built,
+tested, committed on its feature branch, and CI-verified — awaiting a
+merge/PR decision, which is deliberately not made automatically. S1,
+S1.1, M4.1, and M4.2 are now all complete and committed on `main`.
+Everything else is complete and committed: OpenClaw M1/M1.5/M2, Graphify
+G0/G1/G1.1. **Do not start Graphify G2
 (MCP/hooks/auto-rebuild — none
 implemented or assumed), a real OpenClaw messaging channel, OpenClaw
 device capabilities, OpenClaw agent/model-routing integration, or Phase
-9 / M4.3 (Jarvis-facing search ToolSpecs)** until the user explicitly
+9 / M4.4 (proactive context injection)** until the user explicitly
 says so.
 
 ## What was completed (this session, most recent first)
@@ -923,11 +1014,11 @@ says so.
 
 ## What is partially completed
 
-**Phase 9 Reliability S1.1 (History Store Concurrent Initialization
-Determinism)** is complete and fully tested; the only thing not done is
-the user's review/commit decision — same shape as OpenClaw M2 below. See
-the dedicated section above before assuming anything about its state.
-(S1, M4.1, and M4.2 are no longer partial — all three are committed.)
+**Phase 9 / M4.3 (read-only conversation-history ToolSpecs)** is
+complete and fully tested on its feature branch; the only thing not done
+is the merge/PR decision — see the dedicated section above before
+assuming anything about its state. (S1, S1.1, M4.1, and M4.2 are no
+longer partial — all four are committed on `main`.)
 
 OpenClaw M2 is complete and fully tested; the only thing not done is
 the user's review/commit decision, plus choosing and configuring a
@@ -957,13 +1048,14 @@ source.
 ## Current blockers
 
 None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and Phase 9 /
-M4.1 + M4.2 + S1 are all committed. **Phase 9 Reliability S1.1 is built
-and tested but blocked on user review/commit** before M4.3 (Jarvis-facing
-search ToolSpecs) can start — see the dedicated section above. Open
-decisions (none urgent): which real messaging channel (if any) to
-configure for OpenClaw next, whether/when to pursue a further Graphify
-milestone (MCP/hooks/auto-rebuild — none implemented or assumed so far),
-and the `last_accessed` design question above.
+M4.1 + M4.2 + S1 + S1.1 are all committed on `main`. **Phase 9 / M4.3 is
+built and tested on its feature branch but blocked on a merge/PR
+decision** before M4.4 (proactive context injection) can start — see the
+dedicated section above. Open decisions (none urgent): whether/when to
+merge `phase9-m4.3-history-search` to `main`, which real messaging
+channel (if any) to configure for OpenClaw next, whether/when to pursue
+a further Graphify milestone (MCP/hooks/auto-rebuild — none implemented
+or assumed so far), and the `last_accessed` design question above.
 
 ## Recent architectural decisions
 
@@ -1124,8 +1216,24 @@ and the `last_accessed` design question above.
 
 ## Files recently modified
 
+**Phase 9 / M4.3 (read-only conversation-history ToolSpecs)** — built,
+tested, committed on branch `phase9-m4.3-history-search`:
+```
+1519a51 "Add read-only conversation history tools":
+new:      tools/schemas/history.py (both ToolSpecs, error-state mapping)
+new:      tests/test_history_tools.py (34 tests)
+modified: tools/schemas/__init__.py (registered `history` in the
+          side-effect import list, alphabetically after `graphify`)
+
+(this documentation commit):
+modified: ARCHITECTURE.md, CHANGELOG.md, SESSION_LOG.md, HANDOFF.md,
+          ROADMAP.md
+```
+
 **Phase 9 Reliability S1.1 (History Store Concurrent Initialization
-Determinism)** — built, tested, **UNCOMMITTED**:
+Determinism)** committed as `d38e794` ("Harden concurrent history
+initialization"), pushed to `origin/main`, CI-verified on the first
+attempt (GitHub Actions run `32659780845`):
 ```
 modified: agent/history_store.py (new _set_journal_mode_wal() bounded
           retry, narrowly scoped to SQLITE_BUSY on the journal_mode=WAL
@@ -1292,43 +1400,52 @@ ones (see S1's section). This number will be stale the moment new tests
 are added — re-run, don't trust it blindly, and use the `-t .` form when
 you do.
 
-**Since S1's commit**: S1.1 added 6 net new tests (1417 → **1423**),
-run three consecutive times clean, plus `tests.test_history_store` run
-10 consecutive times clean on its own (89/89 each) — see Phase 9
+**Since S1's commit**: S1.1 added 6 net new tests (1417 → 1423), run
+three consecutive times clean, plus `tests.test_history_store` run 10
+consecutive times clean on its own (89/89 each), then committed
+(`d38e794`) and CI-verified on the first attempt — see Phase 9
 Reliability S1.1's section above. The specific flaky test from S1's
 first CI attempt (`test_concurrent_initialization_is_safe`) is now
 deterministically fixed, not just retried past.
 
+**Since S1.1's commit (feature branch `phase9-m4.3-history-search`)**:
+M4.3 added 34 net new tests on top of S1.1's 1423 (→ **1457**), run
+multiple times clean locally and CI-verified on the first attempt
+(GitHub Actions run `32663268361`) for commit `1519a51`.
+
 ## What still needs to be done
 
-1. **Phase 9 Reliability S1.1 (History Store Concurrent Initialization
-   Determinism) needs user review and a commit decision** — built,
-   tested (1423/1423, reproduced 3x; `tests.test_history_store` alone
-   10x), currently uncommitted. See the dedicated section above for
-   exactly what changed: root-caused and fixed the real SQLite
-   `journal_mode=WAL` initialization race S1's first CI attempt hit.
-2. **Nothing outstanding for Phase 9 / M4.1, M4.2, or S1** — all
-   committed (`cd13e2a`, `c0d5fc5`, `e46f5bd`), S1 pushed and
-   CI-verified.
+1. **Phase 9 / M4.3 (read-only conversation-history ToolSpecs) needs a
+   merge/PR decision** — built, tested (1457/1457), committed
+   (`1519a51`) and pushed to its own feature branch, CI-verified on the
+   first attempt. `main` does not contain it yet. See the dedicated
+   section above for exactly what it adds.
+2. **Nothing outstanding for Phase 9 / M4.1, M4.2, S1, or S1.1** — all
+   committed on `main` (`cd13e2a`, `c0d5fc5`, `e46f5bd`, `d38e794`), all
+   pushed and CI-verified (S1.1 on the first attempt).
 3. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
    (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
    CI-verified.
 4. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
    (`7b4d0b6`, `c99e792`, `77dee43`), documented in `docs/GRAPHIFY.md`.
-   The local graph itself is fresh against S1's commit (`e46f5bd`).
+   The local graph itself is fresh against S1.1's commit (`d38e794`) —
+   3532 nodes, 7452 edges, 163 communities — but not yet refreshed
+   against M4.3's tracked-file changes (deliberately deferred to its own
+   step).
 5. **Do not rebuild the real local graph reflexively** — `code_graph_status`
    will report the graph `stale` the moment HEAD moves past its
-   `built_at_commit` for any reason, including once S1.1's tracked-file
-   edits are committed. This is expected; refresh it only when actually
-   useful before code-graph analysis on a future milestone.
+   `built_at_commit` for any reason, including once M4.3 merges to
+   `main` or this documentation commit lands. This is expected; refresh
+   it only when actually useful before code-graph analysis on a future
+   milestone.
 6. **Do not configure a real OpenClaw messaging channel** (Telegram/
    Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
    is explicitly chosen.
-7. **Do not start Phase 9 / M4.3** (Jarvis-facing search ToolSpecs)
-   until S1.1 is reviewed, committed, and CI-verified. Do not start
-   Graphify G2 (MCP, hooks, auto-rebuild — none implemented or assumed)
-   or OpenClaw device capabilities/agent-routing integration until the
-   user explicitly says so.
+7. **Do not start Phase 9 / M4.4** (proactive context injection) until
+   M4.3 is merged and proven. Do not start Graphify G2 (MCP, hooks,
+   auto-rebuild — none implemented or assumed) or OpenClaw device
+   capabilities/agent-routing integration until the user explicitly
+   says so.
 8. **Decide the `agent/memory/manager.py::search_scored()`
    `last_accessed` question** whenever it becomes a priority — should it
    remain persisted on every read, be batched, become optional, or
@@ -1340,29 +1457,31 @@ deterministically fixed, not just retried past.
 For the next session, in order of what's most likely to matter:
 
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
-   NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
-   match what this file claims before trusting it. In particular, check
-   whether `agent/history_store.py`/`tests/test_history_store.py`'s
-   uncommitted diff (S1.1) is still present (not yet reviewed/committed)
-   or has since been committed (S1.1 approved — safe to consider M4.3
-   next). S1 itself is already committed (`e46f5bd`) — don't confuse the
-   two.
-2. If S1.1 is still uncommitted, that review is the most likely next
-   action: read the diff in `agent/history_store.py` (the new
-   `_set_journal_mode_wal()` bounded-retry function) and
-   `tests/test_history_store.py`'s new/changed tests directly; re-run
-   `python -m unittest discover -s tests -t . -v`; and decide whether to
-   commit as-is, request changes, or discard. Do not proceed to M4.3
-   (Jarvis-facing search ToolSpecs) without that decision first.
-3. Before relying on `analyze_code_impact`/`find_code_path` results for
-   anything precision-sensitive, check `code_graph_status` first — it
-   will likely report `stale` once S1's tracked-file edits are
-   committed and HEAD moves past the graph's `built_at_commit`. If a
-   rebuild is actually useful at that point, use the precision workflow
-   in `docs/GRAPHIFY.md`'s "Known incremental-extraction limitation"
-   section (clean tracked tree → back up the old graph outside the repo
-   → re-extract from empty → validate → delete the backup) rather than a
-   bare incremental `graphify extract . --code-only`.
+   NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count on
+   BOTH `main` and `phase9-m4.3-history-search` match what this file
+   claims before trusting it. `main` should be at `d38e794` (S1.1); the
+   feature branch should be at `1519a51` (M4.3) plus this documentation
+   commit. Don't confuse "S1.1 committed" with "M4.3 committed" — they
+   landed on different branches.
+2. The most likely next action is the merge/PR decision for
+   `phase9-m4.3-history-search` — read the branch's diff against `main`
+   directly (`tools/schemas/history.py`, `tools/schemas/__init__.py`,
+   `tests/test_history_tools.py`, plus this documentation commit);
+   re-run `python -m unittest discover -s tests -t . -v` on the branch;
+   and decide whether to open a PR/merge, request changes, or hold. No
+   PR has been opened yet (deliberately, per instruction) even though
+   GitHub offers one on every push to a new branch.
+3. Once M4.3 is merged (or if working directly on `main` for something
+   else), run the clean-full Graphify refresh — deliberately deferred
+   past this documentation pass — before relying on
+   `analyze_code_impact`/`find_code_path` for anything M4.3-touching.
+   Check `code_graph_status` first; it will report `stale` once HEAD
+   moves past the graph's current `built_at_commit` (`d38e794`). Use the
+   precision workflow in `docs/GRAPHIFY.md`'s "Known incremental-
+   extraction limitation" section (clean tracked tree → back up the old
+   graph outside the repo → re-extract from empty → validate → delete
+   the backup) rather than a bare incremental `graphify extract .
+   --code-only`.
 4. If the user wants to proceed with configuring a real OpenClaw
    messaging channel, that is a real, separate, higher-risk step (real
    external service credentials, a real live send) and should get the

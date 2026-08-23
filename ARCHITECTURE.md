@@ -829,6 +829,71 @@ before any test module runs. Per-file redirects (e.g. explicit
 `setUp`/`tearDown`) remain in place as real, working defense-in-depth —
 not made redundant, not removed. Full architecture: §18.
 
+### 12c. History tools (Phase 9 M4.3)
+
+`tools/schemas/history.py` registers two Jarvis-facing ToolSpecs
+wrapping M4.1's `agent/history_store.py` read-only — `history_status`
+(no input) and `search_conversation_history` (`query` required;
+`source`/`role`/`session_id`/`max_results` optional). Both are
+`permission_level=0`, `parallel_safe=True`, `side_effect=False`,
+`unattended_allowed=True` (all defaults except the explicit
+`permission_level`/`parallel_safe`), matching
+`tools/schemas/graphify.py`'s established precedent for a read-only tool
+group exactly — see §7/§8's registry conventions.
+
+**Deliberately narrow scope**: no session/turn direct-retrieval tool
+exists, because `history_store` itself has no `get_session`/`get_turn`
+read function — only `create_session`/`close_session`/`record_turn`/
+`history_status`/`search_history`. Adding direct retrieval would have
+meant extending the store's own API, turning a tool-wrapping milestone
+into a store-extension milestone; M4.4 (proactive context retrieval) is
+the place to revisit this, only if actually needed.
+
+**Tool name vs. store function name is a deliberate mismatch**: the
+ToolSpec is named `search_conversation_history`, wrapping the store's
+`search_history()`. The store keeps its own short internal name; the
+Jarvis-facing tool surface gets the disambiguated name specifically so
+it can never read as conceptually adjacent to
+`agent/memory/manager.py`'s `search_scored()` — see §6 and this
+document's History-vs-Memory framing in §12a, a stated architectural
+invariant, not a naming preference.
+
+**Error-state mapping**: every one of `history_store`'s six
+`HistoryStoreError` subclasses maps to its own stable, machine-readable
+`state` string in the tool's JSON output — `HistoryUnavailable →
+"unavailable"`, `HistorySchemaError → "schema_incompatible"`,
+`HistoryCorruption → "corrupt"`, `HistoryBusy → "busy"`,
+`HistoryValidationError → "invalid_input"`, `HistoryUnsupportedRuntime →
+"unsupported_runtime"`. None of the six is ever collapsed into a generic
+error string or allowed to escape as a raw traceback — a caller (model
+or otherwise) can distinguish "no history yet" from "corrupt" from
+"busy, retry later" from "schema too new for this build."
+
+**`max_results` bounds and a real coercion bug found during review**:
+defaults to 10, hard-capped at 50, clamped server-side and declared in
+the input schema. The first implementation used
+`int(tool_input.get("max_results") or 10)`, which let a non-numeric
+value a model can still emit despite the schema (e.g. `"max_results":
+"ten"`) raise an uncaught `ValueError`/`TypeError` — neither a
+`HistoryStoreError`, so neither caught — out of a permission-0 read-only
+tool, and let an explicit `0` silently become the default rather than
+clamping to 1 like any other out-of-range value. Fixed: an explicit `is
+None` check, and `int()` wrapped in `try/except (TypeError, ValueError)`
+mapped to the existing `"invalid_input"` state rather than a new one.
+
+**No `db_path` ever crosses the tool boundary**: `history_store.
+HISTORY_DB` is always passed explicitly by `tools/schemas/history.py`
+itself (the same dynamic-attribute-read pattern `agent/history_capture.py`
+already established for M4.2), never accepted as a tool input — the
+input schema has no `db_path`/`path`/`sql`/`match`/`raw_query` property,
+and an injected `db_path` key in a tool call's input is simply ignored
+by the handler, never read. Raw FTS5 `MATCH` syntax has exactly one path
+in: `history_store.build_safe_match_query()`, already covered by §12a.
+
+**Snippet bounding**: `search_history()`'s underlying SQLite FTS5
+`snippet()` call already caps at `_SNIPPET_TOKENS` (32 tokens); the tool
+passes `SearchResult.snippet` through unmodified — no double-truncation.
+
 ## 13. Authentication / security
 
 - **Secrets**: `agent/secrets.py` — macOS Keychain first

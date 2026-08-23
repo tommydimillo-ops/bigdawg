@@ -72,7 +72,7 @@ Lightweight per-session record. Concise by design — for depth, see
   (1417/1417). Root-caused and fixed for real by the S1.1 entry below,
   rather than left as "passed on retry."
 
-### 2026-08-23 (latest) — Phase 9 Reliability S1.1: history store concurrent initialization determinism (BUILT, TESTED, UNCOMMITTED)
+### 2026-08-23 — Phase 9 Reliability S1.1: history store concurrent initialization determinism (`d38e794`)
 
 - **Objective**: a rerun passing was explicitly not accepted as
   sufficient — find the exact cause of S1's intermittent
@@ -109,9 +109,52 @@ Lightweight per-session record. Concise by design — for depth, see
 - **Verification**: `tests.test_history_store` run 10 consecutive times
   (89/89 each, up from 83); full canonical suite run three consecutive
   times (1423/1423 each, up from 1417); production-store metadata
-  unchanged before/after; real `history.db` still does not exist. Not
-  committed — pending review. Do not start M4.3 until this pass is
-  reviewed.
+  unchanged before/after; real `history.db` still does not exist.
+  Committed as `d38e794`, pushed, **CI-verified on the first attempt**
+  (GitHub Actions run `32659780845`, no rerun needed) — direct proof the
+  root cause was correctly identified, not just avoided.
+
+### 2026-08-23 (latest) — Phase 9 / M4.3: read-only conversation history tools (`1519a51`, feature branch `phase9-m4.3-history-search`)
+
+- **Objective**: with S1.1 committed and CI-green, expose M4.1's
+  history store to Jarvis itself via two narrow, read-only ToolSpecs —
+  the "expected narrow scope" from the takeover doc: `history_status`
+  and `search_conversation_history`.
+- **Work completed**: new `tools/schemas/history.py`, modeled directly
+  on `tools/schemas/graphify.py` (`permission_level=0`,
+  `parallel_safe=True`). `history_status` takes no input, reports
+  availability/counts/schema version, never leaks the absolute db path.
+  `search_conversation_history` takes `query` (required) plus optional
+  `source`/`role`/`session_id`/`max_results`, wraps
+  `history_store.search_history()` with `HISTORY_DB` passed explicitly,
+  returns full provenance per hit (turn_id, session_id, request_id,
+  created_at, source, role, snippet, rank, redacted, truncated) passed
+  through unmodified from `SearchResult`. All six `HistoryStoreError`
+  subclasses map to a distinct JSON `state`. Registered through
+  `tools/registry.py`, added to `tools/schemas/__init__.py`'s
+  side-effect import list.
+- **Deliberate scope decisions**: no session/turn direct-retrieval (the
+  store has no read function for either — would extend the store, not
+  just wrap it; revisit under M4.4 if needed). Tool name
+  `search_conversation_history` deliberately differs from the store's
+  own `search_history()` so it can never collide conceptually with
+  memory's `search_scored()`.
+- **A real bug found and fixed during review**: `int(tool_input.get(
+  "max_results") or 10)` could raise an uncaught `ValueError`/
+  `TypeError` for a non-numeric value, and silently turned an explicit
+  `0` into the default instead of clamping to 1. Fixed with an explicit
+  `is None` check and `int()` wrapped in `try/except`, mapped to the
+  existing `invalid_input` state — never raises.
+- **Verification**: new `tests/test_history_tools.py`, 34 tests. Full
+  canonical suite run multiple times: 1457/1457 passing (1423 + 34).
+  Committed as `1519a51` ("Add read-only conversation history tools") on
+  feature branch `phase9-m4.3-history-search` (cut from `main` at
+  `d38e794`), pushed, **CI-verified on the first attempt** (GitHub
+  Actions run `32663268361`). Not merged to `main` — held pending a
+  merge/PR decision. This same round's documentation correction (fixing
+  ~9 stale "S1.1 uncommitted" locations in `HANDOFF.md`, moving S1.1 to
+  "Completed" in `ROADMAP.md`, correcting the Graphify counts, adding
+  this file's own M4.3 documentation) is committed separately.
 
 ### 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 

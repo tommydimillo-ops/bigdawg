@@ -83,9 +83,10 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   tracked individually below; the phase overall is still in progress —
   Milestone 4 (now reframed as "Phase 9 / M4 — Conversation & History
   Intelligence", audited and split into sub-milestones M4.1-M4.4; M4.1
-  is complete/committed, M4.2 is in progress, see "In progress" above)
-  is not yet complete; OpenClaw interoperability landed between
-  Milestone 3 and Milestone 4, see "Completed" above):
+  and M4.2 are complete/committed, M4.3 is complete on a feature branch
+  pending merge, M4.4 is next — see "Next" below) is not yet complete;
+  OpenClaw interoperability landed between Milestone 3 and Milestone 4,
+  see "Completed" above):
   - **Milestone 0 — GitHub Actions CI** (`d3481fc`) ✅: added
     `.github/workflows/tests.yml`, running the full suite
     (`python -m unittest discover -s tests -v`) on every push/PR against
@@ -93,7 +94,7 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     in CI, consistent with this project's mocked-external-call-boundary
     test policy. (The command itself was later updated to add the
     load-bearing `-t .` flag by the Phase 9 Reliability S1 pass — see
-    "In progress" below; this entry is kept as an accurate record of what
+    "Completed" above; this entry is kept as an accurate record of what
     Milestone 0 shipped at the time.)
   - **Milestone 1 — Playwright browser-profile ownership hardening**
     (`7b67bf0`) ✅: closes the "Playwright profile contention" risk
@@ -398,7 +399,9 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   freeing ~9.4GiB of disposable, reconstructible caches (Homebrew/pip/
   uv/npm caches, browser cache) — zero personal data touched. Graphify
   refreshed against the merged commit (3514 nodes, 7421 edges, 172
-  communities, `built_at_commit` matching HEAD, `state: fresh`). Fixes
+  communities, `built_at_commit` matching HEAD, `state: fresh` — accurate
+  as of S1's own finalization; superseded by S1.1's later refresh, see
+  below). Fixes
   the M4.2-era test-isolation gap at the
   root: the canonical full-suite command changed to
   `python -m unittest discover -s tests -t . -v` (the `-t .` is what
@@ -437,32 +440,61 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   this remain persisted, be batched, become optional, or become
   non-persistent?) still undecided; see "Next" below.
 
+- **Phase 9 Reliability S1.1 — History Store Concurrent Initialization
+  Determinism** (`d38e794`) ✅: root-caused and fixed the exact flaky
+  test S1's CI run hit (see above): `PRAGMA journal_mode=WAL`'s one-time
+  transition on a brand-new database takes an internal exclusive lock
+  that does not reliably honor `busy_timeout` — confirmed via
+  `sqlite_errorcode == SQLITE_BUSY`, and confirmed to be exactly this
+  one statement (not `BEGIN IMMEDIATE`, not any other PRAGMA) by
+  isolating each one individually under barrier-synchronized thread
+  contention. Fixed with a narrowly-scoped bounded retry around only
+  that one statement, only for `SQLITE_BUSY` specifically — a real disk
+  I/O failure or any other `OperationalError` still propagates
+  immediately. No PRAGMA reordering, no durability/privacy setting
+  weakened, ~0.18ms mean overhead in the uncontended case (not
+  material). Verified via a 2400-attempt barrier-synchronized stress
+  reproduction (0 failures with the fix). New regression coverage: a
+  stronger barrier-based version of the original concurrent-
+  initialization test, a bounded repeated-round version, a real
+  multi-process version (separate OS processes, matching production's
+  actual menu-bar/scheduler-daemon/Streamlit scenario), and a new
+  `TestHistoryBusySemantics` class exercising the retry-then-succeed,
+  retry-then-`HistoryBusy`, never-retry-a-non-busy-error, and (for the
+  first time) a genuinely held write lock actually surfacing
+  `HistoryBusy` end to end. Committed, pushed, **CI-verified on the
+  first attempt** (GitHub Actions run `32659780845`, `run_attempt: 1`,
+  1423/1423 passed, no rerun needed) — direct proof the root cause was
+  correctly identified. Full design: `ARCHITECTURE.md` §12a.
+- **Phase 9 / M4.3 — Read-Only Conversation History Tools** (`1519a51`
+  on feature branch `phase9-m4.3-history-search`, not yet on `main`) ✅:
+  two Jarvis-facing ToolSpecs in `tools/schemas/history.py` —
+  `history_status` and `search_conversation_history` (deliberately not
+  named `search_history`, to avoid colliding conceptually with
+  `agent/memory/manager.py`'s `search_scored()` — History vs. Memory is
+  a stated invariant). Both `permission_level=0`, `parallel_safe=True`,
+  matching `tools/schemas/graphify.py`'s precedent. Deliberately no
+  session/turn direct-retrieval tools (the store has no
+  `get_session`/`get_turn` read function; adding one would extend the
+  store, not just wrap it — revisit under M4.4 only if actually needed).
+  All six `history_store` exception classes map to a distinct,
+  stable JSON `state`. `max_results` defaults to 10, hard-capped at 50.
+  A real bug found and fixed during review: `int(max_results)` could
+  raise an uncaught `ValueError`/`TypeError` out of a permission-0
+  read-only tool for a non-numeric value; fixed with explicit
+  coercion mapped to the existing `invalid_input` state, plus an
+  explicit `is None` check so a real `0` clamps to `1` instead of
+  silently becoming the default. New `tests/test_history_tools.py`, 34
+  tests. Committed (`1519a51`), pushed, **CI-verified on the first
+  attempt** (GitHub Actions run `32663268361`, 1457/1457 passed). Not
+  merged to `main` — held on its feature branch pending a merge/PR
+  decision.
+
 ## In progress
 
-- **Phase 9 Reliability S1.1 — History Store Concurrent Initialization
-  Determinism.** Built, tested, **uncommitted, pending user review**.
-  Root-caused and fixed the exact flaky test S1's CI run hit (see
-  above): `PRAGMA journal_mode=WAL`'s one-time transition on a
-  brand-new database takes an internal exclusive lock that does not
-  reliably honor `busy_timeout` — confirmed via `sqlite_errorcode ==
-  SQLITE_BUSY`, and confirmed to be exactly this one statement (not
-  `BEGIN IMMEDIATE`, not any other PRAGMA) by isolating each one
-  individually under barrier-synchronized thread contention. Fixed with
-  a narrowly-scoped bounded retry around only that one statement, only
-  for `SQLITE_BUSY` specifically — a real disk I/O failure or any other
-  `OperationalError` still propagates immediately. No PRAGMA reordering,
-  no durability/privacy setting weakened, ~0.18ms mean overhead in the
-  uncontended case (not material). Verified via a 2400-attempt
-  barrier-synchronized stress reproduction (0 failures with the fix).
-  New regression coverage: a stronger barrier-based version of the
-  original concurrent-initialization test, a bounded repeated-round
-  version, a real multi-process version (separate OS processes, matching
-  production's actual menu-bar/scheduler-daemon/Streamlit scenario), and
-  a new `TestHistoryBusySemantics` class exercising the retry-then-
-  succeed, retry-then-`HistoryBusy`, never-retry-a-non-busy-error, and
-  (for the first time) a genuinely held write lock actually surfacing
-  `HistoryBusy` end to end. Full design: `ARCHITECTURE.md` §12a. See
-  `HANDOFF.md` for exact file-level status.
+Nothing currently in progress — S1.1 and M4.3 above are both complete on
+their respective branches, awaiting only `main`-side decisions (S1.1 is
+already on `main`; M4.3's merge/PR decision is still open).
 
 ## Next
 
@@ -481,17 +513,23 @@ milestone breakdown (M4.1 through M4.4, each independently gated):
 - **M4.2 — executor capture wiring** ✅ complete, committed (`c0d5fc5`).
   Voice/menu-bar conversations become durable starting here (a product
   decision already made).
-- **M4.3 — Jarvis-facing search tools.** Only after M4.2 is reviewed,
-  committed, and CI-verified. Registers `search_history`/
-  `history_status` ToolSpecs through `tools/registry.py` (never a
-  special-cased dispatch path) so Jarvis itself can answer "what did we
-  decide about X" / "what was I working on yesterday" questions. Not
-  started; no ToolSpec exists yet.
+- **M4.3 — Jarvis-facing search tools** (`1519a51` on feature branch
+  `phase9-m4.3-history-search`) ✅ complete, not yet merged to `main`.
+  Registers `search_conversation_history`/`history_status` ToolSpecs
+  through `tools/registry.py` (never a special-cased dispatch path) so
+  Jarvis itself can answer "what did we decide about X" / "what was I
+  working on yesterday" questions. Named `search_conversation_history`,
+  not the originally-sketched `search_history` — the longer,
+  disambiguated name was chosen deliberately so the Jarvis-facing tool
+  surface never reads as conceptually adjacent to
+  `agent/memory/manager.py`'s `search_scored()`, given History vs.
+  Memory is a stated architectural invariant, not a naming afterthought.
+  See "Completed" above for full detail.
 - **M4.4 — proactive context injection.** Bounded, relevance-gated,
   provenance-visible, cost-aware, user-disableable retrieval that
   surfaces relevant history automatically rather than only on explicit
-  search — intended to eventually be default-on, but only once M4.2/M4.3
-  are proven in real use. Not started, not designed in detail.
+  search — intended to eventually be default-on, but only once M4.3 is
+  merged and proven in real use. Not started, not designed in detail.
 
 `conversation.json` backfill (a product decision already made — it
 *will* eventually happen, just not as part of M4.1/M4.2) and history
