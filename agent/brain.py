@@ -1,6 +1,7 @@
 import tools.schemas  # noqa: F401 -- populates tools.registry as a side effect
 from agent.chat import anthropic_client as client
 from agent.context import build_context, build_profile_context
+from agent.history_context import build_history_context
 from agent.lessons import lessons_as_prompt_text
 from agent.skills.loader import load_all_skills
 from agent.skills.registry import get as get_skill
@@ -244,6 +245,16 @@ def build_system_prompt(user_input="", request_id=None, state=None):
             "current request, use your own judgment instead of forcing "
             "it:\n" + patterns
         )
+
+    # Phase 9 M4.4: off by default (settings.proactive_history_enabled).
+    # build_history_context() already no-ops immediately when the
+    # feature is off or there's nothing relevant, and its own
+    # prompt_text includes its full section header -- unlike
+    # profiles/patterns above, nothing is added here beyond the
+    # separator, to avoid building the header twice.
+    history = build_history_context(user_input, request_id=request_id, state=state).prompt_text
+    if history:
+        prompt += "\n\n" + history
 
     lessons = lessons_as_prompt_text()
     if lessons:
