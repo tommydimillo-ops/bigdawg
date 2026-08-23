@@ -7,18 +7,26 @@ state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
 Last updated: 2026-08-23. **Phase 9 / M4.1 (durable history store + FTS5
-core) is complete, committed (`cd13e2a`), pushed, and CI-verified. Phase
-9 / M4.2 (deterministic history capture) is built and tested but
-UNCOMMITTED** — see the dedicated "Phase 9 / M4.2" section below for
-full detail before anything else in this file. Everything from here
-through the rest of this paragraph describes prior, already-committed
-work. OpenClaw M1/M1.5/M2 (including the M2
+core) is complete, committed (`cd13e2a`). Phase 9 / M4.2 (deterministic
+history capture) is ALSO now complete, committed (`c0d5fc5`, "Add
+deterministic conversation history capture")** — a prior version of this
+file described M4.2 as uncommitted/awaiting review; that has since
+happened and this file was out of date until this update corrected it
+(see CLAUDE.md's NEW SESSION PROTOCOL — trust `git log` over this file
+when they disagree). HEAD after M4.2 is `c0d5fc5`, which is this
+session's verified baseline.
+
+**Phase 9 Reliability S1 (Structurally Safe Test Harness) is built and
+tested but UNCOMMITTED** — see the dedicated "Phase 9 Reliability S1"
+section below for full detail before anything else in this file.
+Everything else in this paragraph and below describes prior,
+already-committed work. OpenClaw M1/M1.5/M2 (including the M2
 hardening/review pass) are all now **complete, committed, pushed, and
-CI-verified** — HEAD is `d270dc461b15d8bd79e013032fea9ba05a674f87`
-("Add permission-gated OpenClaw outbound messaging"), CI run
-`32310485314` succeeded. See the "OpenClaw M1 + M1.5" and "OpenClaw M2"
-sections below for full detail; both are done, no OpenClaw work is
-in-flight or awaiting review.
+CI-verified** — HEAD (before S1) is
+`d270dc461b15d8bd79e013032fea9ba05a674f87` ("Add permission-gated
+OpenClaw outbound messaging"), CI run `32310485314` succeeded. See the
+"OpenClaw M1 + M1.5" and "OpenClaw M2" sections below for full detail;
+both are done, no OpenClaw work is in-flight or awaiting review.
 
 This same session then ran **Graphify G0** — evaluating and approving
 Graphify as an optional, local, development-time structural-code-graph
@@ -75,7 +83,18 @@ exact commit hash.
   `conversation.json`, no Jarvis-facing ToolSpec, no proactive context
   injection, no automatic age-based deletion.
 
-## Phase 9 / M4.2 — HISTORY CAPTURE ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+## Phase 9 / M4.2 — HISTORY CAPTURE ✅ COMPLETE, COMMITTED (`c0d5fc5`)
+
+**This section previously said "BUILT, TESTED, UNCOMMITTED" — that went
+stale. M4.2 was committed as `c0d5fc5` ("Add deterministic conversation
+history capture") before this update.** The "central guard doesn't
+actually execute" finding described below is real and was the correct
+diagnosis at the time, but the FIX described (per-file isolation only)
+was superseded by the Phase 9 Reliability S1 pass (see the dedicated
+section right after this one), which fixed the central guard itself —
+`tests/__init__.py` now reliably runs under the canonical
+`-t .` command. The rest of this section is kept as an accurate
+historical record of the M4.2 pass.
 
 - **What it does**: new `agent/history_capture.py` makes M4.1's store
   operational — deterministically, non-model-controlled capture of real
@@ -150,6 +169,137 @@ exact commit hash.
 - **Do not start M4.3** (Jarvis-facing search ToolSpecs) until a human
   has reviewed and committed M4.2. See "Exact recommended next steps"
   below.
+
+## Phase 9 Reliability S1 — STRUCTURALLY SAFE TEST HARNESS ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+
+- **What it does**: fixes, at the root, the test-isolation gap M4.2
+  discovered and worked around with per-file redirects only. The
+  canonical full-suite command changed to
+  `python -m unittest discover -s tests -t . -v` (package-style single
+  module: `python -m unittest tests.test_name -v`) — the `-t .` flag is
+  what makes `discover` actually import `tests` as a package and run
+  `tests/__init__.py` before any test module. New `tests/_safety.py`,
+  installed exactly once by a rewritten `tests/__init__.py`, provides:
+  a disposable per-process temp "run root" (`tempfile.mkdtemp()`,
+  resolved through `os.path.realpath()`); a redirect of every production
+  persistent-store path constant into that run root (audit log,
+  conversation store, history store, jarvis state, personal-context
+  catalog, execution history, scheduler/browser locks, quiet-mode flag,
+  scheduled tasks, TTS pid file, usage history, typed memory,
+  credential-store config dir/logins file/Keychain service name,
+  computer-use screenshot dir, browser profile dir, sandbox dir/Seatbelt
+  profile path); an external-network firewall at the stdlib `socket`
+  layer (loopback only — everything else raises
+  `tests._safety.ExternalNetworkBlocked` before DNS/connection); a
+  secondary `httpx` transport tripwire; and poisoned-by-default
+  `tools.browser.sync_playwright`/`tools.computer_use.pyautogui`
+  tripwires. Existing per-file `setUp`/`tearDown` redirects are
+  untouched, real defense-in-depth, not made redundant. Full design:
+  `ARCHITECTURE.md` §18.
+- **Three real production bugs found and fixed** (not test code — actual
+  application modules), all of the same class the audit predicted
+  ("captured a production path at definition time instead of reading it
+  dynamically"): (1) `tools/sandbox_python.py`'s Seatbelt profile string
+  was a module-level f-string baking in `SANDBOX_DIR`'s import-time
+  value — now built fresh inside `_ensure_profile()` on every call; (2)
+  `agent/history_store.py`'s six public functions
+  (`initialize_history_store`, `create_session`, `close_session`,
+  `record_turn`, `history_status`, `search_history`) defaulted their
+  `db_path` parameter directly to the `HISTORY_DB` module constant,
+  bound at function-definition time; (3) `agent/personal_context.py`'s
+  `save_catalog`/`load_catalog` did the same with `CATALOG_FILE`. All
+  three now default to `None` and read the module constant inside the
+  function body. Every existing caller already passed the path
+  explicitly (production's own `agent/history_capture.py` was already
+  written this way), so none of these were live bugs in production or
+  the pre-S1 suite — they were latent traps for exactly the kind of
+  default-relying meta-test this pass added, caught by writing that
+  meta-test rather than assumed safe.
+- **One real macOS-specific bug found and fixed in the harness itself**:
+  `tempfile.mkdtemp()`'s default temp root (`/var/folders/...`) is
+  itself a symlink to `/private/var/folders/...`; `sandbox-exec`'s
+  Seatbelt profile resolves `subpath` rules against the canonical path,
+  so a profile written with the symlinked form spuriously denied a
+  legitimate in-sandbox write. Fixed by resolving the run root through
+  `os.path.realpath()` once, upstream of every derived path.
+- **Real Keychain**: confirmed empirically (again) that even a
+  distinctly-named test Keychain service can raise a real
+  `keyring.backends.macOS.api.Error` in this non-interactive session (no
+  GUI to answer the access-control prompt) — `tests/test_safety.py`'s
+  `TestConfirmLoginGate` now mocks `tools.credential_store.keyring`
+  directly rather than relying on the service-name redirect alone. New
+  `tools/keychain_smoke_test.py`: an opt-in, synthetic-credentials-only,
+  own-service-namespace script for manually verifying the real Keychain
+  seam end to end — never run automatically by the canonical suite or
+  CI, and not run during this pass (the risk it would hit the same
+  non-interactive Keychain-prompt error was already confirmed above, so
+  running it again would add no new information).
+- **Verification**: full suite `python -m unittest discover -s tests -t
+  . -v` achieved a clean **1417 passed, 0 failed** run mid-pass. **This
+  Mac's disk reached complete exhaustion during this pass** (0 bytes
+  free — even trivial shell commands failed with `ENOSPC` at one point)
+  after fluctuating around ~99% capacity/130-200Mi free earlier in the
+  session. Later re-runs before recovery hit SQLite `disk I/O error`/
+  `HistoryBusy` failures confined entirely to `tests.test_history_store`
+  (22 failures on one re-run, 42 on a later one, worsening as free space
+  kept shrinking; zero failures anywhere else in the other 1300+ tests
+  every time) — confirmed environmental, not a defect in this pass's
+  architecture: the same module flipped between clean and failing purely
+  as available disk space changed, and every failure was a real
+  `sqlite3.OperationalError`, never an assertion failure. **Resolved** in
+  the finalization pass: freed disk space using only clearly disposable,
+  reconstructible caches — `brew cleanup -s --prune=all`, `pip cache
+  purge`, `uv cache clean`, `npm cache clean --force`, and clearing
+  `~/Library/Caches/Google` (browser cache) — recovering free space from
+  ~3.6Gi to **13Gi**, comfortably past the 10Gi target, with zero
+  personal/user data or Jarvis Application Support data touched. Two
+  subsequent full-suite runs both passed cleanly (1417/1417 each) with
+  the disk holding steady at 13Gi, confirming the diagnosis. **This
+  remains a real risk class for the live production app** — the real
+  `history.db` does the same kind of SQLite writes and would hit the
+  same error class under the same disk pressure again in the future,
+  independent of anything in this pass. No automatic disk-space handling
+  was added (deliberately, per instruction) — a disk-space health check/
+  low-space alert is recorded as a future reliability idea in
+  `ROADMAP.md`, not built now. Maintain reasonable free-space headroom
+  operationally. Production-store metadata
+  (existence/size/mtime, never content) snapshotted before and after
+  across every run in this pass, including the flaky ones:
+  **zero differences, every time** — no real file was touched,
+  regardless of disk pressure (the redirect happens before any test
+  runs, so a test erroring out afterward due to disk I/O never had a
+  chance to reach a real path). Network firewall independently
+  re-verified outside the test suite: a real loopback connect succeeds, a deliberate
+  connect attempt to a real external IP raises
+  `ExternalNetworkBlocked` in 0.0001s (proving it's a local, structural
+  block, not a network timeout). New `tests/test_test_safety.py` — 49
+  meta-tests covering canonical bootstrap, all redirected store
+  constants against their real production values, the
+  metadata-unchanged proof, the network firewall's
+  loopback/external/IPv4/IPv6/UDP/hostname behavior, the `httpx`
+  tripwire against a real loopback server, Keychain/Obsidian/skills
+  isolation, browser/computer-use tripwires (including per-test-mock
+  composability), and the real Seatbelt sandbox against the redirected
+  run root. Security review checklist (public-internet unreachability,
+  no production state written, Keychain/Obsidian/skills untouched,
+  browser/computer actions fail locally, real sandbox boundary still
+  exercised, no secrets in the diff, no new runtime dependency) — all
+  passed; see this session's final report for the full itemized list.
+- **Deliberately NOT done in this pass, on explicit instruction**: no
+  commit, no push. `agent/memory/manager.py::search_scored()`'s
+  `last_accessed` write-back-on-read behavior was (re-)confirmed but not
+  changed — recorded as a follow-up in `ROADMAP.md`'s "Next" section.
+  M4.3 was not started.
+- **Files changed**: modified `tests/__init__.py`, `tests/test_safety.py`
+  (`TestConfirmLoginGate` mocks `keyring`), `.github/workflows/tests.yml`
+  (now runs the `-t .` command), `agent/history_store.py`,
+  `agent/personal_context.py`, `tools/sandbox_python.py`. New:
+  `tests/_safety.py`, `tests/test_test_safety.py`,
+  `tools/keychain_smoke_test.py`. Documentation: this file,
+  `ARCHITECTURE.md` §18 (rewritten) and §12b (test-isolation paragraph
+  corrected), `ROADMAP.md`, `CLAUDE.md`'s "How to test" section,
+  `CHANGELOG.md`, `SESSION_LOG.md`.
+- **Do not start M4.3** until this pass is reviewed and committed.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -387,10 +537,11 @@ incremental-extraction limitation" section.
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
 Milestone 4 (reframed as "Phase 9 / M4 — Conversation & History
-Intelligence", audited and split into M4.1-M4.4): M4A (audit) and M4.1
-(durable history store) are complete, committed (`cd13e2a`), pushed,
-CI-verified; M4.2 (deterministic history capture) is built/tested,
-awaiting review — see the dedicated section near the top of this file.
+Intelligence", audited and split into M4.1-M4.4): M4A (audit), M4.1
+(durable history store, `cd13e2a`), and M4.2 (deterministic history
+capture, `c0d5fc5`) are all complete, committed. **Phase 9 Reliability
+S1 (Structurally Safe Test Harness) is built and tested but
+UNCOMMITTED** — see the dedicated section near the top of this file.
 OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 landed between Milestone 3
 and M4, both complete/committed.
 
@@ -404,35 +555,33 @@ CI-verified — see the section above.
 tools), and **G1.1** (incremental-vs-full extraction audit) all
 complete — see the sections above and `docs/GRAPHIFY.md`. Still not a
 Jarvis runtime dependency — `graphifyy` itself is never imported or
-invoked; only its already-generated graph.json is read.
+invoked; only its already-generated graph.json is read. Not refreshed as
+part of the S1 pass (no Jarvis source file — as opposed to test
+infrastructure and two small production bug fixes — changed enough to
+warrant it, and S1 explicitly did not commit, so HEAD hasn't moved for a
+committed graph to go stale against yet).
 
-**Working tree**: clean as of this writing, aside from this
-documentation pass itself (`docs/GRAPHIFY.md` and these project
-records). Confirm with a live `git status`/`git log` rather than
-trusting this file. **1253 tests pass, 0 failures** (unchanged from the
-G1 commit — this pass is documentation-only, no runtime code touched),
-no live/paid API calls during testing. No real OpenClaw installation
-persists on this machine.
-
-**Local graph note**: this docs commit advances git HEAD past the
-graph's `built_at_commit` (still `c99e792`, from G1.1's rebuild). Once
-this commit lands, `code_graph_status` will correctly and
-conservatively report the graph `stale` again — purely because HEAD
-moved, not because anything is wrong. This is expected and was
-deliberately **not** re-rebuilt as part of this pass; the next refresh
-should happen when actually useful before code-graph analysis on a
-future implementation milestone, not reflexively after every commit.
+**Working tree**: **not clean** — Phase 9 Reliability S1's changes are
+uncommitted (see that section). Confirm with a live `git status`/`git
+log` rather than trusting this file. **1417 tests pass, 0 failures**
+under the new canonical `python -m unittest discover -s tests -t . -v`
+(up from the 1368 baseline this pass started from — includes tests
+already in flight before S1 plus S1's own 49 new meta-tests), no
+live/paid API calls during testing, zero production files touched (see
+S1's section for the before/after metadata comparison). No real OpenClaw
+installation persists on this machine.
 
 ## What we are currently building
 
-Phase 9 / M4.2 (deterministic history capture) is built, tested, and
-awaiting review — see the dedicated section near the top of this file.
-Everything else is complete and committed: OpenClaw M1/M1.5/M2,
-Graphify G0/G1/G1.1, Phase 9 / M4.1. **Do not start Graphify G2
-(MCP/hooks/auto-rebuild — none implemented or assumed), a real OpenClaw
-messaging channel, OpenClaw device capabilities, OpenClaw agent/model-
-routing integration, or Phase 9 / M4.3 (Jarvis-facing search
-ToolSpecs)** until the user explicitly says so.
+Phase 9 Reliability S1 (Structurally Safe Test Harness) is built,
+tested, and awaiting review — see the dedicated section near the top of
+this file. M4.1 and M4.2 are now both complete and committed. Everything
+else is complete and committed: OpenClaw M1/M1.5/M2, Graphify
+G0/G1/G1.1. **Do not start Graphify G2 (MCP/hooks/auto-rebuild — none
+implemented or assumed), a real OpenClaw messaging channel, OpenClaw
+device capabilities, OpenClaw agent/model-routing integration, or Phase
+9 / M4.3 (Jarvis-facing search ToolSpecs)** until the user explicitly
+says so.
 
 ## What was completed (this session, most recent first)
 
@@ -678,11 +827,11 @@ ToolSpecs)** until the user explicitly says so.
 
 ## What is partially completed
 
-**Phase 9 / M4.2 (history capture)** is complete and fully tested; the
-only thing not done is the user's review/commit decision — same shape
-as OpenClaw M2 below. See the dedicated section above before assuming
-anything about its state. (M4.1 itself is no longer partial — it's
-committed.)
+**Phase 9 Reliability S1 (Structurally Safe Test Harness)** is complete
+and fully tested; the only thing not done is the user's review/commit
+decision — same shape as OpenClaw M2 below. See the dedicated section
+above before assuming anything about its state. (M4.1 and M4.2 are no
+longer partial — both are committed.)
 
 OpenClaw M2 is complete and fully tested; the only thing not done is
 the user's review/commit decision, plus choosing and configuring a
@@ -690,22 +839,35 @@ first real messaging channel afterward.
 
 ## Current bugs / known issues
 
-None remaining. The two real bugs M1.5's smoke test found
+- **`agent/memory/manager.py::search_scored()` silently persists a
+  `last_accessed` timestamp on every read that returns ≥1 result** — not
+  a bug in the sense of incorrect behavior, but an undocumented
+  side-effect on a conceptually read-only path, called unconditionally
+  on every real request via `agent.brain.build_system_prompt()`.
+  Confirmed during the Phase 9 reliability audit and reconfirmed during
+  the S1 pass; deliberately not changed in either (see S1's section
+  above and `ROADMAP.md`'s "Next" section for the open design question).
+  No longer a test-isolation risk — S1's store redirection means
+  canonical tests never touch the real `memory.json` because of it — but
+  still an open production design decision.
+
+Otherwise none remaining. The two real bugs M1.5's smoke test found
 (`client.platform`, `client.deviceFamily` both missing from the wire
 `connect` params) are fixed and verified against a real Gateway — see
 item 1 in "What was completed" above. The device-ID hash algorithm
 (flagged in a prior session) remains CONFIRMED against real primary
-source. No other open issues.
+source.
 
 ## Current blockers
 
 None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and Phase 9 /
-M4.1 are all committed. **Phase 9 / M4.2 is built and tested but
-blocked on user review/commit** before M4.3 (Jarvis-facing search
-ToolSpecs) can start — see the dedicated section above. Open decisions
-(none urgent): which real messaging channel (if any) to configure for
-OpenClaw next, and whether/when to pursue a further Graphify milestone
-(MCP/hooks/auto-rebuild — none implemented or assumed so far).
+M4.1 + M4.2 are all committed. **Phase 9 Reliability S1 is built and
+tested but blocked on user review/commit** before M4.3 (Jarvis-facing
+search ToolSpecs) can start — see the dedicated section above. Open
+decisions (none urgent): which real messaging channel (if any) to
+configure for OpenClaw next, whether/when to pursue a further Graphify
+milestone (MCP/hooks/auto-rebuild — none implemented or assumed so far),
+and the `last_accessed` design question above.
 
 ## Recent architectural decisions
 
@@ -866,6 +1028,35 @@ OpenClaw next, and whether/when to pursue a further Graphify milestone
 
 ## Files recently modified
 
+**Phase 9 Reliability S1 (Structurally Safe Test Harness)** — built,
+tested, **UNCOMMITTED**:
+```
+new:      tests/_safety.py
+new:      tests/test_test_safety.py
+new:      tools/keychain_smoke_test.py
+modified: tests/__init__.py (rewritten: calls
+          tests._safety.install_test_safety(), documents the -t .
+          requirement)
+modified: tests/test_safety.py (TestConfirmLoginGate mocks
+          tools.credential_store.keyring directly)
+modified: .github/workflows/tests.yml (canonical command now includes
+          -t .)
+modified: agent/history_store.py (six public functions: db_path defaults
+          to None and reads HISTORY_DB dynamically, not as a captured
+          default-argument value)
+modified: agent/personal_context.py (save_catalog/load_catalog: same
+          fix, for CATALOG_FILE)
+modified: tools/sandbox_python.py (Seatbelt profile string built inside
+          _ensure_profile() from the current SANDBOX_DIR, not baked in
+          as a module-level constant)
+modified: CLAUDE.md, ARCHITECTURE.md, ROADMAP.md, HANDOFF.md,
+          CHANGELOG.md, SESSION_LOG.md
+```
+
+**Phase 9 / M4.2** committed as `c0d5fc5` ("Add deterministic
+conversation history capture") — see that section above for the full
+file list; not repeated here.
+
 **OpenClaw M1** committed as `d1eb813` ("Add read-only OpenClaw gateway
 bridge"), pushed to `origin/main`, CI-verified.
 
@@ -988,44 +1179,66 @@ CI). See `CHANGELOG.md` / `git log` for full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests -v` → **1363 passed, 0 failed**
-(1336 M4.1 baseline + 27 new `tests/test_history_capture.py` tests). No
-paid API calls in the final, corrected suite (see the M4.2 section
-above for a real, self-caught incident where an early, since-fixed
-version of one test made a genuine unmocked call to live OpenAI). No
-real OpenClaw installation used; no real `graphifyy`/`graphify` CLI
-needed by any test. This number will be stale the moment new tests are
-added — re-run, don't trust it blindly.
+`python -m unittest discover -s tests -t . -v` → a clean **1417 passed,
+0 failed** run (up from the 1368 baseline this pass started from),
+reproduced twice in a row in the finalization pass with a healthy disk.
+This is the new canonical command — see Phase 9 Reliability S1's section
+above for why the `-t .` flag is required, not optional. **This Mac's
+disk reached complete exhaustion mid-pass** (0 bytes free at one point,
+after fluctuating around ~99%/130-200Mi free) — `tests.test_history_store`
+specifically flaked with SQLite `disk I/O error`/`HistoryBusy` failures
+under that pressure; confirmed environmental (the same module flipped
+between clean and failing purely as free space changed), not a code
+defect, and every other test module was unaffected on every run.
+**Resolved** in the finalization pass by freeing disposable caches
+(brew/pip/uv/npm caches, browser cache) back to 13Gi free, with zero
+personal data touched — see Phase 9 Reliability S1's section for the
+full before/after. Maintain reasonable free-space headroom going
+forward; this also affects the real production `history.db`'s own
+writes, independent of testing. No paid API calls; the
+external-network firewall independently confirmed zero real external
+connections were possible. No real OpenClaw installation used; no real
+`graphifyy`/`graphify` CLI needed by any test. Production-store metadata
+confirmed unchanged before/after, across every run including the flaky
+ones (see S1's section). This number will be stale the moment new tests
+are added — re-run, don't trust it blindly, and use the `-t .` form when
+you do.
 
 ## What still needs to be done
 
-1. **Phase 9 / M4.2 (history capture) needs user review and a commit
-   decision** — built, tested (1363/1363), currently uncommitted. See
-   the dedicated section above for exactly what changed, including two
-   real bugs (a session-cache race, and a real-API-call test gap) found
-   and fixed during this pass, and a pre-existing test-isolation gap in
-   `tests/__init__.py` that predates M4.2.
-2. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
+1. **Phase 9 Reliability S1 (Structurally Safe Test Harness) needs user
+   review and a commit decision** — built, tested (1417/1417),
+   currently uncommitted. See the dedicated section above for exactly
+   what changed, including three real production bugs (a stale Seatbelt
+   profile string, and two functions in `agent/history_store.py`/
+   `agent/personal_context.py` that captured a path constant as a
+   default-argument value instead of reading it dynamically) found and
+   fixed during this pass.
+2. **Nothing outstanding for Phase 9 / M4.1 or M4.2** — both committed
+   (`cd13e2a`, `c0d5fc5`).
+3. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
    (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
    CI-verified.
-3. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
+4. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
    (`7b4d0b6`, `c99e792`, `77dee43`), documented in `docs/GRAPHIFY.md`.
-4. **Nothing outstanding for Phase 9 / M4.1** — committed (`cd13e2a`),
-   pushed, CI-verified.
 5. **Do not rebuild the real local graph reflexively** — `code_graph_status`
    will report the graph `stale` the moment HEAD moves past its
-   `built_at_commit` (`cd13e2a`) for any reason, including once M4.2's
-   tracked-file edits are committed. This is expected; refresh it only
-   when actually useful before code-graph analysis on a future
-   milestone.
+   `built_at_commit` for any reason, including once S1's tracked-file
+   edits are committed. This is expected; refresh it only when actually
+   useful before code-graph analysis on a future milestone.
 6. **Do not configure a real OpenClaw messaging channel** (Telegram/
    Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
    is explicitly chosen.
 7. **Do not start Phase 9 / M4.3** (Jarvis-facing search ToolSpecs)
-   until M4.2 is reviewed, committed, and CI-verified. Do not start
+   until S1 is reviewed, committed, and CI-verified. Do not start
    Graphify G2 (MCP, hooks, auto-rebuild — none implemented or assumed)
    or OpenClaw device capabilities/agent-routing integration until the
    user explicitly says so.
+8. **Decide the `agent/memory/manager.py::search_scored()`
+   `last_accessed` question** whenever it becomes a priority — should it
+   remain persisted on every read, be batched, become optional, or
+   become non-persistent? See "Current bugs / known issues" above and
+   `ROADMAP.md`'s "Next" section. Not urgent; not a safety issue post-S1.
 
 ## Exact recommended next steps
 
@@ -1034,30 +1247,27 @@ For the next session, in order of what's most likely to matter:
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
    match what this file claims before trusting it. In particular, check
-   whether `agent/history_capture.py`/`tests/test_history_capture.py`
-   are still untracked (M4.2 not yet reviewed/committed) or have since
-   been committed (M4.2 approved — safe to consider M4.3 next).
-2. If M4.2 is still uncommitted, that review is the most likely next
-   action: read `agent/history_capture.py`/`tests/test_history_capture.py`
-   and the capture wiring inside `agent/executor.py`'s
-   `execute_task_stream()` directly, re-run
-   `python -m unittest discover -s tests -v`, and decide whether to
+   whether `tests/_safety.py`/`tests/test_test_safety.py`/
+   `tools/keychain_smoke_test.py` are still untracked (S1 not yet
+   reviewed/committed) or have since been committed (S1 approved — safe
+   to consider M4.3 next).
+2. If S1 is still uncommitted, that review is the most likely next
+   action: read `tests/_safety.py` and `tests/__init__.py` directly, the
+   three production-code diffs (`tools/sandbox_python.py`,
+   `agent/history_store.py`, `agent/personal_context.py`), and
+   `tests/test_test_safety.py`; re-run
+   `python -m unittest discover -s tests -t . -v`; and decide whether to
    commit as-is, request changes, or discard. Do not proceed to M4.3
-   (Jarvis-facing search ToolSpecs) without that decision first. Also
-   worth independently re-verifying the `tests/__init__.py` central-guard
-   finding described in the M4.2 section above — check whether any other
-   file-backed store in this project has been silently relying on that
-   guard alone.
+   (Jarvis-facing search ToolSpecs) without that decision first.
 3. Before relying on `analyze_code_impact`/`find_code_path` results for
    anything precision-sensitive, check `code_graph_status` first — it
-   will likely report `stale` (HEAD has moved past the graph's
-   `built_at_commit` (`cd13e2a`) since M4.2's tracked-file edits, once
-   committed). If a rebuild is actually useful at that point, use the
-   precision workflow in `docs/GRAPHIFY.md`'s "Known incremental-
-   extraction limitation" section (clean tracked tree → back up the old
-   graph outside the repo → re-extract from empty → validate → delete
-   the backup) rather than a bare incremental
-   `graphify extract . --code-only`.
+   will likely report `stale` once S1's tracked-file edits are
+   committed and HEAD moves past the graph's `built_at_commit`. If a
+   rebuild is actually useful at that point, use the precision workflow
+   in `docs/GRAPHIFY.md`'s "Known incremental-extraction limitation"
+   section (clean tracked tree → back up the old graph outside the repo
+   → re-extract from empty → validate → delete the backup) rather than a
+   bare incremental `graphify extract . --code-only`.
 4. If the user wants to proceed with configuring a real OpenClaw
    messaging channel, that is a real, separate, higher-risk step (real
    external service credentials, a real live send) and should get the

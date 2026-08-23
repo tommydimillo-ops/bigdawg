@@ -1,10 +1,22 @@
 """Regression tests for the safety-critical paths built up over this
 project's development: permission coverage, sandbox isolation, the login
 confirmation gate, audit logging, and the scheduler's unattended-run
-restrictions. These exercise the real mechanisms (real sandbox-exec, real
-Keychain entries cleaned up afterward, real tool dispatch) rather than
-mocks, on the theory that a security boundary you haven't actually tested
-isn't verified.
+restrictions. Sandbox isolation exercises the real mechanism (real
+sandbox-exec) on the theory that a security boundary you haven't
+actually tested isn't verified -- that one is a genuine OS-level kernel
+policy no Python-level mock could stand in for anyway.
+
+TestConfirmLoginGate is the one exception to "exercise the real
+mechanism": it mocks the `keyring` boundary (see its own docstring for
+why) rather than touching any Keychain, real or test-service-named --
+confirmed live during the Phase 9 reliability-audit implementation that
+even a distinctly-named test service can raise a real macOS Keychain API
+error in a non-interactive session (no GUI to answer the access-control
+prompt), which is exactly the class of CI/automation hang the audit
+flagged. The gate LOGIC under test (confirm-requires-preview,
+scheduled-source blocks confirm) has nothing to do with Keychain
+internals, so mocking that one boundary doesn't weaken what this test
+actually verifies.
 
 Run with: python -m unittest tests.test_safety -v
 """
@@ -13,6 +25,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import tools.autofill as autofill
 import agent.jarvis_state as jarvis_state
@@ -87,16 +100,29 @@ class TestSandboxIsolation(unittest.TestCase):
 
 
 class TestConfirmLoginGate(unittest.TestCase):
+    """Mocks tools.credential_store.keyring (the module-level `import
+    keyring` reference every save_login/get_login/delete_login call reads
+    dynamically) so this test never reaches any Keychain backend -- real
+    service or the test-only one tests/_safety.py redirects
+    KEYCHAIN_SERVICE to. LOGINS_FILE itself is exercised for real (it's
+    already redirected to the shared test run-root by tests/_safety.py,
+    or to a per-test temp file if this module runs in isolation without
+    that bootstrap), proving save_login/delete_login's actual metadata
+    read-modify-write logic without needing a live Keychain underneath
+    it."""
 
     TEST_SITE = "unittest_gate_check"
 
     def setUp(self):
+        self._keyring_patch = patch("tools.credential_store.keyring", MagicMock())
+        self._keyring_patch.start()
         autofill._pending_confirmation = None
         save_login(self.TEST_SITE, "example.com", "tester", "not-a-real-secret")
 
     def tearDown(self):
         delete_login(self.TEST_SITE)
         autofill._pending_confirmation = None
+        self._keyring_patch.stop()
 
     def test_confirm_without_preview_is_blocked(self):
         result = autofill.confirm_login(self.TEST_SITE)

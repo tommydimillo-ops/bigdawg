@@ -706,6 +706,16 @@ as a tie-breaker only — no weighted BM25/recency formula is invented
 here; that's deferred to a later milestone once real retrieval quality
 can be observed.
 
+**Operational note — disk space**: this is a real SQLite database doing
+real disk writes on every turn; the Phase 9 Reliability S1 pass found
+this Mac's disk reaching complete exhaustion during a test run, which
+produced real `sqlite3.OperationalError: disk I/O error` failures. The
+same failure class applies to the live production `history.db`, not
+just to testing. There is no automatic low-disk handling here
+(deliberately not built as part of a test-safety pass) — maintain
+reasonable free-space headroom operationally; a future health-check/
+alert is recorded in `ROADMAP.md`'s "Future" section, not built yet.
+
 **What M4.1 deliberately did not do yet** (each a distinct, later,
 explicitly-gated milestone — M4.2 below implements the first of these):
 no backfill of the existing `conversation.json`; no Jarvis-facing
@@ -764,22 +774,21 @@ operation — no retry loop — relying on `history_store`'s own
 history-store outage degrades Jarvis to "no memory of this exchange,"
 never to "the exchange itself failed."
 
-**Test isolation — a real finding, not an assumption**: `tests/__init__.py`'s
-package-level guard (already used for `agent.usage.USAGE_FILE`) does
-**not** reliably execute under this project's actual
-`python -m unittest discover -s tests -v` invocation — confirmed
-empirically (a stderr marker at that file's top level never printed
-during a real `discover` run), because `discover` with no `-t` flag
-imports each test file as a bare top-level module, not as a submodule of
-the `tests` package, and therefore never triggers `tests/__init__.py`.
-This is a pre-existing, previously-undetected gap that predates M4.2 and
-was only ever masked because every affected test file already
-redundantly isolates `USAGE_FILE` itself in its own `setUp`/`tearDown`.
-The real, verified-working protection is exactly that per-file pattern,
-now extended to `agent.history_store.HISTORY_DB` in every test file
-whose tests exercise a real (even if provider-mocked)
-`execute_task_stream()`/`execute_task()` call. See `tests/__init__.py`'s
-own docstring for the full account.
+**Test isolation**: M4.2 found that `tests/__init__.py`'s package-level
+guard did not reliably execute under the canonical suite command of the
+time, because plain `discover -s tests` (no `-t`) imports each test file
+as a bare top-level module rather than as a submodule of the `tests`
+package. The Phase 9 reliability pass ("S1 — Structurally Safe Test
+Harness") fixed this at the root rather than continuing to rely only on
+per-file redirects: the canonical command changed to
+`python -m unittest discover -s tests -t . -v`, which does reliably
+import `tests/__init__.py` first, and `agent.history_store.HISTORY_DB`
+(along with every other production persistent-store constant this
+project has) is now redirected centrally by that package-level bootstrap
+before any test module runs. Per-file redirects (e.g. explicit
+`HISTORY_DB`/`STATE_FILE` reassignment in a test class's own
+`setUp`/`tearDown`) remain in place as real, working defense-in-depth —
+not made redundant, not removed. Full architecture: §18.
 
 ## 13. Authentication / security
 
@@ -1271,20 +1280,137 @@ Three deliberately separate logs, different questions each:
 
 ## 18. Testing
 
-`tests/` — 753 tests as of this writing (`python -m unittest discover -s
-tests`), organized roughly by phase/module (`test_agents_*`,
-`test_phase4_security.py` through `test_phase7_security.py`, `test_usage*`,
-`test_voice_*`, `test_skills_*`, etc.). Established policy: mock at the
-**external-call boundary** (the real Anthropic/OpenAI client, `subprocess.
-run`, a real network call) — never mock internal application logic just to
-make a test pass. File-backed stores are redirected to a temp path per
-test class (`HISTORY_FILE`, `STATE_FILE`, `USAGE_FILE`, `QUIET_MODE_FILE`,
-etc. are all module-level variables reassigned in `setUp`/restored in
-`tearDown`) — this is a real, previously-violated invariant: several
-executor-integration test files were found mid-Phase-8 to be writing
-zero-cost test artifacts into the *real* `usage_history.json` because they
-isolated `HISTORY_FILE`/`STATE_FILE` but not `USAGE_FILE`; fixed by adding
-the same isolation to each. See §19 ("Rules for modifying architecture")
-in `CLAUDE.md` before adding a new file-backed store's tests.
+`tests/` — 1417 tests as of this writing, organized roughly by
+phase/module (`test_agents_*`, `test_phase4_security.py` through
+`test_phase7_security.py`, `test_usage*`, `test_voice_*`, `test_skills_*`,
+etc.). Established policy: mock at the **external-call boundary** (the
+real Anthropic/OpenAI client, `subprocess.run`, a real network call) —
+never mock internal application logic just to make a test pass.
 
-No CI configuration exists in this repo — tests are run manually.
+**Canonical invocation**:
+
+```
+python -m unittest discover -s tests -t . -v          # full suite
+python -m unittest tests.test_name -v                 # one module
+```
+
+The `-t .` flag is load-bearing, not cosmetic. `unittest discover`'s
+start directory (`-s tests`) and top-level directory default to the same
+thing unless `-t` overrides it; when they're equal, `discover` imports
+every test file as a bare top-level module and never imports the `tests`
+package at all, so `tests/__init__.py` never runs. `python
+tests/test_x.py` (running a file directly as a script) has the same gap
+and is **not** a safety-guaranteed invocation. Both forms above are; a
+controlled run under the old, `-t`-less command was proven (Phase 9
+reliability audit, 2026-08-23) to write into six real files under the
+live `~/Library/Application Support/CampusPilot`, including the real
+`memory.json` and a real macOS Keychain entry.
+
+**`tests/__init__.py` + `tests/_safety.py`** — the test-safety bootstrap
+("S1 — Structurally Safe Test Harness"). `tests/__init__.py` is
+deliberately thin: it calls `tests._safety.install_test_safety()` and
+nothing else. That function, run exactly once (idempotent, thread-safe)
+before any individual `tests/test_*.py` module is imported:
+
+- Creates one disposable temp directory ("the run root",
+  `tempfile.mkdtemp()`, resolved through `os.path.realpath()` since
+  macOS's default temp root is itself a symlink — proven necessary when
+  the real Seatbelt sandbox denied a legitimate in-sandbox write until
+  this was added) — unique per test process, never under the real
+  `~/Library/Application Support/CampusPilot`, cleaned up best-effort via
+  `atexit`.
+- Redirects every production persistent-store path constant this project
+  has (audit log, conversation store, history store, jarvis state,
+  personal-context catalog, execution history, scheduler/browser locks,
+  quiet-mode flag, scheduled tasks, TTS pid file, usage history, typed
+  memory, credential-store config dir/logins file/Keychain service name,
+  computer-use screenshot dir, browser profile dir, sandbox dir/Seatbelt
+  profile path) to a path under the run root. Each was checked against
+  the function that actually performs the read/write to confirm it
+  reads the module-level constant dynamically rather than capturing it
+  in a default-argument value at definition time — two real instances of
+  the latter were found and fixed as production bugs during this pass:
+  `agent/history_store.py`'s six public functions and
+  `agent/personal_context.py`'s `save_catalog`/`load_catalog` used to
+  default their path parameter directly to the module constant (bound at
+  import time); now they default to `None` and read the constant inside
+  the function body. `tools/sandbox_python.py`'s Seatbelt profile string
+  had the same problem in a different shape — it was a module-level
+  f-string baking in `SANDBOX_DIR`'s import-time value; now built fresh
+  inside `_ensure_profile()` on every call.
+- Installs an external-network firewall at the stdlib `socket` layer
+  (`socket.socket.connect`/`connect_ex`/`sendto`,
+  `socket.create_connection`, `socket.getaddrinfo`), the common boundary
+  every higher-level library in this process ultimately goes through.
+  Loopback (127.0.0.0/8, `::1`, `localhost`, AF_UNIX) is allowed;
+  anything else raises `tests._safety.ExternalNetworkBlocked` **before**
+  DNS resolution or a real connection attempt — an unrecognized hostname
+  is never resolved to decide whether to allow it. A secondary `httpx`
+  transport-level tripwire gives a clearer error when a provider SDK call
+  is what got misrouted; the socket firewall is the actual, universal
+  enforcement boundary and would catch the same call regardless. Real
+  browser network traffic runs in a separate Chrome process this firewall
+  cannot see, so `tools.browser.sync_playwright` and
+  `tools.computer_use.pyautogui` each get their own poisoned-by-default
+  tripwire, composable with this project's existing
+  `@patch("tools.browser.sync_playwright")`-style per-test mocks (a
+  standard mock save/restore, not a conflict).
+- Forces `settings.obsidian_vault_path` to `None` and redirects the
+  second (real user) entry of `agent.skills.loader.DEFAULT_SKILLS_DIRS`
+  to an empty temp directory, leaving the repo's own reviewed `skills/`
+  directory as the first entry — a real `OBSIDIAN_VAULT_PATH` env var or
+  real user skill file can never leak into the canonical suite.
+
+Per-file `setUp`/`tearDown` redirects (the pattern below, and in modules
+like `tests/test_claude_gateway.py`'s `IsolatedExecutorTestCase`) are
+**not** made redundant by this and remain in place as real,
+independent defense-in-depth — nesting a redirect on top of one already
+in effect has always been safe here (the original `USAGE_FILE` handling
+established the pattern). File-backed stores are still additionally
+redirected to a temp path per test class in many individual test files
+(`HISTORY_FILE`, `STATE_FILE`, `USAGE_FILE`, `QUIET_MODE_FILE`, etc.) —
+this remains real protection, not dead code, and is why several
+mid-Phase-8/mid-M4.2 test-isolation gaps were caught and fixed even
+before the central bootstrap existed.
+
+**Keychain**: the real macOS Keychain is never touched by the canonical
+suite. `tools.credential_store.KEYCHAIN_SERVICE` is redirected to a
+distinct test-only name as defense-in-depth, but any test whose actual
+point is exercising `save_login`/`get_login`/`delete_login` logic mocks
+`tools.credential_store.keyring` directly (see
+`tests/test_safety.py::TestConfirmLoginGate`) — proven necessary, not
+theoretical: even a distinctly-named service raised a real
+`keyring.backends.macOS.api.Error` in a non-interactive session with no
+GUI to answer the access-control prompt. A separate, opt-in real-Keychain
+integration script, `tools/keychain_smoke_test.py`, exists for the rarer
+case of wanting to prove the real Keychain seam end to end (e.g. after a
+`keyring` library upgrade); it uses its own service namespace distinct
+from both production and the mocked-unit-test name, synthetic
+credentials only, and is never discovered or run by the canonical suite
+or CI.
+
+**Sandbox**: `tests/test_safety.py::TestSandboxIsolation` and
+`tests/test_test_safety.py::TestRealSandboxIsolationUsesRunRoot`
+deliberately do **not** mock `sandbox-exec` — a kernel-enforced Seatbelt
+boundary is exercised for real, redirected to the run root, proving both
+that a real in-sandbox write still succeeds and that escape is still
+denied under the redirected temp state.
+
+**Meta-tests**: `tests/test_test_safety.py` tests the safety bootstrap
+itself — canonical-bootstrap sentinels, every redirected store constant
+against its known real production value, production-file
+metadata-unchanged proof around a representative operation on each
+store, the network firewall's loopback/external/IPv4/IPv6/UDP/hostname
+behavior, the `httpx` tripwire against a real loopback HTTP server,
+Keychain/Obsidian/skills isolation, and the browser/computer-use
+tripwires (including that a per-test mock still composes correctly).
+
+CI (`.github/workflows/tests.yml`) runs the canonical `-t .` command on
+every push/PR under placeholder (non-functional) API key env vars — the
+actual safety boundary in CI is the package bootstrap described above,
+not the placeholder values, which exist only to satisfy SDK client
+construction at import time.
+
+See §19 ("Rules for modifying architecture") in `CLAUDE.md` before
+adding a new file-backed store's tests, and `tests/_safety.py`'s own
+docstring for the full, current list of redirected constants.

@@ -137,8 +137,8 @@ def build_catalog(
     }
 
 
-def save_catalog(catalog: dict, path: str = CATALOG_FILE) -> None:
-    destination = os.path.expanduser(path)
+def save_catalog(catalog: dict, path: Optional[str] = None) -> None:
+    destination = os.path.expanduser(path if path is not None else CATALOG_FILE)
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     fd, temporary = tempfile.mkstemp(
         prefix="personal-context-", suffix=".tmp", dir=os.path.dirname(destination)
@@ -158,9 +158,9 @@ def refresh_catalog(roots: Optional[Iterable[str]] = None) -> dict:
     return catalog
 
 
-def load_catalog(path: str = CATALOG_FILE) -> Optional[dict]:
+def load_catalog(path: Optional[str] = None) -> Optional[dict]:
     try:
-        with open(os.path.expanduser(path)) as file:
+        with open(os.path.expanduser(path if path is not None else CATALOG_FILE)) as file:
             value = json.load(file)
         return value if isinstance(value, dict) else None
     except (FileNotFoundError, OSError, ValueError):

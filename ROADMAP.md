@@ -91,7 +91,10 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
     (`python -m unittest discover -s tests -v`) on every push/PR against
     placeholder (non-functional) API key env vars — no real network calls
     in CI, consistent with this project's mocked-external-call-boundary
-    test policy.
+    test policy. (The command itself was later updated to add the
+    load-bearing `-t .` flag by the Phase 9 Reliability S1 pass — see
+    "In progress" below; this entry is kept as an accurate record of what
+    Milestone 0 shipped at the time.)
   - **Milestone 1 — Playwright browser-profile ownership hardening**
     (`7b67bf0`) ✅: closes the "Playwright profile contention" risk
     previously listed under "Next" below. `agent/browser_lock.py` adds a
@@ -363,13 +366,8 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   read/write/search/status APIs. No automatic capture, no ToolSpecs, no
   backfill — see M4.2 below for the first of those. Pushed,
   CI-verified. See `ARCHITECTURE.md` §12a.
-
-## In progress
-
-- **Phase 9 / M4.2 — Deterministic History Capture.** Built and tested
-  (`agent/history_capture.py`, `tests/test_history_capture.py`, 27 new
-  tests) but **uncommitted, pending user review**. Wires real,
-  non-model-controlled capture into `agent/executor.py`'s
+- **Phase 9 / M4.2 — Deterministic History Capture** (`c0d5fc5`) ✅:
+  wires real, non-model-controlled capture into `agent/executor.py`'s
   `execute_task_stream()`: a user-turn capture near the top of the
   function (before delegation/routing/planning), an assistant-turn
   capture at every terminal path (completed, cancelled,
@@ -380,16 +378,57 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   process-lifetime session; `scheduled` gets a brand-new session per
   request. History-capture failure is fully isolated (caught, logged as
   a bounded warning, never changes the real task's outcome) and never
-  retried (relies on `history_store`'s own idempotency). A real,
-  previously-undetected gap was found and fixed during this pass:
-  `tests/__init__.py`'s package-level test-isolation guard does not
-  actually execute under this project's real `python -m unittest
-  discover -s tests -v` invocation — fixed by extending the proven-
-  working per-file isolation pattern (already used for
-  `execution_history.HISTORY_FILE`/`jarvis_state.STATE_FILE`/
-  `usage.USAGE_FILE`) to every test file that exercises a real
-  `execute_task_stream()` call. See `ARCHITECTURE.md` §12b for the full
-  design and `HANDOFF.md` for exact file-level status.
+  retried (relies on `history_store`'s own idempotency). A real gap was
+  found during this pass: the canonical suite command of the time did
+  not actually execute `tests/__init__.py`'s package-level guard — fixed
+  at the time by extending per-file isolation to every test file that
+  exercises a real `execute_task_stream()` call, and fixed at the root
+  afterward by the S1 pass below. See `ARCHITECTURE.md` §12b.
+- **Phase 9 Reliability S1 — Structurally Safe Test Harness**: see "In
+  progress" below.
+
+## In progress
+
+- **Phase 9 Reliability S1 — Structurally Safe Test Harness.** Built and
+  verified (`tests/_safety.py`, rewritten `tests/__init__.py`,
+  `tests/test_test_safety.py`, 49 new meta-tests) but **uncommitted,
+  pending user review**. Fixes the M4.2-era test-isolation gap at the
+  root: the canonical full-suite command changed to
+  `python -m unittest discover -s tests -t . -v` (the `-t .` is what
+  actually makes `discover` trigger `tests/__init__.py`), which now
+  installs a package-level bootstrap redirecting every production
+  persistent-store path constant to a disposable per-process temp
+  directory, an external-network firewall at the stdlib `socket` layer
+  (loopback only; everything else blocked before DNS/connection), a
+  secondary `httpx` tripwire, and browser/computer-use tripwires. Found
+  and fixed three real production bugs of the "captured a production
+  path at definition time, not read dynamically" class this pass was
+  designed to catch: `tools/sandbox_python.py`'s Seatbelt profile string
+  baked in `SANDBOX_DIR`'s import-time value; `agent/history_store.py`'s
+  six public functions and `agent/personal_context.py`'s
+  `save_catalog`/`load_catalog` defaulted their path parameter directly
+  to the module constant. All three now read the constant dynamically at
+  call time. Also found and fixed a macOS-specific bug in the harness
+  itself: `tempfile.mkdtemp()`'s default temp root is a symlink, which
+  made the real Seatbelt sandbox test spuriously deny a legitimate
+  in-sandbox write until the run root was resolved through
+  `os.path.realpath()`. Full suite achieved a clean 1417/1417 pass;
+  later re-runs flaked on real SQLite disk-I/O errors confined to
+  `tests.test_history_store`, traced to this Mac's disk being at ~99%
+  capacity and trending down — confirmed environmental (the same module
+  flipped between clean and failing purely as free space changed), also
+  a real risk to the live production `history.db`, flagged to the user.
+  Zero production files touched (before/after metadata comparison across
+  every verification run, including the flaky ones). Real Keychain/Obsidian/skill data never
+  touched by the canonical suite; a separate opt-in
+  `tools/keychain_smoke_test.py` exists for manually verifying the real
+  Keychain seam. Full design: `ARCHITECTURE.md` §18. **Recorded as a
+  follow-up, deliberately NOT fixed in this pass**: this audit
+  (re-)confirmed `agent/memory/manager.py::search_scored()` silently
+  persists a `last_accessed` timestamp on every memory retrieval,
+  including read-only ones — a real production-quality question (should
+  this remain persisted, be batched, become optional, or become
+  non-persistent?) still undecided; see "Next" below.
 
 ## Next
 
@@ -405,8 +444,8 @@ milestone breakdown (M4.1 through M4.4, each independently gated):
 
 - **M4.1 — Durable History Store + FTS5 Core** ✅ complete, committed
   (`cd13e2a`), pushed, CI-verified.
-- **M4.2 — executor capture wiring** (in progress above). Voice/
-  menu-bar conversations become durable starting here (a product
+- **M4.2 — executor capture wiring** ✅ complete, committed (`c0d5fc5`).
+  Voice/menu-bar conversations become durable starting here (a product
   decision already made).
 - **M4.3 — Jarvis-facing search tools.** Only after M4.2 is reviewed,
   committed, and CI-verified. Registers `search_history`/
@@ -452,6 +491,22 @@ been discussed most recently:
   dependency (OpenClaw plugins execute with full host privileges, no
   sandboxing — confirmed in the M0 audit), no `node.invoke`/device
   capabilities.
+- **Memory `last_accessed` write-back on read** — `agent/memory/
+  manager.py::search_scored()` silently persists an updated
+  `last_accessed` timestamp (via `store.save_all(memories)`) on every
+  call that returns at least one result, including calls that are
+  conceptually read-only. This runs on every real request, since
+  `agent.brain.build_system_prompt()` → `agent.context.
+  build_profile_context()` calls it unconditionally. Found during the
+  Phase 9 reliability audit and reconfirmed during the S1 implementation
+  pass; deliberately **not** changed in either — this is a real,
+  standalone production-quality question, not a test-isolation issue
+  (S1's store redirection means canonical tests no longer touch the real
+  `memory.json` because of it, so it's no longer a test-safety risk,
+  just a design question). Still undecided: should `last_accessed`
+  remain persisted on every read, be batched/debounced, become optional,
+  or become non-persistent entirely? Needs a deliberate decision, not a
+  reflexive fix.
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring
@@ -516,6 +571,17 @@ this project is meant to grow into:
 - **A hardware client** — mentioned as a long-term possibility in earlier
   architecture notes (`agent/jarvis_state.py`'s docstring anticipates
   "voice/hardware clients"); nothing concrete planned.
+- **Low-disk health monitoring/alert** — the Phase 9 Reliability S1
+  pass (and its finalization) found this Mac's disk reaching complete
+  exhaustion (0 bytes free) during a test run, which caused real SQLite
+  `disk I/O error`/`HistoryBusy` failures — a risk that applies equally
+  to the live production `history.db`'s own writes, not just to testing.
+  No automatic handling exists today (deliberately not built as part of
+  S1 — out of scope for a test-safety pass). A future improvement would
+  be some form of low-disk-space detection/health signal surfaced to the
+  user (e.g. via `get_system_status` or the dashboard), not automatic
+  deletion or cleanup behavior. Not started, not designed in detail —
+  maintain reasonable free-space headroom operationally in the meantime.
 
 ## Experimental
 

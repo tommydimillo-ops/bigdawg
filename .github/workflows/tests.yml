@@ -15,8 +15,10 @@ jobs:
       # constructs the Anthropic/OpenAI SDK clients at import time, and
       # the OpenAI SDK raises immediately if no key is present at all.
       # No test in this suite makes a real network call through either
-      # client (mocked at the boundary per this project's test policy),
-      # so these values are never used to authenticate anything.
+      # client -- tests/_safety.py's socket-level firewall and httpx
+      # tripwire are the actual enforcement boundary; these placeholders
+      # only satisfy the SDK constructors, they are not what makes CI
+      # safe.
       ANTHROPIC_API_KEY: "sk-ci-placeholder-not-a-real-key"
       OPENAI_API_KEY: "sk-ci-placeholder-not-a-real-key"
     steps:
@@ -26,4 +28,8 @@ jobs:
           python-version: "3.14"
           cache: "pip"
       - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests -v
+      # -t . is load-bearing, not cosmetic -- it makes discover import
+      # every test as tests.test_x (not a bare top-level module), which
+      # is what triggers tests/__init__.py's safety bootstrap before any
+      # test module runs. See tests/__init__.py for the full explanation.
+      - run: python -m unittest discover -s tests -t . -v

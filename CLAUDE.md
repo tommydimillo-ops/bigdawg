@@ -197,24 +197,52 @@ integration).
 ## How to test
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v      # full suite
+python -m unittest tests.test_name -v             # one module
 ```
 
-742 tests as of this writing, all passing. Policy: mock at the external-
-call boundary only (see conventions above). If you add a new file-backed
-store (a new `SOMETHING_FILE` module-level path), **isolate it in every
-test class that exercises the code path writing to it** — a past gap here
-(executor-integration tests isolating `HISTORY_FILE`/`STATE_FILE` but not
-the newer `USAGE_FILE`) caused real test-artifact pollution of the live
-user's actual usage history. Check with a quick before/after record-count
-diff against the real file if you're unsure whether a new test path
-leaks.
+**The `-t .` flag is required, not optional.** Without it, `discover`
+imports every test file as a bare top-level module instead of as a
+`tests.*` submodule, which means `tests/__init__.py` — and everything it
+installs — never runs. A real run under the old, `-t`-less command wrote
+into six real files under the live
+`~/Library/Application Support/CampusPilot`, including the real
+`memory.json` and a real macOS Keychain entry (Phase 9 reliability audit,
+2026-08-23). Running a test file directly as a script
+(`python tests/test_x.py`) has the same gap and is not a
+safety-guaranteed invocation either. Always use one of the two commands
+above.
+
+1417 tests as of this writing, all passing. `tests/__init__.py` +
+`tests/_safety.py` install a package-level safety bootstrap before any
+test module is imported: a disposable per-process temp directory that
+every production persistent-store path constant is redirected into, an
+external-network firewall at the stdlib `socket` layer (loopback only;
+everything else raises `tests._safety.ExternalNetworkBlocked` before DNS
+or a real connection), a secondary `httpx` tripwire, and
+browser/computer-use tripwires. Full detail: `ARCHITECTURE.md` §18. This
+does **not** replace per-file `setUp`/`tearDown` redirects — keep adding
+those for any new file-backed store (a new `SOMETHING_FILE` module-level
+path) **and** add it to `tests/_safety.py`'s central redirect list; a
+past gap here (executor-integration tests isolating
+`HISTORY_FILE`/`STATE_FILE` but not the newer `USAGE_FILE`) caused real
+test-artifact pollution of the live user's actual usage history before
+the central bootstrap existed. If a function defaults a path parameter
+directly to a module-level constant (`def f(path=SOME_FILE)`), that
+default is bound at function-definition time and will NOT pick up a
+later redirect of `SOME_FILE` — this bit `agent/history_store.py` and
+`agent/personal_context.py` for real during the S1 pass; the fix is
+always to default to `None` and read the constant inside the function
+body instead.
 
 For a live (non-mocked, real API) smoke test, prefer the cheapest real
 path that proves the thing works — e.g. an unregistered-agent-name
 subprocess call proves the worker/subprocess plumbing without needing a
 real model call. Be mindful of real API cost; this project's whole
-Phase 8 exists because of a real, confusing cost overrun.
+Phase 8 exists because of a real, confusing cost overrun. For a real
+Keychain smoke test specifically, use `python -m
+tools.keychain_smoke_test` (opt-in, never run by the canonical suite or
+CI, uses its own service namespace and synthetic credentials only).
 
 ## Rules for modifying existing architecture
 

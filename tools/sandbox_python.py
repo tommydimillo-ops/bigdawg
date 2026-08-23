@@ -21,7 +21,12 @@ MAX_OUTPUT = 4000
 # network, but code run here could still read other files on this Mac if
 # specifically told to — don't run untrusted code that has a reason to go
 # looking for secrets.
-SANDBOX_PROFILE = f"""(version 1)
+def _sandbox_profile():
+    # Built from the current SANDBOX_DIR at call time, not baked in as a
+    # module-level string -- SANDBOX_DIR must stay redirectable (e.g. by
+    # tests) without leaving behind a stale allow-path from whatever
+    # value was live at import time.
+    return f"""(version 1)
 (allow default)
 (deny network*)
 (deny file-write*)
@@ -30,13 +35,14 @@ SANDBOX_PROFILE = f"""(version 1)
     (subpath "/dev"))
 """
 
+
 _NOISE_MARKERS = ("xcrun_db", "couldn't create cache file")
 
 
 def _ensure_profile():
     os.makedirs(SANDBOX_DIR, exist_ok=True)
     with open(PROFILE_PATH, "w") as file:
-        file.write(SANDBOX_PROFILE)
+        file.write(_sandbox_profile())
 
 
 def _clean_stderr(stderr):

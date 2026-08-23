@@ -5,7 +5,68 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-23 (latest) — Phase 9 / M4.2: deterministic history capture (BUILT, TESTED, UNCOMMITTED)
+### 2026-08-23 (latest) — Phase 9 Reliability S1: structurally safe test harness (BUILT, TESTED, UNCOMMITTED)
+
+- **Objective**: fix, at the root, the test-isolation gap M4.2's pass
+  found (`tests/__init__.py`'s central guard not executing under the old
+  canonical command) rather than continuing to rely only on per-file
+  redirects, and redirect every production persistent store (not just
+  the ones a prior pass happened to catch), following an earlier
+  read-only project-wide reliability audit's recommendation.
+- **Work completed**: canonical command changed to `python -m unittest
+  discover -s tests -t . -v`. New `tests/_safety.py` installed once by a
+  rewritten `tests/__init__.py`: disposable per-process temp run root;
+  redirect of 19 production path constants into it; a `socket`-level
+  external-network firewall (loopback only); a secondary `httpx`
+  tripwire; poisoned-by-default browser/computer-use tripwires. New
+  `tests/test_test_safety.py` (49 meta-tests). New opt-in
+  `tools/keychain_smoke_test.py`.
+- **Problems encountered — four real, self-caught issues, not
+  user-reported**:
+  1. Case-sensitivity bug: the new temp-root prefix was lowercase,
+     breaking a pre-existing test's substring assertion. Fixed by
+     matching the real "CampusPilot" capitalization.
+  2. A real macOS Keychain API error (`(100028, 'Unknown Error')`) hit
+     during a full-suite run, even under a distinctly-named test
+     service — no GUI available to answer the access-control prompt in
+     this non-interactive session. Fixed by mocking
+     `tools.credential_store.keyring` directly in the one test that
+     needs to exercise that logic, confirming the audit's predicted
+     CI/automation-hang risk was real, not theoretical.
+  3. Three production bugs of the same class ("captured a path constant
+     at definition time instead of reading it dynamically"):
+     `tools/sandbox_python.py`'s Seatbelt profile string, and
+     `agent/history_store.py`/`agent/personal_context.py`'s path-
+     defaulting functions. Found while writing a meta-test that (like a
+     real future test reasonably might) relied on a function's own
+     default instead of passing the path explicitly. Fixed by reading
+     the constant dynamically inside each function body instead of
+     capturing it in the signature.
+  4. A real in-sandbox write was spuriously denied by the actual kernel
+     Seatbelt policy after redirecting `SANDBOX_DIR` to a temp path —
+     traced to macOS's default temp root being a symlink
+     (`/var/folders/...` → `/private/var/folders/...`), which
+     `sandbox-exec` resolves before matching `subpath` rules. Fixed by
+     resolving the run root through `os.path.realpath()` once.
+  5. SQLite `disk I/O error`/`HistoryBusy` flakiness, confined entirely
+     to `tests.test_history_store`, on repeated full-suite runs (22
+     failures on one, 42 on a later one) — traced to this Mac's disk
+     being at ~99% capacity and trending down over the session (free
+     space observed fluctuating ~130-200Mi). Confirmed environmental,
+     not a code bug: the same module flipped between a clean isolated
+     pass and isolated failures purely as free space changed, and no
+     other module was ever affected. Also a real, unaddressed risk to
+     the live production app's own `history.db` writes — flagged to the
+     user, not fixed (out of scope; not a code change).
+- **Verification**: full suite achieved a clean 1417/1417 pass mid-pass
+  under the new canonical command (see finding 5 above for why later
+  runs flaked); production-store metadata unchanged before/after across
+  every run, including the flaky ones; external
+  network firewall independently reconfirmed outside the test suite
+  (real external IP connect attempt blocked in 0.0001s). Not committed —
+  pending review. Do not start M4.3 until this pass is reviewed.
+
+### 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 
 - **Objective**: With M4.1 reviewed, committed (`cd13e2a`), pushed, and
   CI-verified, make `agent/history_store.py` operational by wiring real,

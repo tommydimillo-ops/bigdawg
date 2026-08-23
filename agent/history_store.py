@@ -496,24 +496,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("COMMIT")
 
 
-def initialize_history_store(db_path: str = HISTORY_DB) -> None:
+def initialize_history_store(db_path: Optional[str] = None) -> None:
     """The only function callers need to invoke explicitly to create a
     database file that didn't already exist -- though every write
     function below also self-initializes via _connect_writable, so this
     is mainly useful for a caller that wants to force creation/
     validation up front without also writing a row. Safe to call
     repeatedly/concurrently."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     _connect_writable(db_path).close()
 
 
 # --- Sessions ------------------------------------------------------------
 
-def create_session(source: str, session_id: Optional[str] = None, db_path: str = HISTORY_DB) -> SessionRecord:
+def create_session(source: str, session_id: Optional[str] = None, db_path: Optional[str] = None) -> SessionRecord:
     """Idempotent when `session_id` is explicitly supplied and already
     exists WITH a matching source -- returns the existing record rather
     than creating a duplicate or silently overwriting it. A conflicting
     source for an existing session_id is a validation error, never a
     silent overwrite."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     source = _validate_source(source)
     if session_id is not None:
         session_id = _validate_id(session_id, "session_id", required=True)
@@ -551,10 +553,11 @@ def create_session(source: str, session_id: Optional[str] = None, db_path: str =
         conn.close()
 
 
-def close_session(session_id: str, db_path: str = HISTORY_DB) -> bool:
+def close_session(session_id: str, db_path: Optional[str] = None) -> bool:
     """Marks a session's ended_at. Returns False if the session doesn't
     exist rather than raising -- closing an already-closed or unknown
     session is not exceptional the way a malformed input is."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     session_id = _validate_id(session_id, "session_id", required=True)
     conn = _connect_writable(db_path)
     try:
@@ -577,13 +580,14 @@ def close_session(session_id: str, db_path: str = HISTORY_DB) -> bool:
 # --- Turns -----------------------------------------------------------------
 
 def record_turn(
-    session_id: str, role: str, content: str, request_id: Optional[str] = None, db_path: str = HISTORY_DB,
+    session_id: str, role: str, content: str, request_id: Optional[str] = None, db_path: Optional[str] = None,
 ) -> TurnRecord:
     """Redacts, then bounds, then persists -- in that order, always. The
     unredacted form of `content` never reaches sqlite3.execute(). If
     (request_id, role) was already recorded (request_id not None), this
     returns the EXISTING row's metadata rather than creating a second
     one -- see the idx_turn_request_role partial unique index."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     session_id = _validate_id(session_id, "session_id", required=True)
     role = _validate_role(role)
     request_id = _validate_id(request_id, "request_id", required=False)
@@ -643,8 +647,9 @@ def record_turn(
 
 # --- Status ------------------------------------------------------------
 
-def history_status(db_path: str = HISTORY_DB) -> HistoryStatus:
+def history_status(db_path: Optional[str] = None) -> HistoryStatus:
     """Read-only, never creates db_path (see _connect_readonly)."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     try:
         conn = _connect_readonly(db_path)
     except HistoryUnavailable:
@@ -699,10 +704,11 @@ def search_history(
     role: Optional[str] = None,
     session_id: Optional[str] = None,
     max_results: int = _DEFAULT_SEARCH_RESULTS,
-    db_path: str = HISTORY_DB,
+    db_path: Optional[str] = None,
 ) -> List[SearchResult]:
     """Read-only, never creates db_path. Raises HistoryUnavailable if no
     usable database exists -- distinct from a real, empty result set."""
+    db_path = db_path if db_path is not None else HISTORY_DB
     if source is not None:
         source = _validate_source(source)
     if role is not None:

@@ -125,7 +125,7 @@ not a mock, unless it needs a paid API call).
 ## 6. Verify
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 python3 -c "from agent.executor import execute_task; print(execute_task('use my new tool'))"
 ```
 

@@ -7,7 +7,100 @@ needed.
 
 ---
 
-## 2026-08-23 (most recent) — Phase 9 / M4.2: deterministic history capture (built, tested, UNCOMMITTED)
+## 2026-08-23 (most recent) — Phase 9 Reliability S1: structurally safe test harness (built, tested, UNCOMMITTED)
+
+**What**: fixes, at the root, the test-isolation gap M4.2's own pass
+found and worked around with per-file redirects only (see that entry
+below): `tests/__init__.py`'s package-level guard did not reliably
+execute under the canonical suite command of the time. The canonical
+command is now `python -m unittest discover -s tests -t . -v` — the
+`-t .` flag is what makes `discover` import `tests` as a real package
+and run `tests/__init__.py` before any test module. New
+`tests/_safety.py`, installed once by a rewritten `tests/__init__.py`,
+provides a disposable per-process temp run root (`tempfile.mkdtemp()`,
+resolved through `os.path.realpath()`); a redirect of every production
+persistent-store path constant into it (19 constants across `agent/`,
+`tools/`, and `database/`); an external-network firewall at the stdlib
+`socket` layer (loopback only, everything else raises
+`ExternalNetworkBlocked` before DNS/connection); a secondary `httpx`
+transport tripwire; and poisoned-by-default
+`tools.browser.sync_playwright`/`tools.computer_use.pyautogui`
+tripwires. Existing per-file `setUp`/`tearDown` redirects are untouched,
+real defense-in-depth, not made redundant.
+
+**Three real production bugs found and fixed**, all the "captured a
+production path at definition time instead of reading it dynamically"
+class the audit predicted: `tools/sandbox_python.py`'s Seatbelt profile
+string was a module-level f-string baking in `SANDBOX_DIR`'s import-time
+value, now built fresh inside `_ensure_profile()` per call;
+`agent/history_store.py`'s six public functions
+(`initialize_history_store`, `create_session`, `close_session`,
+`record_turn`, `history_status`, `search_history`) and
+`agent/personal_context.py`'s `save_catalog`/`load_catalog` defaulted
+their path parameter directly to a module constant, bound at
+function-definition time — all now default to `None` and read the
+constant inside the function body. Every existing caller (including
+production's own `agent/history_capture.py`) already passed the path
+explicitly, so none of these were live bugs before this pass; they were
+latent traps this pass's own new meta-tests caught by relying on the
+default, the way a future test reasonably might.
+
+**One real macOS-specific bug found in the harness itself**:
+`tempfile.mkdtemp()`'s default temp root is a symlink
+(`/var/folders/...` → `/private/var/folders/...`); `sandbox-exec`
+resolves `subpath` rules against the canonical form, so a profile
+written with the symlinked form spuriously denied a legitimate
+in-sandbox write until the run root was resolved through
+`os.path.realpath()` once, upstream of every derived path.
+
+**Keychain**: confirmed (again) that even a distinctly-named test
+Keychain service can raise a real
+`keyring.backends.macOS.api.Error` in a non-interactive session (no GUI
+for the access-control prompt) — `tests/test_safety.py`'s
+`TestConfirmLoginGate` now mocks `tools.credential_store.keyring`
+directly. New `tools/keychain_smoke_test.py`: an opt-in, own-namespace,
+synthetic-credentials-only script for manually verifying the real
+Keychain seam — never run automatically by the canonical suite or CI,
+not run during this pass.
+
+**Verification**: full suite achieved a clean 1417 passed, 0 failed run
+mid-pass. This Mac's disk reached complete exhaustion during this pass
+(0 bytes free at one point) after fluctuating around ~99%/130-200Mi free
+earlier — later re-runs before recovery hit SQLite `disk I/O error`/
+`HistoryBusy` failures confined entirely to `tests.test_history_store`
+(22 on one re-run, 42 on a later one, worsening as free space shrank
+further; never any other module). Confirmed environmental, not a code
+defect: the same module flipped between a clean isolated pass and
+isolated failures purely as disk space changed. **Resolved** in a same-
+day finalization pass: freed ~9.4GiB using only disposable, reconstructible
+caches (Homebrew/pip/uv/npm caches, browser cache), reaching 13GiB free
+with zero personal data touched; two subsequent full-suite runs both
+passed cleanly. This remains a real risk class for the live production
+app's own `history.db` writes, independent of this test pass — a
+disk-space health check is recorded as a future idea in `ROADMAP.md`,
+not built now. Production-
+store metadata (existence/size/mtime, never content) snapshotted before
+and after across every run in this pass, including the flaky ones: zero
+differences every time — the redirect happens before any test runs, so
+a test failing afterward from disk I/O never had a chance to reach a
+real path. Network firewall independently re-verified outside the
+suite: loopback connects succeed,
+a deliberate connect to a real external IP raises
+`ExternalNetworkBlocked` in 0.0001s. New `tests/test_test_safety.py` — 49
+meta-tests. `agent/memory/manager.py::search_scored()`'s `last_accessed`
+write-back-on-read behavior was reconfirmed but deliberately not
+changed — see `ROADMAP.md`'s "Next" section.
+
+**Touched**: new `tests/_safety.py`, `tests/test_test_safety.py`,
+`tools/keychain_smoke_test.py`; modified `tests/__init__.py`,
+`tests/test_safety.py`, `.github/workflows/tests.yml`,
+`agent/history_store.py`, `agent/personal_context.py`,
+`tools/sandbox_python.py`, plus documentation
+(`CLAUDE.md`/`ARCHITECTURE.md`/`ROADMAP.md`/`HANDOFF.md`/
+`SESSION_LOG.md`). Not committed or pushed — pending user review. M4.3
+not started.
+
+## 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 
 **What**: The second implementation slice of Phase 9 / M4 (Conversation &
 History Intelligence) — makes `agent/history_store.py` (M4.1, committed
