@@ -14,6 +14,7 @@ db_path and falls back to the module-level default.
 
 Run with: python -m unittest tests.test_history_store -v
 """
+import multiprocessing
 import os
 import shutil
 import sqlite3
@@ -48,6 +49,23 @@ FAKE_AWS_KEY = "AKIA" + "Q" * 16
 FAKE_GITHUB_TOKEN = "ghp_" + "b" * 40
 
 
+def _multiprocess_init_worker(db_path, barrier, result_queue):
+    """Module-level (not a closure) so it's picklable under macOS's
+    default 'spawn' multiprocessing start method -- each call is a
+    genuinely separate OS process/interpreter, not a thread, matching
+    production's real concurrent-initializer scenario (menu-bar app,
+    scheduler daemon, Streamlit are independent processes). db_path is
+    always passed explicitly; this never touches agent.history_store's
+    module-level HISTORY_DB default."""
+    import agent.history_store as _history_store
+    try:
+        barrier.wait(timeout=10)
+        _history_store.initialize_history_store(db_path=db_path)
+        result_queue.put(None)
+    except Exception as e:
+        result_queue.put(repr(e))
+
+
 class IsolatedHistoryDbTestCase(unittest.TestCase):
     """Every test gets its own temp directory and an explicit db_path --
     never the module-level HISTORY_DB default -- plus a guard asserting
@@ -68,6 +86,52 @@ class IsolatedHistoryDbTestCase(unittest.TestCase):
             self._real_history_db_existed,
             "a test touched the real production history.db",
         )
+
+    def _assert_schema_v1_fully_intact(self, db_path):
+        """Full post-condition check after concurrent initialization --
+        not just "no exception," but that exactly one valid, complete,
+        privacy-correct schema exists: every table/index/trigger, WAL
+        active, FTS5 secure-delete enabled, and the database reopens
+        cleanly afterward."""
+        conn = sqlite3.connect(db_path)
+        try:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], history_store.SCHEMA_VERSION)
+            self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+
+            names = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index', 'trigger')"
+                ).fetchall()
+            }
+            for expected in (
+                "history_session", "history_turn", "history_turn_fts",
+                "idx_turn_session_id", "idx_turn_request_id", "idx_turn_created_at",
+                "idx_turn_role", "idx_turn_request_role",
+                "history_turn_ai", "history_turn_ad", "history_turn_au",
+            ):
+                self.assertIn(expected, names)
+
+            fts_config = dict(conn.execute("SELECT k, v FROM history_turn_fts_config").fetchall())
+            self.assertEqual(fts_config.get("secure-delete"), 1)
+        finally:
+            conn.close()
+
+        # Core secure_delete is a per-connection PRAGMA (never persisted
+        # in the file the way journal_mode is), so a race in setup could
+        # in principle have left a production write path not setting it
+        # -- proven here via a brand-new connection through the real
+        # _connect_writable(), the same one every real caller uses.
+        write_conn = history_store._connect_writable(db_path)
+        try:
+            self.assertTrue(write_conn.execute("PRAGMA secure_delete").fetchone()[0])
+        finally:
+            write_conn.close()
+
+        # A fresh connection/reopen must succeed cleanly -- proves no
+        # partial/corrupt schema was left behind.
+        status = history_status(db_path=db_path)
+        self.assertTrue(status.available)
+        self.assertEqual(status.schema_version, history_store.SCHEMA_VERSION)
 
 
 class TestImportIsSideEffectFree(unittest.TestCase):
@@ -568,22 +632,65 @@ class TestErrorSemanticsDistinctness(IsolatedHistoryDbTestCase):
 class TestConcurrency(IsolatedHistoryDbTestCase):
 
     def test_concurrent_initialization_is_safe(self):
+        """Barrier-synchronized (never sleep-based) so every thread hits
+        the PRAGMA/schema-creation critical section at the same instant --
+        this is what actually stresses the race, unlike simply starting
+        threads in a loop (Thread.start() overhead alone spreads out real
+        start times enough to mostly miss the window). 16 threads against
+        one brand-new database, matching the real production scenario:
+        the menu-bar app, the scheduler daemon, and the Streamlit process
+        are independent OS processes that may legitimately race to
+        initialize history.db on first use."""
+        n_threads = 16
         errors = []
+        barrier = threading.Barrier(n_threads)
 
         def init():
             try:
+                barrier.wait(timeout=10)
                 initialize_history_store(db_path=self.db_path)
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=init) for _ in range(8)]
+        threads = [threading.Thread(target=init) for _ in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=10)
+
         self.assertEqual(errors, [])
-        status = history_status(db_path=self.db_path)
-        self.assertTrue(status.available)
+        self._assert_schema_v1_fully_intact(self.db_path)
+
+    def test_concurrent_initialization_is_safe_across_repeated_fresh_databases(self):
+        """Bounded repeated-round coverage (Phase 9 Reliability S1.1) --
+        the race this guards against was empirically rare (order of 1 in
+        a few hundred attempts under 12-way contention), so a single
+        round is not reliable regression coverage on its own. Several
+        rounds against brand-new databases, kept fast (well under a
+        second per round in practice) rather than a long stress suite."""
+        n_rounds = 15
+        n_threads = 12
+        for round_index in range(n_rounds):
+            db_path = os.path.join(self._tmpdir, f"round_{round_index}.db")
+            errors = []
+            barrier = threading.Barrier(n_threads)
+
+            def init():
+                try:
+                    barrier.wait(timeout=10)
+                    initialize_history_store(db_path=db_path)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=init) for _ in range(n_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            self.assertEqual(errors, [], f"round {round_index} failed")
+            status = history_status(db_path=db_path)
+            self.assertTrue(status.available)
 
     def test_concurrent_distinct_writes_do_not_corrupt(self):
         create_session("chat", session_id="s1", db_path=self.db_path)
@@ -629,6 +736,120 @@ class TestConcurrency(IsolatedHistoryDbTestCase):
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         conn.close()
         self.assertEqual(mode.lower(), "wal")
+
+    def test_concurrent_initialization_across_real_separate_processes(self):
+        """The race this guards against (SQLITE_BUSY from PRAGMA
+        journal_mode=WAL's one-time transition) is a SQLite/filesystem-
+        level lock, not a Python GIL/shared-memory artifact -- confirmed
+        by reproducing it with plain threads, which never contend for the
+        GIL during a blocking C-level sqlite3 call. Real separate OS
+        processes are the production-realistic case (menu-bar app,
+        scheduler daemon, Streamlit), so this exercises the actual
+        boundary directly rather than only inferring it from the
+        thread-based tests above."""
+        n_processes = 4
+        barrier = multiprocessing.Barrier(n_processes)
+        result_queue = multiprocessing.Queue()
+        processes = [
+            multiprocessing.Process(target=_multiprocess_init_worker, args=(self.db_path, barrier, result_queue))
+            for _ in range(n_processes)
+        ]
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join(timeout=15)
+
+        results = [result_queue.get(timeout=5) for _ in range(n_processes)]
+        errors = [r for r in results if r is not None]
+        self.assertEqual(errors, [])
+        for p in processes:
+            self.assertEqual(p.exitcode, 0)
+
+        self._assert_schema_v1_fully_intact(self.db_path)
+
+
+class TestHistoryBusySemantics(IsolatedHistoryDbTestCase):
+    """HistoryBusy must remain the exception a caller actually sees for a
+    genuinely-locked-longer-than-the-deadline condition -- never a raw
+    sqlite3.OperationalError, never HistoryCorruption/HistorySchemaError
+    (both real, distinct failure classes that must never be conflated
+    with contention), and never silently retried forever."""
+
+    def test_set_journal_mode_wal_retries_transient_busy_then_succeeds(self):
+        # A real SQLITE_BUSY on the first two attempts, succeeding on the
+        # third -- proves the retry loop actually retries rather than
+        # failing (or succeeding) on the very first attempt only.
+        busy_error = sqlite3.OperationalError("database is locked")
+        busy_error.sqlite_errorcode = history_store._SQLITE_BUSY
+        attempts = {"count": 0}
+
+        class _FakeConn:
+            def execute(self, sql):
+                attempts["count"] += 1
+                if attempts["count"] < 3:
+                    raise busy_error
+
+        with patch.object(history_store, "_WAL_INIT_RETRY_INTERVAL_SECONDS", 0.001):
+            history_store._set_journal_mode_wal(_FakeConn())
+
+        self.assertEqual(attempts["count"], 3)
+
+    def test_set_journal_mode_wal_raises_history_busy_after_deadline_exceeded(self):
+        busy_error = sqlite3.OperationalError("database is locked")
+        busy_error.sqlite_errorcode = history_store._SQLITE_BUSY
+
+        class _AlwaysBusyConn:
+            def execute(self, sql):
+                raise busy_error
+
+        # Deadline patched to near-zero so this test stays fast without
+        # weakening the production _BUSY_TIMEOUT_MS value itself.
+        with patch.object(history_store, "_BUSY_TIMEOUT_MS", 1), \
+             patch.object(history_store, "_WAL_INIT_RETRY_INTERVAL_SECONDS", 0.001):
+            with self.assertRaises(HistoryBusy):
+                history_store._set_journal_mode_wal(_AlwaysBusyConn())
+
+    def test_set_journal_mode_wal_never_retries_a_non_busy_operational_error(self):
+        # A real disk I/O failure (or any other non-SQLITE_BUSY
+        # OperationalError) must propagate immediately -- retrying this
+        # class of error would be actively wrong, not just unnecessary.
+        disk_error = sqlite3.OperationalError("disk I/O error")
+        disk_error.sqlite_errorcode = 10  # SQLITE_IOERR, not SQLITE_BUSY
+
+        class _DiskFailureConn:
+            def execute(self, sql):
+                raise disk_error
+
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            history_store._set_journal_mode_wal(_DiskFailureConn())
+        self.assertIs(ctx.exception, disk_error)
+
+    def test_genuinely_held_write_lock_raises_history_busy_not_a_raw_error(self):
+        """End-to-end, real SQLite: a separate connection genuinely holds
+        the write lock (BEGIN IMMEDIATE, never committed) while a second
+        writer tries to initialize/write against the same database.
+        Proves the pre-existing _begin_immediate -> HistoryBusy path
+        actually behaves this way for real -- it was previously only
+        checked structurally (HistoryBusy is-a HistoryStoreError), never
+        exercised against a genuine held lock."""
+        initialize_history_store(db_path=self.db_path)
+
+        holder = sqlite3.connect(self.db_path, isolation_level=None)
+        holder.execute(f"PRAGMA busy_timeout = {history_store._BUSY_TIMEOUT_MS}")
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            with patch.object(history_store, "_BUSY_TIMEOUT_MS", 200):
+                with self.assertRaises(HistoryBusy):
+                    create_session("chat", db_path=self.db_path)
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        # Lock released -- a normal write must now succeed cleanly, and
+        # nothing about the schema/privacy configuration was disturbed by
+        # the failed attempt above.
+        create_session("chat", session_id="after-lock-released", db_path=self.db_path)
+        self._assert_schema_v1_fully_intact(self.db_path)
 
 
 class TestTransactionIntegrity(IsolatedHistoryDbTestCase):

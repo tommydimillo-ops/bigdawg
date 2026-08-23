@@ -655,6 +655,45 @@ the same pattern `agent/personal_context.py` established — which
 structurally cannot create a missing database file, so the read-only
 surface provably has no creation side effects.
 
+**Concurrent first-use initialization (Phase 9 Reliability S1.1)**: the
+first S1 CI run exposed a real, intermittent `sqlite3.OperationalError:
+database is locked` under concurrent first-time initialization — a
+genuine production concern, since multiple real Jarvis processes (the
+menu-bar app, the scheduler daemon, a Streamlit session) can legitimately
+race to be the first to touch a not-yet-existing `history.db`. Root
+cause, found by isolating each PRAGMA statement individually under
+barrier-synchronized thread contention: `PRAGMA journal_mode=WAL`'s
+one-time transition (creating a brand-new database's `-wal`/`-shm` files
+the first time anything switches it out of SQLite's default
+rollback-journal mode) takes its own internal exclusive lock that does
+not reliably honor the connection's `busy_timeout` the way an ordinary
+statement does — confirmed via `sqlite_errorcode == 5` (`SQLITE_BUSY`)
+on every reproduction, and confirmed to be exactly this one statement by
+isolating every other PRAGMA in the same setup sequence (zero failures
+there across 1800+ attempts). No other statement in `_connect_writable`
+exhibited this. Fixed with the smallest correct scope: `_set_journal_
+mode_wal()` wraps only this one PRAGMA in a bounded retry — narrowly
+matched to `sqlite_errorcode == SQLITE_BUSY` specifically (a real disk
+I/O failure or any other `OperationalError` still propagates
+immediately, never retried), bounded by the same window `busy_timeout`
+already promises callers, raising the same `HistoryBusy` a caller would
+see from a locked `BEGIN IMMEDIATE` elsewhere in this module if that
+window is genuinely exceeded. No PRAGMA/transaction reordering, no
+change to `busy_timeout`'s value, no change to any durability/privacy
+setting. Verified via a 2400-attempt barrier-synchronized stress
+reproduction (0 failures with the fix, versus a real, reproducible
+failure rate without it) and measured to add no material first-use
+delay (~0.18ms mean overhead in the uncontended case). Regression
+coverage: `tests/test_history_store.py`'s `TestConcurrency` (a stronger,
+barrier-synchronized version of the original concurrent-initialization
+test, a bounded repeated-round version, and a real multi-process
+version using separate OS processes) and a new `TestHistoryBusySemantics`
+class (the retry-then-succeed, retry-then-`HistoryBusy`, and
+never-retry-a-non-busy-error paths in isolation, plus the first
+end-to-end test of a genuinely held write lock actually surfacing
+`HistoryBusy` rather than a raw error — this path existed since M4.1 but
+was previously only checked structurally, never exercised for real).
+
 **Two-layer secure deletion**: a single hardening pass over M4.1 found
 that the core pragma above is not sufficient on its own. Two
 independent layers are both required:

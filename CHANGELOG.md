@@ -7,7 +7,7 @@ needed.
 
 ---
 
-## 2026-08-23 (most recent) — Phase 9 Reliability S1: structurally safe test harness (built, tested, UNCOMMITTED)
+## 2026-08-23 — Phase 9 Reliability S1: structurally safe test harness (`e46f5bd`)
 
 **What**: fixes, at the root, the test-isolation gap M4.2's own pass
 found and worked around with per-file redirects only (see that entry
@@ -97,8 +97,76 @@ changed — see `ROADMAP.md`'s "Next" section.
 `agent/history_store.py`, `agent/personal_context.py`,
 `tools/sandbox_python.py`, plus documentation
 (`CLAUDE.md`/`ARCHITECTURE.md`/`ROADMAP.md`/`HANDOFF.md`/
-`SESSION_LOG.md`). Not committed or pushed — pending user review. M4.3
-not started.
+`SESSION_LOG.md`). Committed as `e46f5bd` ("Harden test isolation and
+block external network"), pushed, CI-verified (GitHub Actions run
+`32653067541` — first attempt failed on one pre-existing flaky test
+unrelated to this pass's own diff, `test_concurrent_initialization_is_safe`;
+a re-run of the identical commit succeeded, 1417/1417; root-caused and
+fixed for real by the S1.1 entry below). M4.3 not started.
+
+## 2026-08-23 (most recent) — Phase 9 Reliability S1.1: history store concurrent initialization determinism (built, tested, UNCOMMITTED)
+
+**What**: root-causes and deterministically fixes the exact flaky test
+S1's first CI attempt hit (see entry above) — a real production
+concern, not just a test artifact, since multiple real Jarvis processes
+(menu-bar app, scheduler daemon, Streamlit) can legitimately race to be
+the first to initialize a not-yet-existing `history.db`.
+
+**Root cause**, found empirically: isolated every PRAGMA statement in
+`agent/history_store.py`'s `_connect_writable()` individually under
+barrier-synchronized thread contention (reproduced with a standalone
+script before touching production code). `PRAGMA journal_mode=WAL`'s
+one-time transition — creating a brand-new database's `-wal`/`-shm`
+files the first time anything switches it out of SQLite's default
+rollback-journal mode — takes its own internal exclusive lock that does
+not reliably honor the connection's `busy_timeout` the way an ordinary
+statement does. Confirmed via `sqlite_errorcode == 5` (`SQLITE_BUSY`) on
+every reproduction: 7 failures / 1800 attempts isolating each PRAGMA,
+all seven at `journal_mode`, zero at `busy_timeout`/`foreign_keys`/
+`synchronous`/`secure_delete`. This is documented, real SQLite behavior,
+not specific to this project's code.
+
+**Fix**: new `_set_journal_mode_wal()` wraps only this one PRAGMA in a
+bounded retry, narrowly matched to `sqlite_errorcode == SQLITE_BUSY`
+specifically — any other `OperationalError` (a real disk I/O failure,
+for instance) still propagates immediately, never retried. Bounded by
+the same window `_BUSY_TIMEOUT_MS` already promises callers (5000ms);
+exceeding it raises the same `HistoryBusy` a caller would see from a
+locked `BEGIN IMMEDIATE` elsewhere in this module. No PRAGMA/transaction
+reordering, no change to `busy_timeout`'s value, no durability/privacy
+setting weakened.
+
+**Verification**: a 2400-attempt barrier-synchronized stress
+reproduction using the real production code path: 0 failures with the
+fix (versus a real, reproducible failure rate without it). Measured
+overhead in the uncontended case: ~0.18ms mean — not material.
+`tests.test_history_store` run 10 consecutive times, all clean (89/89,
+up from 83). Full canonical suite run three consecutive times, all
+clean (1423/1423, up from 1417). Production-store metadata unchanged
+before/after; real `history.db` still does not exist.
+
+**New regression coverage**, all in `tests/test_history_store.py`:
+`TestConcurrency.test_concurrent_initialization_is_safe` rewritten to
+use `threading.Barrier` (never sleep-based) with 16 threads and full
+post-condition validation (schema v1, every table/index/trigger, WAL
+active, FTS5 secure-delete==1, core secure_delete==ON, clean reopen)
+instead of just "no exception raised"; a bounded repeated-round version
+(15 rounds × 12 threads); a real multi-process version (4 separate OS
+processes via `multiprocessing`, confirmed necessary since the race is
+a genuine SQLite/filesystem-level lock, not a Python GIL artifact). New
+`TestHistoryBusySemantics` class: retry-then-succeed,
+retry-then-`HistoryBusy`-after-deadline, never-retry-a-non-SQLITE_BUSY-
+error (via a fake connection, fast and deterministic), plus the
+first-ever end-to-end test of a genuinely held write lock actually
+surfacing `HistoryBusy` — this path existed since M4.1 but was
+previously checked only structurally, never exercised against a real
+held lock.
+
+**Touched**: `agent/history_store.py` (the fix),
+`tests/test_history_store.py` (regression coverage), plus documentation
+(`ARCHITECTURE.md`/`CHANGELOG.md`/`SESSION_LOG.md`/`HANDOFF.md`/
+`ROADMAP.md`). Not committed or pushed — pending user review. M4.3 not
+started.
 
 ## 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 

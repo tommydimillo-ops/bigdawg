@@ -384,15 +384,22 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   at the time by extending per-file isolation to every test file that
   exercises a real `execute_task_stream()` call, and fixed at the root
   afterward by the S1 pass below. See `ARCHITECTURE.md` §12b.
-- **Phase 9 Reliability S1 — Structurally Safe Test Harness**: see "In
-  progress" below.
-
-## In progress
-
-- **Phase 9 Reliability S1 — Structurally Safe Test Harness.** Built and
-  verified (`tests/_safety.py`, rewritten `tests/__init__.py`,
-  `tests/test_test_safety.py`, 49 new meta-tests) but **uncommitted,
-  pending user review**. Fixes the M4.2-era test-isolation gap at the
+- **Phase 9 Reliability S1 — Structurally Safe Test Harness** (`e46f5bd`)
+  ✅: built, verified (`tests/_safety.py`, rewritten `tests/__init__.py`,
+  `tests/test_test_safety.py`, 49 new meta-tests), committed as
+  "Harden test isolation and block external network", pushed, and
+  CI-verified (GitHub Actions run `32653067541` — the first attempt
+  failed on one pre-existing, S1-unrelated flaky test,
+  `test_concurrent_initialization_is_safe`, under real SQLite lock
+  contention; a re-run of the same commit succeeded, 1417/1417; the
+  underlying root cause was later found and fixed for real by the
+  S1.1 follow-up, see "In progress" below). The disk-space exhaustion
+  this pass found and flagged was resolved during finalization by
+  freeing ~9.4GiB of disposable, reconstructible caches (Homebrew/pip/
+  uv/npm caches, browser cache) — zero personal data touched. Graphify
+  refreshed against the merged commit (3514 nodes, 7421 edges, 172
+  communities, `built_at_commit` matching HEAD, `state: fresh`). Fixes
+  the M4.2-era test-isolation gap at the
   root: the canonical full-suite command changed to
   `python -m unittest discover -s tests -t . -v` (the `-t .` is what
   actually makes `discover` trigger `tests/__init__.py`), which now
@@ -429,6 +436,33 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   including read-only ones — a real production-quality question (should
   this remain persisted, be batched, become optional, or become
   non-persistent?) still undecided; see "Next" below.
+
+## In progress
+
+- **Phase 9 Reliability S1.1 — History Store Concurrent Initialization
+  Determinism.** Built, tested, **uncommitted, pending user review**.
+  Root-caused and fixed the exact flaky test S1's CI run hit (see
+  above): `PRAGMA journal_mode=WAL`'s one-time transition on a
+  brand-new database takes an internal exclusive lock that does not
+  reliably honor `busy_timeout` — confirmed via `sqlite_errorcode ==
+  SQLITE_BUSY`, and confirmed to be exactly this one statement (not
+  `BEGIN IMMEDIATE`, not any other PRAGMA) by isolating each one
+  individually under barrier-synchronized thread contention. Fixed with
+  a narrowly-scoped bounded retry around only that one statement, only
+  for `SQLITE_BUSY` specifically — a real disk I/O failure or any other
+  `OperationalError` still propagates immediately. No PRAGMA reordering,
+  no durability/privacy setting weakened, ~0.18ms mean overhead in the
+  uncontended case (not material). Verified via a 2400-attempt
+  barrier-synchronized stress reproduction (0 failures with the fix).
+  New regression coverage: a stronger barrier-based version of the
+  original concurrent-initialization test, a bounded repeated-round
+  version, a real multi-process version (separate OS processes, matching
+  production's actual menu-bar/scheduler-daemon/Streamlit scenario), and
+  a new `TestHistoryBusySemantics` class exercising the retry-then-
+  succeed, retry-then-`HistoryBusy`, never-retry-a-non-busy-error, and
+  (for the first time) a genuinely held write lock actually surfacing
+  `HistoryBusy` end to end. Full design: `ARCHITECTURE.md` §12a. See
+  `HANDOFF.md` for exact file-level status.
 
 ## Next
 

@@ -75,6 +75,7 @@ surface can never have creation side effects.
 import os
 import re
 import sqlite3
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -104,6 +105,13 @@ _VALID_SOURCES = frozenset({"chat", "voice", "scheduled"})
 
 _BUSY_TIMEOUT_MS = 5000
 _CONNECT_TIMEOUT_SECONDS = 5
+
+# SQLite's own stable ABI value for SQLITE_BUSY -- part of SQLite's public
+# C API surface, never renumbered. Used to distinguish a genuine "another
+# connection has this locked" condition from any other OperationalError
+# (a real disk I/O failure, for instance), which must never be retried.
+_SQLITE_BUSY = 5
+_WAL_INIT_RETRY_INTERVAL_SECONDS = 0.05
 
 _MAX_SEARCH_RESULTS = 20
 _DEFAULT_SEARCH_RESULTS = 10
@@ -310,6 +318,40 @@ def _create_file_with_owner_only_permissions(path: str) -> None:
     os.chmod(path, 0o600)  # belt-and-suspenders against a widened umask
 
 
+def _set_journal_mode_wal(conn: sqlite3.Connection) -> None:
+    """PRAGMA journal_mode=WAL's one-time transition -- creating a brand-
+    new database's -wal/-shm files the first time anything switches it
+    out of SQLite's default rollback-journal mode -- takes its own
+    internal exclusive lock that does not reliably honor the connection's
+    busy_timeout the way an ordinary statement does. Empirically
+    reproduced (Phase 9 Reliability S1.1, following a real intermittent
+    CI failure): with 12 threads racing to be the first writer to open a
+    fresh database, this exact PRAGMA -- and no other statement in this
+    function, verified by isolating each one -- occasionally raised a raw
+    SQLITE_BUSY ("database is locked") well inside the busy_timeout
+    window already in effect on that connection. Bounded, narrowly-scoped
+    retry: only for this one operation, only for SQLITE_BUSY specifically
+    (error code 5, checked via sqlite_errorcode -- never a blind `except
+    OperationalError`, since a real disk I/O failure must still propagate
+    immediately), bounded by the same window the rest of this module's
+    busy_timeout already promises callers. Exceeding that window raises
+    the same HistoryBusy a caller would see from a locked BEGIN IMMEDIATE
+    elsewhere in this module -- "genuinely locked longer than the
+    configured deadline" is one meaningful condition regardless of which
+    statement hit it."""
+    deadline = time.monotonic() + (_BUSY_TIMEOUT_MS / 1000.0)
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if getattr(error, "sqlite_errorcode", None) != _SQLITE_BUSY:
+                raise
+            if time.monotonic() >= deadline:
+                raise HistoryBusy("history database is locked by another writer") from error
+            time.sleep(_WAL_INIT_RETRY_INTERVAL_SECONDS)
+
+
 def _connect_writable(db_path: str, *, ensure_schema: bool = True) -> sqlite3.Connection:
     """Every writable connection is guaranteed to have a valid, current
     schema (or to have already failed closed on a corrupt/too-new one)
@@ -325,7 +367,7 @@ def _connect_writable(db_path: str, *, ensure_schema: bool = True) -> sqlite3.Co
     conn = sqlite3.connect(db_path, timeout=_CONNECT_TIMEOUT_SECONDS, isolation_level=None)
     conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    _set_journal_mode_wal(conn)
     conn.execute("PRAGMA synchronous = FULL")
     conn.execute("PRAGMA secure_delete = ON")
     if ensure_schema:

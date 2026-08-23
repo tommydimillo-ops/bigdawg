@@ -5,7 +5,7 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
-### 2026-08-23 (latest) — Phase 9 Reliability S1: structurally safe test harness (BUILT, TESTED, UNCOMMITTED)
+### 2026-08-23 — Phase 9 Reliability S1: structurally safe test harness (`e46f5bd`)
 
 - **Objective**: fix, at the root, the test-isolation gap M4.2's pass
   found (`tests/__init__.py`'s central guard not executing under the old
@@ -63,8 +63,55 @@ Lightweight per-session record. Concise by design — for depth, see
   runs flaked); production-store metadata unchanged before/after across
   every run, including the flaky ones; external
   network firewall independently reconfirmed outside the test suite
-  (real external IP connect attempt blocked in 0.0001s). Not committed —
-  pending review. Do not start M4.3 until this pass is reviewed.
+  (real external IP connect attempt blocked in 0.0001s). Committed as
+  `e46f5bd` ("Harden test isolation and block external network"),
+  pushed, CI-verified — first CI attempt failed on the same
+  `test_concurrent_initialization_is_safe` flake described in finding 5
+  above (a different manifestation: real SQLite lock contention, not
+  disk exhaustion); a re-run of the identical commit succeeded
+  (1417/1417). Root-caused and fixed for real by the S1.1 entry below,
+  rather than left as "passed on retry."
+
+### 2026-08-23 (latest) — Phase 9 Reliability S1.1: history store concurrent initialization determinism (BUILT, TESTED, UNCOMMITTED)
+
+- **Objective**: a rerun passing was explicitly not accepted as
+  sufficient — find the exact cause of S1's intermittent
+  `test_concurrent_initialization_is_safe` CI failure and eliminate it
+  deterministically, since concurrent first-use initialization of
+  `history.db` is a real, legitimately-supported production scenario
+  (menu-bar app, scheduler daemon, and Streamlit are independent
+  processes that can race to initialize it).
+- **Root cause**, found empirically: isolated every PRAGMA statement in
+  `_connect_writable()` individually under barrier-synchronized thread
+  contention (reproduced with a standalone script first, before
+  touching production code — 5/1200 failures, then narrowed to 7/1800
+  with per-pragma isolation). `PRAGMA journal_mode=WAL`'s one-time
+  transition takes its own internal exclusive lock that does not
+  reliably honor the connection's `busy_timeout` — confirmed via
+  `sqlite_errorcode == 5` (`SQLITE_BUSY`) on every failure, and
+  confirmed to be this one statement specifically (zero failures on
+  `busy_timeout`/`foreign_keys`/`synchronous`/`secure_delete` across the
+  same 1800 attempts).
+- **Work completed**: new `_set_journal_mode_wal()` wraps only the
+  `journal_mode=WAL` PRAGMA in a bounded retry, matched narrowly to
+  `SQLITE_BUSY` (any other `OperationalError` still propagates
+  immediately). Bounded by the existing `_BUSY_TIMEOUT_MS` window;
+  exceeding it raises `HistoryBusy`, same as the pre-existing `BEGIN
+  IMMEDIATE` path. Verified with a 2400-attempt stress reproduction
+  using the real production code: 0 failures with the fix. Measured
+  overhead in the normal (uncontended) case: ~0.18ms mean — not
+  material. New tests: a barrier-based rewrite of the original
+  concurrency test with full post-condition validation, a bounded
+  repeated-round version, a real multi-process version (separate OS
+  processes, not just threads), and a new `TestHistoryBusySemantics`
+  class covering the retry logic in isolation plus the first-ever
+  end-to-end test of a genuinely held lock surfacing `HistoryBusy`.
+- **Verification**: `tests.test_history_store` run 10 consecutive times
+  (89/89 each, up from 83); full canonical suite run three consecutive
+  times (1423/1423 each, up from 1417); production-store metadata
+  unchanged before/after; real `history.db` still does not exist. Not
+  committed — pending review. Do not start M4.3 until this pass is
+  reviewed.
 
 ### 2026-08-23 — Phase 9 / M4.2: deterministic history capture (`c0d5fc5`)
 

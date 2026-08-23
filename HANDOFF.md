@@ -16,11 +16,17 @@ happened and this file was out of date until this update corrected it
 when they disagree). HEAD after M4.2 is `c0d5fc5`, which is this
 session's verified baseline.
 
-**Phase 9 Reliability S1 (Structurally Safe Test Harness) is built and
-tested but UNCOMMITTED** — see the dedicated "Phase 9 Reliability S1"
-section below for full detail before anything else in this file.
-Everything else in this paragraph and below describes prior,
-already-committed work. OpenClaw M1/M1.5/M2 (including the M2
+**Phase 9 Reliability S1 (Structurally Safe Test Harness) is now
+complete, committed (`e46f5bd`, "Harden test isolation and block
+external network"), pushed, and CI-verified** (GitHub Actions run
+`32653067541` — see that section below for the one-flaky-test/retry
+detail). **Phase 9 Reliability S1.1 (History Store Concurrent
+Initialization Determinism) is built and tested but UNCOMMITTED** — a
+narrow follow-up that root-causes and fixes the exact flaky test S1's
+CI run hit. See the dedicated "Phase 9 Reliability S1.1" section below
+for full detail before anything else in this file. Everything else in
+this paragraph and below describes prior, already-committed work.
+OpenClaw M1/M1.5/M2 (including the M2
 hardening/review pass) are all now **complete, committed, pushed, and
 CI-verified** — HEAD (before S1) is
 `d270dc461b15d8bd79e013032fea9ba05a674f87` ("Add permission-gated
@@ -170,7 +176,24 @@ historical record of the M4.2 pass.
   has reviewed and committed M4.2. See "Exact recommended next steps"
   below.
 
-## Phase 9 Reliability S1 — STRUCTURALLY SAFE TEST HARNESS ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+## Phase 9 Reliability S1 — STRUCTURALLY SAFE TEST HARNESS ✅ COMPLETE, COMMITTED (`e46f5bd`), PUSHED, CI-VERIFIED
+
+**This section previously said "BUILT, TESTED, UNCOMMITTED" — that went
+stale.** S1 was committed as `e46f5bd` ("Harden test isolation and block
+external network"), pushed, and CI-verified. **One real wrinkle worth
+recording accurately**: the first CI run (GitHub Actions run
+`32653067541`) failed on exactly one test,
+`tests.test_history_store.TestConcurrency.test_concurrent_initialization_is_safe`,
+with a real `sqlite3.OperationalError: database is locked`. A re-run of
+the identical commit succeeded (1417/1417), which at the time was taken
+as reasonably strong evidence of CI-environment flakiness rather than a
+regression — correct as far as it went, but "a rerun passing" was
+explicitly NOT accepted as sufficient closure, and a dedicated follow-up
+(**Phase 9 Reliability S1.1**, see the section right after this one)
+root-caused and fixed the actual defect: `PRAGMA journal_mode=WAL`'s
+one-time transition does not reliably honor `busy_timeout` under
+concurrent first-time initializers. The rest of this section is kept as
+an accurate historical record of the S1 pass itself.
 
 - **What it does**: fixes, at the root, the test-isolation gap M4.2
   discovered and worked around with per-file redirects only. The
@@ -299,7 +322,78 @@ historical record of the M4.2 pass.
   `ARCHITECTURE.md` §18 (rewritten) and §12b (test-isolation paragraph
   corrected), `ROADMAP.md`, `CLAUDE.md`'s "How to test" section,
   `CHANGELOG.md`, `SESSION_LOG.md`.
-- **Do not start M4.3** until this pass is reviewed and committed.
+- **Reviewed and committed** as `e46f5bd`. **Do not start M4.3** until
+  Phase 9 Reliability S1.1 (immediately below) is also reviewed and
+  committed.
+
+## Phase 9 Reliability S1.1 — HISTORY STORE CONCURRENT INITIALIZATION DETERMINISM ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+
+- **What it does**: root-causes and fixes, deterministically, the exact
+  flaky test S1's first CI run hit (see the S1 section above) — a real
+  production concern, not just a test artifact, since multiple real
+  Jarvis processes (menu-bar app, scheduler daemon, Streamlit) can
+  legitimately race to be the first to initialize a not-yet-existing
+  `history.db`.
+- **Root cause**, found empirically, not assumed: isolated every PRAGMA
+  statement in `_connect_writable()` individually under
+  barrier-synchronized thread contention (reproduced with a standalone
+  script before touching production code). `PRAGMA journal_mode=WAL`'s
+  one-time transition — creating a brand-new database's `-wal`/`-shm`
+  files the first time anything switches it out of SQLite's default
+  rollback-journal mode — takes its own internal exclusive lock that
+  does not reliably honor the connection's `busy_timeout` the way an
+  ordinary statement does. Confirmed via `sqlite_errorcode == 5`
+  (`SQLITE_BUSY`) on every reproduction (7 failures / 1800 attempts
+  isolating each PRAGMA; 0 failures on `busy_timeout`, `foreign_keys`,
+  `synchronous`, or `secure_delete` — only `journal_mode`). This is a
+  documented, real SQLite behavior, not specific to this project's code.
+- **Fix**: `agent/history_store.py`'s new `_set_journal_mode_wal()`
+  wraps only this one PRAGMA in a bounded retry, narrowly matched to
+  `sqlite_errorcode == SQLITE_BUSY` specifically — any other
+  `OperationalError` (a real disk I/O failure, for instance) still
+  propagates immediately, never retried. Bounded by the same window
+  `_BUSY_TIMEOUT_MS` already promises callers (5000ms); exceeding it
+  raises the same `HistoryBusy` a caller would see from a locked `BEGIN
+  IMMEDIATE` elsewhere in this module. No PRAGMA/transaction reordering,
+  no change to `busy_timeout`'s value, no durability/privacy setting
+  weakened. Verified via a 2400-attempt barrier-synchronized stress
+  reproduction using the real production code path: 0 failures with the
+  fix (versus a real, reproducible failure rate without it). Measured
+  overhead in the uncontended (normal) case: ~0.18ms mean — not
+  material for a one-time, first-use-only operation.
+- **New regression coverage**, all in `tests/test_history_store.py`:
+  `TestConcurrency.test_concurrent_initialization_is_safe` rewritten to
+  use `threading.Barrier` (never sleep-based) with 16 threads and full
+  post-condition validation (schema v1, every table/index/trigger, WAL
+  active, FTS5 secure-delete==1, core secure_delete==ON on a fresh
+  connection, clean reopen) instead of just "no exception raised"; a new
+  bounded repeated-round version (15 rounds × 12 threads, fast); a new
+  real multi-process version (4 separate OS processes via
+  `multiprocessing`, matching production's actual scenario, not just
+  threads within one process — confirmed necessary since the race is a
+  genuine SQLite/filesystem-level lock, not a Python GIL artifact). New
+  `TestHistoryBusySemantics` class: `_set_journal_mode_wal` retry-then-
+  succeed, retry-then-`HistoryBusy`-after-deadline, and
+  never-retry-a-non-SQLITE_BUSY-error (all via a fake connection object,
+  fast and deterministic, no real timing dependency); plus the first-
+  ever end-to-end test of a genuinely held write lock (a real second
+  connection holding `BEGIN IMMEDIATE` open) actually surfacing
+  `HistoryBusy` rather than a raw error or the wrong exception class —
+  this path existed since M4.1 but was previously checked only
+  structurally (`HistoryBusy` is-a `HistoryStoreError`), never exercised
+  against a real held lock.
+- **Verification**: `tests.test_history_store` run 10 consecutive times,
+  all clean (89/89 each, up from 83). Full canonical suite run three
+  consecutive times, all clean (1423/1423 each, up from 1417 — 6 net new
+  tests). Production-store metadata unchanged before/after (real
+  `history.db` still does not exist — untouched either way). Full
+  design: `ARCHITECTURE.md` §12a.
+- **Files changed**: `agent/history_store.py` (the fix),
+  `tests/test_history_store.py` (regression coverage), plus
+  documentation (`ARCHITECTURE.md`, `CHANGELOG.md`, `SESSION_LOG.md`,
+  `HANDOFF.md`, `ROADMAP.md`).
+- **Not committed, not pushed** — pending user review. **Do not start
+  M4.3** until this is reviewed and committed.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -540,8 +634,10 @@ Milestone 4 (reframed as "Phase 9 / M4 — Conversation & History
 Intelligence", audited and split into M4.1-M4.4): M4A (audit), M4.1
 (durable history store, `cd13e2a`), and M4.2 (deterministic history
 capture, `c0d5fc5`) are all complete, committed. **Phase 9 Reliability
-S1 (Structurally Safe Test Harness) is built and tested but
-UNCOMMITTED** — see the dedicated section near the top of this file.
+S1 (Structurally Safe Test Harness) is complete, committed (`e46f5bd`),
+pushed, and CI-verified. Phase 9 Reliability S1.1 (History Store
+Concurrent Initialization Determinism) is built and tested but
+UNCOMMITTED** — see the dedicated sections near the top of this file.
 OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 landed between Milestone 3
 and M4, both complete/committed.
 
@@ -555,29 +651,29 @@ CI-verified — see the section above.
 tools), and **G1.1** (incremental-vs-full extraction audit) all
 complete — see the sections above and `docs/GRAPHIFY.md`. Still not a
 Jarvis runtime dependency — `graphifyy` itself is never imported or
-invoked; only its already-generated graph.json is read. Not refreshed as
-part of the S1 pass (no Jarvis source file — as opposed to test
-infrastructure and two small production bug fixes — changed enough to
-warrant it, and S1 explicitly did not commit, so HEAD hasn't moved for a
-committed graph to go stale against yet).
+invoked; only its already-generated graph.json is read. Refreshed
+against S1's commit (`e46f5bd`) during S1's finalization — 3514 nodes,
+7421 edges, 172 communities, `built_at_commit` matching HEAD, `state:
+fresh`. Not yet refreshed against S1.1 (still uncommitted, so HEAD
+hasn't moved for a committed graph to go stale against yet).
 
-**Working tree**: **not clean** — Phase 9 Reliability S1's changes are
-uncommitted (see that section). Confirm with a live `git status`/`git
-log` rather than trusting this file. **1417 tests pass, 0 failures**
-under the new canonical `python -m unittest discover -s tests -t . -v`
-(up from the 1368 baseline this pass started from — includes tests
-already in flight before S1 plus S1's own 49 new meta-tests), no
-live/paid API calls during testing, zero production files touched (see
-S1's section for the before/after metadata comparison). No real OpenClaw
-installation persists on this machine.
+**Working tree**: **not clean** — Phase 9 Reliability S1.1's changes are
+uncommitted (see that section; S1 itself is committed). Confirm with a
+live `git status`/`git log` rather than trusting this file. **1423 tests
+pass, 0 failures** under the canonical `python -m unittest discover -s
+tests -t . -v` (up from S1's 1417 — S1.1 added 6 net new tests),
+reproduced three consecutive times, no live/paid API calls during
+testing, zero production files touched. No real OpenClaw installation
+persists on this machine.
 
 ## What we are currently building
 
-Phase 9 Reliability S1 (Structurally Safe Test Harness) is built,
-tested, and awaiting review — see the dedicated section near the top of
-this file. M4.1 and M4.2 are now both complete and committed. Everything
-else is complete and committed: OpenClaw M1/M1.5/M2, Graphify
-G0/G1/G1.1. **Do not start Graphify G2 (MCP/hooks/auto-rebuild — none
+Phase 9 Reliability S1.1 (History Store Concurrent Initialization
+Determinism) is built, tested, and awaiting review — see the dedicated
+section near the top of this file. S1, M4.1, and M4.2 are now all
+complete and committed. Everything else is complete and committed:
+OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1. **Do not start Graphify G2
+(MCP/hooks/auto-rebuild — none
 implemented or assumed), a real OpenClaw messaging channel, OpenClaw
 device capabilities, OpenClaw agent/model-routing integration, or Phase
 9 / M4.3 (Jarvis-facing search ToolSpecs)** until the user explicitly
@@ -827,11 +923,11 @@ says so.
 
 ## What is partially completed
 
-**Phase 9 Reliability S1 (Structurally Safe Test Harness)** is complete
-and fully tested; the only thing not done is the user's review/commit
-decision — same shape as OpenClaw M2 below. See the dedicated section
-above before assuming anything about its state. (M4.1 and M4.2 are no
-longer partial — both are committed.)
+**Phase 9 Reliability S1.1 (History Store Concurrent Initialization
+Determinism)** is complete and fully tested; the only thing not done is
+the user's review/commit decision — same shape as OpenClaw M2 below. See
+the dedicated section above before assuming anything about its state.
+(S1, M4.1, and M4.2 are no longer partial — all three are committed.)
 
 OpenClaw M2 is complete and fully tested; the only thing not done is
 the user's review/commit decision, plus choosing and configuring a
@@ -861,8 +957,8 @@ source.
 ## Current blockers
 
 None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and Phase 9 /
-M4.1 + M4.2 are all committed. **Phase 9 Reliability S1 is built and
-tested but blocked on user review/commit** before M4.3 (Jarvis-facing
+M4.1 + M4.2 + S1 are all committed. **Phase 9 Reliability S1.1 is built
+and tested but blocked on user review/commit** before M4.3 (Jarvis-facing
 search ToolSpecs) can start — see the dedicated section above. Open
 decisions (none urgent): which real messaging channel (if any) to
 configure for OpenClaw next, whether/when to pursue a further Graphify
@@ -1028,30 +1124,22 @@ and the `last_accessed` design question above.
 
 ## Files recently modified
 
-**Phase 9 Reliability S1 (Structurally Safe Test Harness)** — built,
-tested, **UNCOMMITTED**:
+**Phase 9 Reliability S1.1 (History Store Concurrent Initialization
+Determinism)** — built, tested, **UNCOMMITTED**:
 ```
-new:      tests/_safety.py
-new:      tests/test_test_safety.py
-new:      tools/keychain_smoke_test.py
-modified: tests/__init__.py (rewritten: calls
-          tests._safety.install_test_safety(), documents the -t .
-          requirement)
-modified: tests/test_safety.py (TestConfirmLoginGate mocks
-          tools.credential_store.keyring directly)
-modified: .github/workflows/tests.yml (canonical command now includes
-          -t .)
-modified: agent/history_store.py (six public functions: db_path defaults
-          to None and reads HISTORY_DB dynamically, not as a captured
-          default-argument value)
-modified: agent/personal_context.py (save_catalog/load_catalog: same
-          fix, for CATALOG_FILE)
-modified: tools/sandbox_python.py (Seatbelt profile string built inside
-          _ensure_profile() from the current SANDBOX_DIR, not baked in
-          as a module-level constant)
-modified: CLAUDE.md, ARCHITECTURE.md, ROADMAP.md, HANDOFF.md,
-          CHANGELOG.md, SESSION_LOG.md
+modified: agent/history_store.py (new _set_journal_mode_wal() bounded
+          retry, narrowly scoped to SQLITE_BUSY on the journal_mode=WAL
+          transition specifically)
+modified: tests/test_history_store.py (barrier-based concurrency test,
+          repeated-round coverage, multi-process test, new
+          TestHistoryBusySemantics class -- 6 net new tests)
+modified: ARCHITECTURE.md, CHANGELOG.md, SESSION_LOG.md, HANDOFF.md,
+          ROADMAP.md
 ```
+
+**Phase 9 Reliability S1 (Structurally Safe Test Harness)** committed as
+`e46f5bd` ("Harden test isolation and block external network") — see
+that section above for the full file list; not repeated here.
 
 **Phase 9 / M4.2** committed as `c0d5fc5` ("Add deterministic
 conversation history capture") — see that section above for the full
@@ -1204,33 +1292,40 @@ ones (see S1's section). This number will be stale the moment new tests
 are added — re-run, don't trust it blindly, and use the `-t .` form when
 you do.
 
+**Since S1's commit**: S1.1 added 6 net new tests (1417 → **1423**),
+run three consecutive times clean, plus `tests.test_history_store` run
+10 consecutive times clean on its own (89/89 each) — see Phase 9
+Reliability S1.1's section above. The specific flaky test from S1's
+first CI attempt (`test_concurrent_initialization_is_safe`) is now
+deterministically fixed, not just retried past.
+
 ## What still needs to be done
 
-1. **Phase 9 Reliability S1 (Structurally Safe Test Harness) needs user
-   review and a commit decision** — built, tested (1417/1417),
-   currently uncommitted. See the dedicated section above for exactly
-   what changed, including three real production bugs (a stale Seatbelt
-   profile string, and two functions in `agent/history_store.py`/
-   `agent/personal_context.py` that captured a path constant as a
-   default-argument value instead of reading it dynamically) found and
-   fixed during this pass.
-2. **Nothing outstanding for Phase 9 / M4.1 or M4.2** — both committed
-   (`cd13e2a`, `c0d5fc5`).
+1. **Phase 9 Reliability S1.1 (History Store Concurrent Initialization
+   Determinism) needs user review and a commit decision** — built,
+   tested (1423/1423, reproduced 3x; `tests.test_history_store` alone
+   10x), currently uncommitted. See the dedicated section above for
+   exactly what changed: root-caused and fixed the real SQLite
+   `journal_mode=WAL` initialization race S1's first CI attempt hit.
+2. **Nothing outstanding for Phase 9 / M4.1, M4.2, or S1** — all
+   committed (`cd13e2a`, `c0d5fc5`, `e46f5bd`), S1 pushed and
+   CI-verified.
 3. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
    (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
    CI-verified.
 4. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
    (`7b4d0b6`, `c99e792`, `77dee43`), documented in `docs/GRAPHIFY.md`.
+   The local graph itself is fresh against S1's commit (`e46f5bd`).
 5. **Do not rebuild the real local graph reflexively** — `code_graph_status`
    will report the graph `stale` the moment HEAD moves past its
-   `built_at_commit` for any reason, including once S1's tracked-file
+   `built_at_commit` for any reason, including once S1.1's tracked-file
    edits are committed. This is expected; refresh it only when actually
    useful before code-graph analysis on a future milestone.
 6. **Do not configure a real OpenClaw messaging channel** (Telegram/
    Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
    is explicitly chosen.
 7. **Do not start Phase 9 / M4.3** (Jarvis-facing search ToolSpecs)
-   until S1 is reviewed, committed, and CI-verified. Do not start
+   until S1.1 is reviewed, committed, and CI-verified. Do not start
    Graphify G2 (MCP, hooks, auto-rebuild — none implemented or assumed)
    or OpenClaw device capabilities/agent-routing integration until the
    user explicitly says so.
@@ -1247,15 +1342,15 @@ For the next session, in order of what's most likely to matter:
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
    match what this file claims before trusting it. In particular, check
-   whether `tests/_safety.py`/`tests/test_test_safety.py`/
-   `tools/keychain_smoke_test.py` are still untracked (S1 not yet
-   reviewed/committed) or have since been committed (S1 approved — safe
-   to consider M4.3 next).
-2. If S1 is still uncommitted, that review is the most likely next
-   action: read `tests/_safety.py` and `tests/__init__.py` directly, the
-   three production-code diffs (`tools/sandbox_python.py`,
-   `agent/history_store.py`, `agent/personal_context.py`), and
-   `tests/test_test_safety.py`; re-run
+   whether `agent/history_store.py`/`tests/test_history_store.py`'s
+   uncommitted diff (S1.1) is still present (not yet reviewed/committed)
+   or has since been committed (S1.1 approved — safe to consider M4.3
+   next). S1 itself is already committed (`e46f5bd`) — don't confuse the
+   two.
+2. If S1.1 is still uncommitted, that review is the most likely next
+   action: read the diff in `agent/history_store.py` (the new
+   `_set_journal_mode_wal()` bounded-retry function) and
+   `tests/test_history_store.py`'s new/changed tests directly; re-run
    `python -m unittest discover -s tests -t . -v`; and decide whether to
    commit as-is, request changes, or discard. Do not proceed to M4.3
    (Jarvis-facing search ToolSpecs) without that decision first.
