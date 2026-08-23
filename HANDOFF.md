@@ -27,13 +27,14 @@ on the FIRST attempt, no rerun needed** (GitHub Actions run
 `32659780845`), directly proving the root-cause fix for the exact flake
 S1's own CI run hit. **Phase 9 / M4.3 (read-only conversation-history
 ToolSpecs) is built, tested, and committed on a feature branch**
-(`phase9-m4.3-history-search`, commits `1519a51` and — after this
-documentation pass lands — one more; `main` itself is still at `d38e794`
-and does not yet contain M4.3) — see the dedicated "Phase 9 / M4.3"
-section below for full detail. A prior version of this file described
-S1.1 as uncommitted long after `d38e794` actually landed; that staleness
-is corrected here (see CLAUDE.md's NEW SESSION PROTOCOL — trust `git
-log` over this file when they disagree). Everything else in this
+(`phase9-m4.3-history-search`, commits `1519a51` and `d78ba09`; `main`
+itself is still at `d38e794` and does not yet contain M4.3) — see the
+dedicated "Phase 9 / M4.3" section below for full detail. A prior
+version of this file described S1.1 as uncommitted long after `d38e794`
+actually landed, and separately still described M4.2 as uncommitted long
+after `c0d5fc5` landed; both staleness gaps are corrected here (see
+CLAUDE.md's NEW SESSION PROTOCOL — trust `git log` over this file when
+they disagree). Everything else in this
 paragraph and below describes prior, already-committed work. OpenClaw
 M1/M1.5/M2 (including the M2
 hardening/review pass) are all now **complete, committed, pushed, and
@@ -472,11 +473,13 @@ an accurate historical record of the S1 pass itself.
   raw), a schema-enum-vs-store-validator drift tripwire, and real
   dispatch through `agent/executor.py`'s `_run_tool` (no separate
   dispatch path).
-- **Commits** (both on `phase9-m4.3-history-search`, pushed):
+- **Commits** (all on `phase9-m4.3-history-search`, pushed):
   `1519a51` ("Add read-only conversation history tools") — CI-verified
   on the first attempt, GitHub Actions run `32663268361`, `run_attempt:
-  1`, **1457/1457 passed**. A second, docs-only commit lands this
-  documentation pass (see below for its own SHA once committed).
+  1`, **1457/1457 passed**. `d78ba09` ("Correct S1.1 and Graphify
+  status, document M4.3 tools") — docs only, no code change. A third,
+  residual-staleness-correction + Graphify-refresh commit follows this
+  same documentation round — see "Files recently modified" for its SHA.
 - **Not merged to `main`** — the branch is deliberately left open for
   further review before any merge/PR decision.
 
@@ -738,19 +741,23 @@ CI-verified — see the section above.
 tools), and **G1.1** (incremental-vs-full extraction audit) all
 complete — see the sections above and `docs/GRAPHIFY.md`. Still not a
 Jarvis runtime dependency — `graphifyy` itself is never imported or
-invoked; only its already-generated graph.json is read. Refreshed
-against S1.1's commit (`d38e794`) during S1.1's finalization — **3532
-nodes, 7452 edges, 163 communities**, `built_at_commit` matching HEAD,
-`state: fresh` (a prior version of this file still showed the S1-era
-counts, 3514/7421/172 against `e46f5bd` — corrected here). Not yet
-refreshed against M4.3's tracked-file changes (`tools/schemas/history.py`
-+ `__init__.py`) — deliberately deferred to its own step, not run as
-part of this documentation pass.
+invoked; only its already-generated graph.json is read. Refreshed a
+second time, against M4.3's tracked-file changes (`tools/schemas/
+history.py`, `tools/schemas/__init__.py`) — **3585 nodes, 7523 edges,
+170 communities**, `built_at_commit = d78ba09` at refresh time (this
+pass's own docs-only commit had not yet landed, so this is one commit
+behind current HEAD by the time you read this; per this project's own
+stated policy, that's expected — refresh only when actually useful
+before code-graph analysis, not reflexively after every commit). Prior
+counts, superseded in order: S1-era `3514/7421/172` against `e46f5bd`;
+S1.1-era `3532/7452/163` against `d38e794`.
 
-**Working tree**: clean on `main` (`d38e794`). On the feature branch
-`phase9-m4.3-history-search`, clean as of commit `1519a51` plus this
-documentation commit. Confirm with a live `git status`/`git log` rather
-than trusting this file. **1457 tests pass, 0 failures** under the
+**Working tree**: clean on `main` (`d38e794`, unchanged by this pass —
+all of S1.1/M4.3/this documentation landed on the feature branch only).
+On the feature branch `phase9-m4.3-history-search`, HEAD is `d78ba09`
+(`1519a51` M4.3 code + `d78ba09` this documentation commit), tree clean.
+Confirm with a live `git status`/`git log` rather than trusting this
+file. **1457 tests pass, 0 failures** under the
 canonical `python -m unittest discover -s tests -t . -v` on the feature
 branch (1423 on `main` after S1.1, +34 from M4.3), reproduced multiple
 times, no live/paid API calls during testing, zero production files
@@ -1333,8 +1340,10 @@ created by this pass. Clean-full Graphify rebuild done after this
 commit landed (3335 nodes, 7079 edges, 164 communities,
 `built_at_commit == cd13e2a`).
 
-**Phase 9 / M4.2 (history capture)** — **uncommitted**; confirm current
-state with a live `git status`:
+**Phase 9 / M4.2 (history capture)** — this list previously said
+**uncommitted**; that went stale. Committed as `c0d5fc5` ("Add
+deterministic conversation history capture") — see the dedicated M4.2
+section near the top of this file for full current status:
 ```
 new file: agent/history_capture.py
 new file: tests/test_history_capture.py
@@ -1361,7 +1370,7 @@ capture wiring described above — no other executor behavior changed.
 `CLAUDE.md` not touched. No production `history.db` created after the
 isolation fix landed (it briefly, accidentally existed mid-pass before
 the fix — see the M4.2 section above; deleted, confirmed absent since).
-Not committed, not pushed.
+Committed as `c0d5fc5`, pushed to `origin/main`.
 
 **Committed history**, most recent first: `cd13e2a` (Phase 9 M4.1 —
 durable FTS5 conversation history store), `77dee43` (Graphify
@@ -1428,10 +1437,12 @@ multiple times clean locally and CI-verified on the first attempt
    CI-verified.
 4. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
    (`7b4d0b6`, `c99e792`, `77dee43`), documented in `docs/GRAPHIFY.md`.
-   The local graph itself is fresh against S1.1's commit (`d38e794`) —
-   3532 nodes, 7452 edges, 163 communities — but not yet refreshed
-   against M4.3's tracked-file changes (deliberately deferred to its own
-   step).
+   The local graph was refreshed against M4.3's tracked-file changes —
+   3585 nodes, 7523 edges, 170 communities, `built_at_commit = d78ba09`
+   at refresh time. It will report `stale` again once this round's own
+   docs-only commit lands (HEAD moves past `d78ba09`); that's expected,
+   not a problem — the underlying Python source is unchanged by a
+   docs-only commit, only the freshness check's HEAD comparison trips.
 5. **Do not rebuild the real local graph reflexively** — `code_graph_status`
    will report the graph `stale` the moment HEAD moves past its
    `built_at_commit` for any reason, including once M4.3 merges to
@@ -1460,13 +1471,13 @@ For the next session, in order of what's most likely to matter:
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count on
    BOTH `main` and `phase9-m4.3-history-search` match what this file
    claims before trusting it. `main` should be at `d38e794` (S1.1); the
-   feature branch should be at `1519a51` (M4.3) plus this documentation
-   commit. Don't confuse "S1.1 committed" with "M4.3 committed" — they
-   landed on different branches.
+   feature branch should be at `d78ba09` (`1519a51` M4.3 code +
+   `d78ba09` documentation). Don't confuse "S1.1 committed" with "M4.3
+   committed" — they landed on different branches.
 2. The most likely next action is the merge/PR decision for
    `phase9-m4.3-history-search` — read the branch's diff against `main`
    directly (`tools/schemas/history.py`, `tools/schemas/__init__.py`,
-   `tests/test_history_tools.py`, plus this documentation commit);
+   `tests/test_history_tools.py`, plus the doc changes in `d78ba09`);
    re-run `python -m unittest discover -s tests -t . -v` on the branch;
    and decide whether to open a PR/merge, request changes, or hold. No
    PR has been opened yet (deliberately, per instruction) even though
