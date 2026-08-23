@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import agent.execution_history as execution_history
+import agent.history_store as history_store
 import agent.jarvis_state as jarvis_state
 import agent.skills.registry as skills_registry
 import agent.usage as usage
@@ -27,9 +28,11 @@ class TestVoiceTriggersSkillDelegation(unittest.TestCase):
         self._real_history_file = execution_history.HISTORY_FILE
         self._real_state_file = jarvis_state.STATE_FILE
         self._real_usage_file = usage.USAGE_FILE
+        self._real_history_db = history_store.HISTORY_DB
         execution_history.HISTORY_FILE = tempfile.mktemp(suffix=".json")
         jarvis_state.STATE_FILE = tempfile.mktemp(suffix=".json")
         usage.USAGE_FILE = tempfile.mktemp(suffix=".json")
+        history_store.HISTORY_DB = tempfile.mktemp(suffix=".db")
 
         self._real_registry = dict(skills_registry._REGISTRY)
         skills_registry.clear()
@@ -44,12 +47,14 @@ class TestVoiceTriggersSkillDelegation(unittest.TestCase):
             execution_history.HISTORY_FILE, f"{execution_history.HISTORY_FILE}.tmp",
             jarvis_state.STATE_FILE, f"{jarvis_state.STATE_FILE}.tmp",
             usage.USAGE_FILE, f"{usage.USAGE_FILE}.lock",
+            history_store.HISTORY_DB, f"{history_store.HISTORY_DB}-wal", f"{history_store.HISTORY_DB}-shm",
         ):
             if os.path.exists(path):
                 os.remove(path)
         execution_history.HISTORY_FILE = self._real_history_file
         jarvis_state.STATE_FILE = self._real_state_file
         usage.USAGE_FILE = self._real_usage_file
+        history_store.HISTORY_DB = self._real_history_db
         skills_registry.clear()
         skills_registry._REGISTRY.update(self._real_registry)
 

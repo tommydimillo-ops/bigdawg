@@ -6,10 +6,11 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-22. **Phase 9 / M4A (audit) is complete and Phase
-9 / M4.1 (durable history store + FTS5 core) is built and tested but
-UNCOMMITTED** — see the dedicated "Phase 9 / M4A + M4.1" section below
-for full detail before anything else in this file. Everything from here
+Last updated: 2026-08-23. **Phase 9 / M4.1 (durable history store + FTS5
+core) is complete, committed (`cd13e2a`), pushed, and CI-verified. Phase
+9 / M4.2 (deterministic history capture) is built and tested but
+UNCOMMITTED** — see the dedicated "Phase 9 / M4.2" section below for
+full detail before anything else in this file. Everything from here
 through the rest of this paragraph describes prior, already-committed
 work. OpenClaw M1/M1.5/M2 (including the M2
 hardening/review pass) are all now **complete, committed, pushed, and
@@ -48,72 +49,107 @@ finding's documentation-only finalization is committed — see the
 "Graphify G1.1" section below and `CHANGELOG.md`'s dated entry for the
 exact commit hash.
 
-## Phase 9 / M4A + M4.1 — HISTORY STORE ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+## Phase 9 / M4.1 — HISTORY STORE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
 - **M4A (audit)**: complete. Design-only pass, no code, no commits —
-  delivered as an in-conversation architecture report inventorying every
-  existing history/memory/state store, tracing conversation flow across
-  every UI (Streamlit chat, native voice, scheduler), auditing the typed
-  memory system and execution/audit history, and empirically proving
-  SQLite/FTS5 capability against this project's real SQLite 3.50.4
-  runtime (not assumed from documentation). Recommended a dedicated
-  SQLite database over another JSON file or piggybacking on
-  `agent/personal_context.py`'s read-only pattern, plus the schema/
-  redaction/query-safety/ranking design M4.1 below implements.
-- **M4.1 (implementation)**: **built and tested, but deliberately left
-  UNCOMMITTED for review** — confirm with `git status` before assuming
-  otherwise. New files: `agent/history_store.py` (the module),
-  `tests/test_history_store.py` (83 tests). Full detail: `ARCHITECTURE.md`
-  §12a (design), `CHANGELOG.md`'s two 2026-08-22 entries (implementation
-  detail, oldest first), `SESSION_LOG.md`'s two 2026-08-22 entries
-  (session narrative, latest first).
-- **M4.1 hardening (same session, same uncommitted slice)**: a review
-  found `PRAGMA secure_delete=ON` alone doesn't cover FTS5's own index —
-  official SQLite docs say deleted/updated full-text entries may remain
-  forensically reconstructable from old FTS b-tree segments without
-  FTS5's own, separate `secure-delete` config (needs SQLite >= 3.42.0;
-  this project's runtime is 3.50.4). Added: FTS5 secure-delete enabled
-  at schema-v1 creation (persists in the table's own `_config` shadow
-  table, unlike the per-connection core pragma); a new
-  `HistoryUnsupportedRuntime` exception that fails schema initialization
-  closed (via real feature probing, not a version check) if a runtime
-  can't support it; 11 new tests. No schema version bump — v1 has never
-  shipped, nothing to migrate.
-- **What it does**: owns `~/Library/Application
-  Support/CampusPilot/history.db` — canonical `history_session`/
-  `history_turn` tables (schema v1, `PRAGMA user_version`-versioned,
-  fail-closed on a newer-than-supported schema), an external-content
-  FTS5 index (`history_turn_fts`, `porter unicode61` tokenizer) kept in
-  sync by triggers, **two independent secure-delete layers** (core
-  `PRAGMA secure_delete=ON` per write connection + FTS5's own persistent
-  `secure-delete=1`), write-time redaction reusing
-  `agent.memory.safety.redact_secrets()`, a safe FTS5 query builder, and
-  six public functions: `initialize_history_store`, `create_session`,
-  `close_session`, `record_turn`, `history_status`, `search_history`.
-- **What it deliberately does NOT do yet** (each its own later,
-  explicitly-gated milestone): **no automatic capture** —
-  `agent/executor.py`, `app.py`, `ui/menu_bar.py`,
-  `agent/voice_session.py`, and `agent/scheduler_daemon.py` were **not
-  modified** and do not call this module; every write today happens only
-  because a test explicitly calls `create_session()`/`record_turn()`.
-  **No backfill** of `conversation.json`. **No Jarvis-facing ToolSpec**
-  — `tools/registry.py`/`tools/schemas/__init__.py` were **not
-  modified**; `search_history`/`history_status` are plain Python
-  functions Jarvis cannot currently call. **No proactive context
-  injection.** **No automatic age-based deletion** — retention defaults
-  to indefinite, a product decision already made for this store.
-- **Verified NOT touched this session**: real production `history.db`
-  (confirmed absent both before and after the full test run — every
-  test uses an explicit temp `db_path`), `agent/memory/*` (HISTORY and
-  MEMORY are separate systems by design; this module never imports from
-  or writes to memory), and every file in the "no automatic capture"
-  list above.
-- **Tests**: `python -m unittest discover -s tests -v` → **1336 passed,
-  0 failed** (1253 original baseline + 72 M4.1 + 11 hardening-pass new
-  tests, all in `tests/test_history_store.py`). No paid provider calls.
-- **Do not start M4.2** (executor/UI capture wiring — the next
-  milestone) until a human has reviewed and committed M4.1. See "Exact
-  recommended next steps" below.
+  delivered as an in-conversation architecture report recommending a
+  dedicated SQLite database over another JSON file or piggybacking on
+  `agent/personal_context.py`'s read-only pattern.
+- **M4.1 (implementation + hardening)**: committed as `cd13e2a` ("Add
+  durable FTS5 conversation history store"), pushed, CI-verified
+  (GitHub Actions run `32577096526`, success). New files:
+  `agent/history_store.py`, `tests/test_history_store.py` (83 tests).
+  Owns `~/Library/Application Support/CampusPilot/history.db` —
+  canonical `history_session`/`history_turn` tables, an external-content
+  FTS5 index kept in sync by triggers, **two independent secure-delete
+  layers** (core `PRAGMA secure_delete=ON` per write connection + FTS5's
+  own persistent `secure-delete=1`, failing closed via
+  `HistoryUnsupportedRuntime` on an unsupported runtime), write-time
+  redaction reusing `agent.memory.safety.redact_secrets()`, a safe FTS5
+  query builder, and six public functions: `initialize_history_store`,
+  `create_session`, `close_session`, `record_turn`, `history_status`,
+  `search_history`. Full detail: `ARCHITECTURE.md` §12a,
+  `CHANGELOG.md`'s two 2026-08-22 entries.
+- **What M4.1 deliberately did not do** (M4.2 below implements the
+  first of these): no automatic capture, no backfill of
+  `conversation.json`, no Jarvis-facing ToolSpec, no proactive context
+  injection, no automatic age-based deletion.
+
+## Phase 9 / M4.2 — HISTORY CAPTURE ⚠️ BUILT, TESTED, **UNCOMMITTED — READ THIS FIRST**
+
+- **What it does**: new `agent/history_capture.py` makes M4.1's store
+  operational — deterministically, non-model-controlled capture of real
+  Jarvis interactions, wired into `agent/executor.py`'s
+  `execute_task_stream()` at fixed control-flow points (a user-turn
+  capture near the top, an assistant-turn capture at every one of the
+  four real terminal paths). **No ToolSpec decides this — there is no
+  write-history tool, and none of the capture points depend on anything
+  a model said or chose.** Session lifecycle: `chat`/`voice` each cache
+  one process-lifetime session; `scheduled` never caches, one session
+  per request. Capture failure is fully isolated (caught, logged as a
+  bounded warning, never changes the real task's outcome) and never
+  retried. Full detail: `ARCHITECTURE.md` §12b, `CHANGELOG.md`'s
+  2026-08-23 entry, `SESSION_LOG.md`'s 2026-08-23 entry.
+- **Two real, self-caught issues during this pass** (see `CHANGELOG.md`
+  for full detail on both): (1) a genuine concurrency bug in the
+  session-cache logic — the check-then-create sequence wasn't atomic,
+  so concurrent first-time callers on one source could each create a
+  separate orphaned session (proven by a threaded test, fixed by
+  widening the lock to cover the whole sequence); (2) a real,
+  **unmocked API call to live OpenAI** during this pass's own test
+  development — an early `PartialToolExecution` test forgot to pin
+  `build_fallback_chain`, so the real router picked a different
+  provider and sent one genuine request (a 400 validation error came
+  back before any generation, so likely zero token cost, but the
+  network call itself was real). Caught and fixed within the same pass
+  by pinning the chain in every test that exercises a real provider
+  path.
+- **A more consequential finding — test isolation was broken for a
+  reason unrelated to M4.2's own code**: the full suite silently wrote
+  76 real rows into the actual production `history.db` on the first
+  attempt. Root cause: `tests/__init__.py`'s package-level guard (the
+  same pattern already relied on for `agent.usage.USAGE_FILE`) does
+  **not** actually execute under this project's real
+  `python -m unittest discover -s tests -v` invocation — proven with a
+  stderr marker that never printed. `discover` with no `-t` flag
+  imports test files as bare top-level modules, never triggering the
+  package's `__init__.py`. **This is a pre-existing gap that predates
+  M4.2** and was invisible until now only because every test file that
+  touches `USAGE_FILE` already redundantly isolates it itself in its
+  own `setUp`/`tearDown`. Fixed by extending that real, verified-working
+  per-file pattern to `agent.history_store.HISTORY_DB` across the 8
+  existing test files that exercise a real `execute_task_stream()` call
+  (`test_claude_gateway.py`, `test_executor_multi_provider_fallback.py`,
+  `test_executor_phase5_integration.py`,
+  `test_agents_executor_integration.py`, `test_phase6_security.py`,
+  `test_usage_limits_integration.py`, `test_voice_session.py`,
+  `test_voice_skill_integration.py`), plus the new
+  `tests/test_history_capture.py`. `tests/__init__.py`'s docstring
+  corrected to document this honestly. **Worth independently verifying**
+  in a future session whether any OTHER file-backed store in this
+  project has silently relied on the same broken central guard.
+- **What M4.2 deliberately does NOT do yet**: **no ToolSpec** —
+  `tools/registry.py`/`tools/schemas/__init__.py` untouched, no
+  `search_conversation_history`/`history_status` tool exists. **No
+  backfill** of `conversation.json`. **No typed-memory change** —
+  `agent/memory/*` untouched. **No proactive context injection.**
+  `app.py`/`ui/menu_bar.py`/`agent/voice_session.py`/
+  `agent/scheduler_daemon.py` themselves are **not modified** — capture
+  lives entirely inside `execute_task_stream()`, which every one of them
+  already calls, so there is no separate per-caller capture path to
+  duplicate or miss.
+- **Tests**: new `tests/test_history_capture.py`, 27 tests. Full suite:
+  `python -m unittest discover -s tests -v` → **1363 passed, 0 failed**
+  (1336 M4.1 baseline + 27 new). No paid provider calls in the final,
+  corrected suite (see the OpenAI-call finding above — caught and fixed
+  before this count). Confirmed the real production `history.db` was
+  not created after the isolation fix landed. Latency: ~4.6ms per
+  capture call, ~9.3ms per full turn pair — negligible next to real LLM
+  call latency; M4.1's `synchronous=FULL` durability pragma was not
+  weakened for speed.
+- **Do not start M4.3** (Jarvis-facing search ToolSpecs) until a human
+  has reviewed and committed M4.2. See "Exact recommended next steps"
+  below.
 
 ## OpenClaw M1 + M1.5 — READ-ONLY GATEWAY BRIDGE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -349,10 +385,14 @@ incremental-extraction limitation" section.
 
 ## Current project status
 
-**Phase 9**: Milestones 0-3 complete, committed, pushed — HEAD `4265f55`
-on `origin/main` at the time, CI-verified (GitHub Actions run
-`31950985587`, `success`). Milestone 4 (FTS5) not started, sequenced
-after OpenClaw.
+**Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
+Milestone 4 (reframed as "Phase 9 / M4 — Conversation & History
+Intelligence", audited and split into M4.1-M4.4): M4A (audit) and M4.1
+(durable history store) are complete, committed (`cd13e2a`), pushed,
+CI-verified; M4.2 (deterministic history capture) is built/tested,
+awaiting review — see the dedicated section near the top of this file.
+OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 landed between Milestone 3
+and M4, both complete/committed.
 
 **OpenClaw** (a separate, real, independently-developed open-source
 project — github.com/openclaw/openclaw, docs.openclaw.ai — not a Jarvis
@@ -385,12 +425,14 @@ future implementation milestone, not reflexively after every commit.
 
 ## What we are currently building
 
-Nothing actively mid-task — OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1
-are all complete and committed. **Do not start Graphify G2 (MCP/hooks/
-auto-rebuild — none implemented or assumed), a real OpenClaw messaging
-channel, OpenClaw device capabilities, OpenClaw agent/model-routing
-integration, or Phase 9 Milestone 4 (Conversation & History
-Intelligence)** until the user explicitly says so.
+Phase 9 / M4.2 (deterministic history capture) is built, tested, and
+awaiting review — see the dedicated section near the top of this file.
+Everything else is complete and committed: OpenClaw M1/M1.5/M2,
+Graphify G0/G1/G1.1, Phase 9 / M4.1. **Do not start Graphify G2
+(MCP/hooks/auto-rebuild — none implemented or assumed), a real OpenClaw
+messaging channel, OpenClaw device capabilities, OpenClaw agent/model-
+routing integration, or Phase 9 / M4.3 (Jarvis-facing search
+ToolSpecs)** until the user explicitly says so.
 
 ## What was completed (this session, most recent first)
 
@@ -636,10 +678,11 @@ Intelligence)** until the user explicitly says so.
 
 ## What is partially completed
 
-**Phase 9 / M4.1 (history store)** is complete and fully tested; the
+**Phase 9 / M4.2 (history capture)** is complete and fully tested; the
 only thing not done is the user's review/commit decision — same shape
 as OpenClaw M2 below. See the dedicated section above before assuming
-anything about its state.
+anything about its state. (M4.1 itself is no longer partial — it's
+committed.)
 
 OpenClaw M2 is complete and fully tested; the only thing not done is
 the user's review/commit decision, plus choosing and configuring a
@@ -656,13 +699,13 @@ source. No other open issues.
 
 ## Current blockers
 
-None technical. OpenClaw M1/M1.5/M2 and Graphify G0/G1/G1.1 are all
-committed. **Phase 9 / M4.1 is built and tested but blocked on user
-review/commit** before M4.2 (executor/UI capture wiring) can start —
-see the dedicated section above. Open decisions (none urgent): which
-real messaging channel (if any) to configure for OpenClaw next, and
-whether/when to pursue a further Graphify milestone (MCP/hooks/
-auto-rebuild — none implemented or assumed so far).
+None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and Phase 9 /
+M4.1 are all committed. **Phase 9 / M4.2 is built and tested but
+blocked on user review/commit** before M4.3 (Jarvis-facing search
+ToolSpecs) can start — see the dedicated section above. Open decisions
+(none urgent): which real messaging channel (if any) to configure for
+OpenClaw next, and whether/when to pursue a further Graphify milestone
+(MCP/hooks/auto-rebuild — none implemented or assumed so far).
 
 ## Recent architectural decisions
 
@@ -889,23 +932,52 @@ generated `graphify-out/` content touched. The live local graph itself
 was replaced with a clean full rebuild as part of this investigation,
 but that's ignored local data, not a tracked-file change.
 
-**Phase 9 / M4A + M4.1 (+ M4.1 hardening pass, same session)** —
-**uncommitted**; confirm current state with a live `git status`:
+**Phase 9 / M4A + M4.1 (+ hardening pass)** — **committed** as `cd13e2a`
+("Add durable FTS5 conversation history store"), pushed, CI-verified
+(GitHub Actions run `32577096526`, success):
 ```
 new file: agent/history_store.py
 new file: tests/test_history_store.py
 modified: ARCHITECTURE.md, ROADMAP.md, CHANGELOG.md, SESSION_LOG.md,
           HANDOFF.md
 ```
-Still exactly two new files and five modified docs — the hardening pass
-extended the same two new files and the same five docs, it did not add
-any new file. `CLAUDE.md` deliberately not touched (per this pass's own
-explicit instruction). No production `history.db` created — confirmed
-absent before and after every full test run, including the hardening
-pass's own. Not committed, not pushed — this entire pass is left for
-the user to review first.
+`CLAUDE.md` deliberately not touched. No production `history.db`
+created by this pass. Clean-full Graphify rebuild done after this
+commit landed (3335 nodes, 7079 edges, 164 communities,
+`built_at_commit == cd13e2a`).
 
-**Committed history**, most recent first: `77dee43` (Graphify
+**Phase 9 / M4.2 (history capture)** — **uncommitted**; confirm current
+state with a live `git status`:
+```
+new file: agent/history_capture.py
+new file: tests/test_history_capture.py
+modified: agent/executor.py, tests/__init__.py,
+          tests/test_agents_executor_integration.py,
+          tests/test_claude_gateway.py,
+          tests/test_executor_multi_provider_fallback.py,
+          tests/test_executor_phase5_integration.py,
+          tests/test_phase6_security.py,
+          tests/test_usage_limits_integration.py,
+          tests/test_voice_session.py,
+          tests/test_voice_skill_integration.py,
+          ARCHITECTURE.md, ROADMAP.md, CHANGELOG.md, SESSION_LOG.md,
+          HANDOFF.md
+```
+The 8 test files beyond `tests/__init__.py` were touched only to add
+`agent.history_store.HISTORY_DB` isolation to their existing
+setUp/tearDown, matching their own established pattern for
+`execution_history.HISTORY_FILE`/`jarvis_state.STATE_FILE`/
+`usage.USAGE_FILE` — see the dedicated M4.2 section above for why this
+was necessary (a real, pre-existing test-isolation gap found during this
+pass, not new scope creep). `agent/executor.py` gained exactly the
+capture wiring described above — no other executor behavior changed.
+`CLAUDE.md` not touched. No production `history.db` created after the
+isolation fix landed (it briefly, accidentally existed mid-pass before
+the fix — see the M4.2 section above; deleted, confirmed absent since).
+Not committed, not pushed.
+
+**Committed history**, most recent first: `cd13e2a` (Phase 9 M4.1 —
+durable FTS5 conversation history store), `77dee43` (Graphify
 full-rebuild reliability workflow docs), `c99e792` (Graphify G1),
 `7b4d0b6` (Graphify G0), `d270dc4` (OpenClaw M2 + hardening pass),
 `8502c03` (OpenClaw M1.5), `f370c00` (M1 handoff doc update), `d1eb813`
@@ -916,38 +988,43 @@ CI). See `CHANGELOG.md` / `git log` for full history.
 
 ## Tests recently run and their results
 
-`python -m unittest discover -s tests -v` → **1336 passed, 0 failed**
-(1253 original baseline + 72 from M4.1's first pass + 11 from the same-
-session FTS5 secure-delete hardening pass, all in
-`tests/test_history_store.py`). No paid API calls; no real OpenClaw
-installation used; no LLM/API calls; no real `graphifyy`/`graphify` CLI
+`python -m unittest discover -s tests -v` → **1363 passed, 0 failed**
+(1336 M4.1 baseline + 27 new `tests/test_history_capture.py` tests). No
+paid API calls in the final, corrected suite (see the M4.2 section
+above for a real, self-caught incident where an early, since-fixed
+version of one test made a genuine unmocked call to live OpenAI). No
+real OpenClaw installation used; no real `graphifyy`/`graphify` CLI
 needed by any test. This number will be stale the moment new tests are
 added — re-run, don't trust it blindly.
 
 ## What still needs to be done
 
-1. **Phase 9 / M4.1 (history store, including the same-session FTS5
-   secure-delete hardening pass) needs user review and a commit
-   decision** — built, tested (1336/1336), currently uncommitted. See
-   the dedicated section above for exactly what changed.
+1. **Phase 9 / M4.2 (history capture) needs user review and a commit
+   decision** — built, tested (1363/1363), currently uncommitted. See
+   the dedicated section above for exactly what changed, including two
+   real bugs (a session-cache race, and a real-API-call test gap) found
+   and fixed during this pass, and a pre-existing test-isolation gap in
+   `tests/__init__.py` that predates M4.2.
 2. **Nothing outstanding for OpenClaw M1, M1.5, or M2** — all committed
    (`d1eb813`, `8502c03`, `d270dc4`), pushed to `origin/main`,
    CI-verified.
 3. **Nothing outstanding for Graphify G0, G1, or G1.1** — all committed
    (`7b4d0b6`, `c99e792`, `77dee43`), documented in `docs/GRAPHIFY.md`.
-4. **Do not rebuild the real local graph reflexively** — `code_graph_status`
+4. **Nothing outstanding for Phase 9 / M4.1** — committed (`cd13e2a`),
+   pushed, CI-verified.
+5. **Do not rebuild the real local graph reflexively** — `code_graph_status`
    will report the graph `stale` the moment HEAD moves past its
-   `built_at_commit` (`c99e792`) for any reason, including this pass's
-   own doc-only tracked-file edits once committed. This is expected;
-   refresh it only when actually useful before code-graph analysis on a
-   future milestone.
-5. **Do not configure a real OpenClaw messaging channel** (Telegram/
+   `built_at_commit` (`cd13e2a`) for any reason, including once M4.2's
+   tracked-file edits are committed. This is expected; refresh it only
+   when actually useful before code-graph analysis on a future
+   milestone.
+6. **Do not configure a real OpenClaw messaging channel** (Telegram/
    Discord/WhatsApp/Slack/Signal/iMessage/...) until a specific channel
    is explicitly chosen.
-6. **Do not start Phase 9 / M4.2** (executor/UI capture wiring) until
-   M4.1 is reviewed, committed, and CI-verified. Do not start Graphify
-   G2 (MCP, hooks, auto-rebuild — none implemented or assumed) or
-   OpenClaw device capabilities/agent-routing integration until the
+7. **Do not start Phase 9 / M4.3** (Jarvis-facing search ToolSpecs)
+   until M4.2 is reviewed, committed, and CI-verified. Do not start
+   Graphify G2 (MCP, hooks, auto-rebuild — none implemented or assumed)
+   or OpenClaw device capabilities/agent-routing integration until the
    user explicitly says so.
 
 ## Exact recommended next steps
@@ -957,24 +1034,29 @@ For the next session, in order of what's most likely to matter:
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
    match what this file claims before trusting it. In particular, check
-   whether `agent/history_store.py`/`tests/test_history_store.py` are
-   still untracked (M4.1 not yet reviewed/committed) or have since been
-   committed (M4.1 approved — safe to consider M4.2 next).
-2. If M4.1 is still uncommitted, that review is the most likely next
-   action: read `agent/history_store.py`/`tests/test_history_store.py`
-   directly, re-run `python -m unittest discover -s tests -v`, and
-   decide whether to commit as-is, request changes, or discard. Do not
-   proceed to M4.2 (executor/UI capture wiring) without that decision
-   first.
+   whether `agent/history_capture.py`/`tests/test_history_capture.py`
+   are still untracked (M4.2 not yet reviewed/committed) or have since
+   been committed (M4.2 approved — safe to consider M4.3 next).
+2. If M4.2 is still uncommitted, that review is the most likely next
+   action: read `agent/history_capture.py`/`tests/test_history_capture.py`
+   and the capture wiring inside `agent/executor.py`'s
+   `execute_task_stream()` directly, re-run
+   `python -m unittest discover -s tests -v`, and decide whether to
+   commit as-is, request changes, or discard. Do not proceed to M4.3
+   (Jarvis-facing search ToolSpecs) without that decision first. Also
+   worth independently re-verifying the `tests/__init__.py` central-guard
+   finding described in the M4.2 section above — check whether any other
+   file-backed store in this project has been silently relying on that
+   guard alone.
 3. Before relying on `analyze_code_impact`/`find_code_path` results for
    anything precision-sensitive, check `code_graph_status` first — it
    will likely report `stale` (HEAD has moved past the graph's
-   `built_at_commit` since the G1.1 docs commit, and will move further
-   once M4.1 is committed). If a rebuild is actually useful at that
-   point, use the precision workflow in `docs/GRAPHIFY.md`'s "Known
-   incremental-extraction limitation" section (clean tracked tree →
-   back up the old graph outside the repo → re-extract from empty →
-   validate → delete the backup) rather than a bare incremental
+   `built_at_commit` (`cd13e2a`) since M4.2's tracked-file edits, once
+   committed). If a rebuild is actually useful at that point, use the
+   precision workflow in `docs/GRAPHIFY.md`'s "Known incremental-
+   extraction limitation" section (clean tracked tree → back up the old
+   graph outside the repo → re-extract from empty → validate → delete
+   the backup) rather than a bare incremental
    `graphify extract . --code-only`.
 4. If the user wants to proceed with configuring a real OpenClaw
    messaging channel, that is a real, separate, higher-risk step (real

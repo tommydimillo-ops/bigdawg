@@ -15,6 +15,7 @@ from agent.chat import openai_client, xai_client
 from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from agent.cancellation import cancellation_requested, clear_cancellation
 from agent.delegation import decide as decide_delegation
+from agent import history_capture
 from agent import provider_health
 from agent.model_router import build_fallback_chain, select as select_model
 from agent.observability import log_event, preview
@@ -661,6 +662,16 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     request_start = time.time()
     clear_cancellation(context.request_id)
 
+    # Phase 9 M4.2: record the user's ask as early as a real request_id
+    # exists and before any model/provider call is attempted (including
+    # is_complex()'s own planning-model call below) -- so if Jarvis
+    # crashes or is cancelled immediately after, the fact the user asked
+    # this still survives. Deterministic, non-model-controlled: this call
+    # always happens, regardless of what any model later decides to do.
+    # Best-effort and non-fatal by construction (agent.history_capture
+    # never raises) -- a history failure must never block the real task.
+    history_capture.capture_user_turn(source, context.request_id, request)
+
     # Phase 8 part 5: bind this request's id so anything deeper in the
     # call stack -- including a tool handler with no context parameter
     # of its own, e.g. consult_coworker_agent -- can correlate back to
@@ -759,6 +770,45 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
     )
     started = False
 
+    # Phase 9 M4.2: a secondary copy of exactly the text chunks actually
+    # yielded to the caller -- appended to in the same statement pair as
+    # each real `yield` below, never buffering/delaying the real stream.
+    # Because a generator can only ever be suspended (and therefore only
+    # ever abandoned via GeneratorExit) at a yield point, and every
+    # append happens immediately before its paired yield, this list holds
+    # exactly the chunks already delivered to the caller at any moment
+    # this generator might stop running -- normal completion, a handled
+    # failure/cancellation/PartialToolExecution, or the caller closing/
+    # abandoning the generator early. See _finalize_history_capture below
+    # for where this gets persisted.
+    captured_chunks = []
+
+    # Phase 9 M4.2: exactly one finalize call site, run unconditionally
+    # from the `finally:` block below -- deliberately NOT one call
+    # scattered into each of the four terminal branches. A `finally`
+    # attached to the `try:` around the whole fallback loop runs on every
+    # way this generator can stop, not just an explicit `return`: a
+    # normal return, an exception propagating out (including one no
+    # `except` clause here catches), and GeneratorExit thrown in when the
+    # caller closes/abandons the generator before any terminal branch
+    # ever runs -- none of the `except PartialToolExecution`/`except
+    # Exception` clauses below catch GeneratorExit (it's a BaseException,
+    # not an Exception), so without this, an abandoned generator would
+    # silently drop whatever was already yielded and leak its
+    # request_id -> session_id bookkeeping in agent.history_capture
+    # forever. `_history_finalized` guards strictly against a
+    # theoretical double-call, since capture_assistant_turn() is the sole
+    # place responsible for cleaning up that bookkeeping and must do so
+    # exactly once per request.
+    _history_finalized = False
+
+    def _finalize_history_capture():
+        nonlocal _history_finalized
+        if _history_finalized:
+            return
+        _history_finalized = True
+        history_capture.capture_assistant_turn(source, context.request_id, "".join(captured_chunks))
+
     # Phase 9 Milestone 2: task-aware, ordered, N-provider candidate list
     # replaces the original hardcoded two-tier Claude-then-OpenAI cascade
     # below -- same "try this candidate, on failure (without partial
@@ -806,6 +856,7 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
 
                 for chunk in loop_iter:
                     started = True
+                    captured_chunks.append(chunk)
                     yield chunk
 
                 if position > 0:
@@ -837,6 +888,7 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
                     "request_failed", request_id=context.request_id, component="executor", level="error",
                     duration=time.time() - request_start, reason="partial_tool_execution",
                 )
+                captured_chunks.append(PARTIAL_EXECUTION_MESSAGE)
                 yield PARTIAL_EXECUTION_MESSAGE
                 return
 
@@ -850,7 +902,9 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
                         "request_failed", request_id=context.request_id, component="executor", level="error",
                         duration=time.time() - request_start, reason="connection_dropped", error_type=type(error).__name__,
                     )
-                    yield "\n\n[Connection dropped before finishing — please try again.]"
+                    connection_dropped_message = "\n\n[Connection dropped before finishing — please try again.]"
+                    captured_chunks.append(connection_dropped_message)
+                    yield connection_dropped_message
                     return
 
                 log_event(
@@ -866,10 +920,13 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
                         "request_failed", request_id=context.request_id, component="executor", level="error",
                         duration=time.time() - request_start, error_type=type(error).__name__,
                     )
-                    yield f"Agent error: {error}"
+                    agent_error_message = f"Agent error: {error}"
+                    captured_chunks.append(agent_error_message)
+                    yield agent_error_message
                     return
                 # else: fall through the for loop to the next candidate
     finally:
+        _finalize_history_capture()
         unregister_active(context.request_id)
         clear_cancellation(context.request_id)
         jarvis_state.reset_to_idle()

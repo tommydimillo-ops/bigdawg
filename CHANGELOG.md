@@ -7,7 +7,143 @@ needed.
 
 ---
 
-## 2026-08-22 (most recent) — Phase 9 / M4.1 hardening: FTS5's own secure-delete layer (built, tested, UNCOMMITTED)
+## 2026-08-23 (most recent) — Phase 9 / M4.2: deterministic history capture (built, tested, UNCOMMITTED)
+
+**What**: The second implementation slice of Phase 9 / M4 (Conversation &
+History Intelligence) — makes `agent/history_store.py` (M4.1, committed
+`cd13e2a`) operational by deterministically capturing real Jarvis
+interactions. New module `agent/history_capture.py` is the *only* place
+that decides when a turn is written and which session it belongs to;
+`agent/executor.py`'s `execute_task_stream()` calls it unconditionally at
+fixed control-flow points — never behind a ToolSpec, never behind
+anything a model decided. This is application infrastructure, the same
+category as `agent/execution_history.py`'s existing
+`record_started`/`record_completed` calls, not a new capability Jarvis
+can choose to use.
+
+**Capture points**: a user-turn capture immediately after
+`RequestContext.create()` — before delegation, agent routing, or
+`is_complex()`'s own planning-model call, the earliest point a real
+`request_id` exists — so the fact the user asked survives even a crash
+immediately after. An assistant-turn capture at every terminal path
+(`execute_task_stream()` has exactly four: normal completion/
+cancellation, `PartialToolExecution`, and the two provider-failure
+branches), recording exactly the text chunks the caller actually
+received. A plain list (`captured_chunks`) is appended to at the same
+line every real chunk is already `yield`ed — the stream itself is never
+buffered, delayed, or converted to a non-streaming API. A request with
+zero visible output records no assistant turn — never a fabricated
+transcript to keep a pair symmetrical.
+
+**Session lifecycle**: `chat` and `voice` each get one process-lifetime
+session (a module-level cache, lock-protected for the one-time
+first-caller race — see the bug found and fixed below), reused across
+every turn on that source for the life of the process, deliberately
+never merged with each other even when both occur in the same process
+(e.g. `app.py`'s Streamlit UI can emit both typed `chat` and mic-input
+`voice` turns). `scheduled` gets a brand-new session on every single
+top-level request, one request/one session, no caching. A small
+`request_id -> session_id` map (populated by the user-turn capture,
+consumed by the assistant-turn capture, bounded by in-flight request
+count) guarantees both turns of one request land in the same session
+even for `scheduled`.
+
+**Failure isolation**: `capture_user_turn`/`capture_assistant_turn`
+catch every exception internally and never raise. A `history_store`
+failure (locked db, corrupt schema, unsupported source, anything) is
+logged as a bounded `history_capture_failed`/`history_capture_skipped`
+warning (operation/source/request_id/error-type only, never raw turn
+content) and otherwise ignored — the real task's outcome, tool
+execution, and assistant answer are never affected. Exactly one capture
+attempt per logical operation, no retry loop, relying on
+`history_store`'s own `(request_id, role)` idempotency.
+
+**Bug found and fixed during development, self-caught before tests
+locked it in**: the original session-cache logic checked "is there
+already a cached session" and, if not, created one — but held the lock
+only around the dict read and the dict write, not the SQLite call in
+between. Under real concurrency this let N threads all see "no cached
+session yet" and each create a genuinely separate, orphaned session row
+(proven by a threaded test: 20 concurrent first-time `chat` captures
+produced 20 sessions, not 1). Fixed by holding the lock across the full
+check-then-create-then-cache sequence — safe because this only matters
+on the very first call per source in the whole process; every later call
+takes a fast, lock-brief, SQLite-free path.
+
+**Real API-cost incident, caught and fixed within the same pass**: an
+early draft of the `PartialToolExecution` regression test mocked
+`claude_client` but not `build_fallback_chain`, so the real
+task-classifier/router picked a different provider as the first
+candidate — sending one real, unmocked request to the live OpenAI API
+(which returned a 400 validation error before generating any tokens,
+so no completion cost was billed, but the network call itself was real).
+Fixed by explicitly pinning `build_fallback_chain` to a single
+deterministic candidate in every test that exercises a real provider
+failure path, matching the pattern `tests/test_executor_multi_provider_
+fallback.py` already established — applied defensively to every other
+real-`execute_task_stream()` test in this pass too, not just the one
+that broke.
+
+**Test isolation — a second, more consequential finding**: while
+verifying no test could write the real production `history.db`, the
+suite polluted it anyway on the first real full-suite run (76 real rows,
+2 sessions, matching the exact run's timing). Root cause: `tests/
+__init__.py`'s package-level guard (the existing pattern already relied
+on for `agent.usage.USAGE_FILE`) does **not** actually execute under
+this project's real `python -m unittest discover -s tests -v`
+invocation — confirmed with a stderr marker at that file's top level
+that never printed during a real `discover` run. `discover` with no
+`-t` flag imports each test file as a bare top-level module (e.g.
+`test_history_capture`, not `tests.test_history_capture`), so `tests/
+__init__.py` is never triggered. This is a pre-existing gap that
+predates M4.2 and was invisible until now only because every test file
+that touches `USAGE_FILE` already redundantly isolates it itself. Fixed
+by extending that real, verified-working per-file pattern to
+`agent.history_store.HISTORY_DB` in every one of the 8 existing test
+files whose tests exercise a real (even if provider-mocked)
+`execute_task_stream()`/`execute_task()`/`run_request()` call
+(`test_claude_gateway.py`, `test_executor_multi_provider_fallback.py`,
+`test_executor_phase5_integration.py`, `test_agents_executor_
+integration.py`, `test_phase6_security.py`, `test_usage_limits_
+integration.py`, `test_voice_session.py`, `test_voice_skill_
+integration.py`), plus the new `tests/test_history_capture.py` itself.
+`tests/__init__.py`'s docstring corrected to document this honestly
+rather than repeat the disproven claim.
+
+**What this pass deliberately does not do** (each its own later,
+explicitly-gated milestone): no `search_conversation_history`/
+`history_status` ToolSpec — `tools/registry.py`/`tools/schemas/__init__.py`
+untouched; no backfill of `conversation.json`; no typed-memory change;
+no proactive context injection; `app.py`/`ui/menu_bar.py`/
+`agent/voice_session.py`/`agent/scheduler_daemon.py` themselves
+untouched (all history writes happen inside `execute_task_stream()`
+itself, which every one of them already calls — no independent capture
+path anywhere).
+
+**Verified**: new `tests/test_history_capture.py` (27 tests) covering
+session lifecycle (chat reuse, voice separation, scheduled distinctness,
+concurrent-scheduled distinctness, thread safety), the success pair
+(same session/request_id, exact text, orphaned-assistant-without-user
+case), idempotency, source validation (chat/voice/scheduled accepted,
+unsupported source skipped without crashing), failure isolation
+(session-creation failure, user-record failure, assistant-record
+failure, each proven non-raising with a bounded content-free warning),
+privacy (secret redaction in both turn roles, truncation), no-retry
+behavior, and — via a real `execute_task_stream()` with only the
+provider call mocked — end-to-end success, failure, cancellation, and
+`PartialToolExecution` capture, each verified by reading the actual
+persisted rows back out of a temporary SQLite database, not just
+checking no exception was raised. Latency: ~4.6ms per capture call
+(~9.3ms per full turn pair) against a temp db, negligible next to real
+LLM call latency; `synchronous=FULL` was not weakened for speed. Full
+suite: **1363 passed, 0 failed** (1336 M4.1 baseline + 27 new). No paid
+provider calls in the final, corrected test suite. Confirmed the real
+production `history.db` was not created by any test after the isolation
+fix landed.
+
+---
+
+## 2026-08-22 — Phase 9 / M4.1 hardening: FTS5's own secure-delete layer (committed as `cd13e2a`, part of the M4.1 commit)
 
 **What**: A review of the M4.1 slice below found one privacy gap: the
 core `PRAGMA secure_delete=ON` already set on every write connection
@@ -86,7 +222,7 @@ without being able to force-demonstrate it in a lab test.
 
 ---
 
-## 2026-08-22 — Phase 9 / M4.1: durable history store + FTS5 core (built, tested, UNCOMMITTED)
+## 2026-08-22 — Phase 9 / M4.1: durable history store + FTS5 core (committed as `cd13e2a`, pushed, CI-verified)
 
 **What**: The first implementation slice of Phase 9 / M4 (Conversation &
 History Intelligence), following the M4A audit's storage-boundary

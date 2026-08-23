@@ -136,7 +136,11 @@ limit checkpoints, permission/confirmation enforcement (delegated to
 itself decide *what* a request needs — that's spread across smaller,
 single-purpose deciders it calls into (delegation, agent routing, planner,
 autonomy), each pure/deterministic where the decision doesn't require the
-model's own judgment.
+model's own judgment. Since Phase 9 M4.2, it's also the single point that
+calls into `agent/history_capture.py` (§12b) — a user-turn capture near
+the top of `execute_task_stream()`, an assistant-turn capture at every
+terminal path — deterministic application infrastructure, not something
+any tool call or model decision controls.
 
 **`agent/brain.py`** builds the system prompt (`BASE_SYSTEM_PROMPT` — a
 large, hand-tuned block of tool-usage guidance, tone rules, and behavioral
@@ -455,11 +459,12 @@ nothing that already imports them needed to change): `agent/lessons.py`
   Streamlit multi-device UI, not long-term memory.
 - `agent/execution_history.py` — bounded metadata about past *requests*
   (status, duration, tools used), not personal facts.
-- `agent/history_store.py` (Phase 9 M4.1) — durable, searchable
-  *evidence* of what was actually said, when; never superseded the way a
-  memory is. See §12a for the full HISTORY-vs-MEMORY boundary and the
-  module's own scope. This module never imports from or writes to
-  `agent/memory/`, and the reverse is expected to remain true.
+- `agent/history_store.py` (Phase 9 M4.1) / `agent/history_capture.py`
+  (Phase 9 M4.2) — durable, searchable *evidence* of what was actually
+  said, when; never superseded the way a memory is. See §12a/§12b for
+  the full HISTORY-vs-MEMORY boundary and each module's own scope.
+  Neither module imports from or writes to `agent/memory/`, and the
+  reverse is expected to remain true.
 
 The real, live memory store is the absolute,
 `~/Library/Application Support/CampusPilot/`-based path in
@@ -701,16 +706,80 @@ as a tie-breaker only — no weighted BM25/recency formula is invented
 here; that's deferred to a later milestone once real retrieval quality
 can be observed.
 
-**What M4.1 deliberately does not do yet** (each a distinct, later,
-explicitly-gated milestone): no automatic capture from
-`agent/executor.py`/`app.py`/`ui/menu_bar.py`/`agent/voice_session.py`/
-`agent/scheduler_daemon.py` — every write today happens only because a
-caller (currently just this module's own test suite) explicitly calls
-`create_session()`/`record_turn()`; no backfill of the existing
-`conversation.json`; no Jarvis-facing ToolSpec (`search_history`/
-`history_status` are plain Python functions, not registered tools); no
-proactive context injection; no automatic age-based deletion (retention
-defaults to indefinite).
+**What M4.1 deliberately did not do yet** (each a distinct, later,
+explicitly-gated milestone — M4.2 below implements the first of these):
+no backfill of the existing `conversation.json`; no Jarvis-facing
+ToolSpec (`search_history`/`history_status` are still plain Python
+functions, not registered tools); no proactive context injection; no
+automatic age-based deletion (retention defaults to indefinite).
+
+### 12b. History capture (Phase 9 M4.2)
+
+`agent/history_capture.py` is the *only* place that decides when a turn
+is recorded and which session it belongs to — `agent/history_store.py`
+(§12a) has no opinion about either, by design. It is called
+unconditionally from two fixed points in `agent/executor.py`'s
+`execute_task_stream()`: once near the very top (before delegation,
+agent routing, or `is_complex()`'s own planning-model call — the
+earliest point a real `request_id` exists), and once at every terminal
+path (normal completion, cancellation, `PartialToolExecution`, and both
+provider-failure branches). **The LLM never decides whether a turn is
+written** — there is no write-history ToolSpec, and none of the four
+terminal points depend on anything a model chose to say or do; they are
+plain control-flow branches `execute_task_stream()`'s own loop already
+had.
+
+**Assistant-turn accumulation without breaking streaming**: a plain list
+(`captured_chunks`) is appended to at the exact same point every real
+chunk is already `yield`ed — never a separate buffering pass, never
+delaying output. At whichever terminal point is reached, the accumulated
+text (if any) is joined and recorded as one assistant turn. A request
+that yielded zero visible text records no assistant turn at all — never
+a fabricated placeholder, matching M4.1's "evidence, not a requirement
+that every request forms a perfect pair" framing.
+
+**Session lifecycle** (three sources, three different lifetimes): `chat`
+and `voice` each get one process-lifetime session, cached in a
+module-level dict and reused across every turn on that source for the
+life of the process — deliberately *not* merged with each other even
+when both occur in the same process (e.g. `app.py`'s Streamlit UI can
+emit both `source="chat"` typed turns and `source="voice"` mic-input
+turns from the same run). `scheduled` gets a brand-new session on every
+single top-level request, never cached — one request, one session. A
+small `request_id -> session_id` map (populated by the user-turn
+capture, consumed by the assistant-turn capture) guarantees both turns
+of one request land in the same session even for `scheduled`, which has
+no per-source cache to fall back on. No cross-process or cross-restart
+session continuation exists.
+
+**Failure isolation is structural, not incidental**: both public
+functions (`capture_user_turn`, `capture_assistant_turn`) catch every
+exception internally and never raise — a database lock, a corrupt
+schema, an unsupported source, or any other `history_store` failure is
+logged as a bounded `history_capture_failed`/`history_capture_skipped`
+warning (operation/source/request_id/error-type only, never raw turn
+content) and otherwise ignored. Exactly one capture attempt per logical
+operation — no retry loop — relying on `history_store`'s own
+`(request_id, role)` idempotency, not a scheme built here. This means a
+history-store outage degrades Jarvis to "no memory of this exchange,"
+never to "the exchange itself failed."
+
+**Test isolation — a real finding, not an assumption**: `tests/__init__.py`'s
+package-level guard (already used for `agent.usage.USAGE_FILE`) does
+**not** reliably execute under this project's actual
+`python -m unittest discover -s tests -v` invocation — confirmed
+empirically (a stderr marker at that file's top level never printed
+during a real `discover` run), because `discover` with no `-t` flag
+imports each test file as a bare top-level module, not as a submodule of
+the `tests` package, and therefore never triggers `tests/__init__.py`.
+This is a pre-existing, previously-undetected gap that predates M4.2 and
+was only ever masked because every affected test file already
+redundantly isolates `USAGE_FILE` itself in its own `setUp`/`tearDown`.
+The real, verified-working protection is exactly that per-file pattern,
+now extended to `agent.history_store.HISTORY_DB` in every test file
+whose tests exercise a real (even if provider-mocked)
+`execute_task_stream()`/`execute_task()` call. See `tests/__init__.py`'s
+own docstring for the full account.
 
 ## 13. Authentication / security
 
