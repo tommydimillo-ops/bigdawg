@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read", "Glob", "Grep", "Edit", "Write", "TodoWrite", "WebFetch", "WebSearch",
+      "Bash"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(sudo:*)",
+      "Bash(shutdown:*)",
+      "Bash(diskutil:*)",
+      "Bash(mkfs:*)",
+      "Bash(dd:*)",
+      "Bash(chmod -R:*)",
+      "Bash(chown:*)",
+      "Bash(curl:* | bash)",
+      "Bash(curl:* | sh)",
+      "Bash(wget:* | bash)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(brew uninstall:*)",
+      "Bash(npm publish:*)",
+      "Bash(pip uninstall:*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./.env)",
+      "Write(./.env)"
+    ]
+  }
+}

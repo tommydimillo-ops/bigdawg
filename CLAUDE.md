@@ -296,6 +296,37 @@ Whenever a new Claude Code session begins on this project:
    existing working system to accomplish a new task — see "Rules for
    modifying existing architecture" above.
 
+## Relay mode (Cowork plans, Claude Code executes)
+
+This project can be worked by two Claude instances at once. Cowork (Claude in
+the desktop app) has read/write access to this repo but runs in a Linux VM with
+no network, so it **cannot** run the suite, install dependencies, or reach
+GitHub. Claude Code runs natively and can do all three. So Cowork plans and
+reviews; Claude Code executes.
+
+They hand off through files in `.relay/` (gitignored):
+
+- Claude Code writes `.relay/report-N.md`, then blocks waiting on
+  `.relay/plan-N.md`.
+- Cowork reads the report, **verifies it against the actual diff**, and writes
+  the next plan.
+
+Start it by typing `/relay` in Claude Code (see `.claude/commands/relay.md`).
+
+Two things learned from the first run (M4.3), worth preserving:
+
+1. **A passing report is not evidence.** Round 2 reported "27/27 pass, no
+   deviations"; review of the source found an unguarded `int()` outside the
+   `try` block that would have let a traceback escape a permission-0 tool. Round
+   4 reported "exactly 2 stale mentions remain"; a grep found 7. Neither was
+   dishonest — both were invisible from the report alone. Always read the
+   artifact.
+2. **`.relay/` is the memory.** Cowork sessions are ephemeral. The `plan-*.md`
+   files record every decision *and its reasoning*, so a later session can pick
+   up cold. This only works while the docs stay true to `git log` — which is why
+   the NEW SESSION PROTOCOL's "trust the code" rule matters more here than
+   usual.
+
 ## SESSION END PROTOCOL
 
 Before a substantial Claude Code session on this project ends:

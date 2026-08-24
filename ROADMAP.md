@@ -603,6 +603,36 @@ specific one.
 Other candidates raised but not yet started, roughly in order of what's
 been discussed most recently:
 
+- **Walmart account integration (raised, NOT approved, NOT scoped)** — the
+  user asked about letting Jarvis read purchase history, build a cart, and
+  check out on confirmation. Recorded here so the thinking isn't lost; no
+  design pass has been done and none is scheduled.
+  - Walmart has no public consumer API and no official MCP server. The
+    third-party MCP servers that exist work by storing session cookies —
+    a credential-handling risk and a plausible route to an account flag.
+    If this is ever built, browser automation in Jarvis's own owned Chrome
+    profile fits the existing architecture instead (`agent/browser_lock.py`
+    and Playwright already exist from Phase 9 M1).
+  - Permission mapping under this repo's real `LEVEL_NAMES`: reading order
+    history is read-only, cart building is level 3 (external communication —
+    it mutates state on a third-party account), checkout is level 4
+    (financial) and must stay confirmation-gated.
+  - **Correction worth keeping.** An outside suggestion proposed sourcing
+    order history from Gmail "since you already have that connector."
+    **Jarvis does not.** `tools/schemas/logins_and_email.py` registers
+    `fill_login`, `confirm_login`, `draft_email`, `send_email` — all
+    outbound or auth. There is no read/search-inbox tool anywhere in
+    `tools/schemas/`. The Gmail connector in question belongs to the Cowork
+    session talking to the user, not to Jarvis. So "just read the
+    confirmation emails" is not a cheap first phase here; it would require
+    building inbound email reading first, which is its own milestone with
+    its own privacy surface.
+  - If ever built: three separable phases (read-only history → cart →
+    checkout), each independently testable. Expect real bot detection —
+    surface a CAPTCHA or account hold to the user rather than retrying
+    silently. Log every level 3-4 action through `agent/audit.py` so there
+    is an audit trail, not just a permission gate.
+
 - **Graphify G2 (not yet scoped)** — possible future direction: MCP
   exposure, Claude Code hooks, or automatic graph regeneration, none of
   which G1 implements or assumes. Not started, not approved; would need
