@@ -538,6 +538,29 @@ in-progress work.
 
 ## Next
 
+- **MemoryAgent bypass audit (found by Phase 10's M10.0 pass, not yet
+  scoped or started)** — `agent/agents/memory.py`'s `execute()` calls
+  `remember()`/`recall()` directly, bypassing `tools.registry`/
+  `agent.autonomy` entirely, the same way `agent/research_agent.py`'s
+  own internal tool loop already does. Unlike ResearchAgent's version,
+  this one was never named or audited as a deliberate exception anywhere
+  before M10.0 found it while enumerating every coworker agent's real
+  side-effecting call sites — it predates Phase 10 by phases (Phase 7)
+  and has simply never been looked at as a permission question until
+  now. `agent/memory/safety.py`'s content filter still applies (it's
+  inside `agent.memory.remember` itself, a layer below the registry) —
+  but that is a content filter, not a permission gate, and the
+  registry/autonomy gate is genuinely bypassed. Now documented as an
+  accepted-but-unaudited exception in `CLAUDE.md` rule 3 and structurally
+  tracked by `tests/test_gating_structural.py`'s
+  `ACCEPTED_UNGATED_CALL_SITES` (so it can't silently disappear from
+  view again) — not fixed. Whether it needs the same
+  `should_request_confirmation` treatment a near-term follow-up gives
+  `agent/agents/coding.py`'s `write_file`, or is fine as-is given the
+  content filter and MemoryAgent's narrower blast radius (a fact
+  recorded, not something wiped), is an open question for a future pass,
+  not a bug fix to reflexively apply.
+
 **Phase 9 / M4A — Conversation & History Intelligence Architecture
 Audit is complete** (an audit-and-design-only pass, delivered as an
 in-conversation report — no committable artifact of its own beyond the

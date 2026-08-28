@@ -71,6 +71,17 @@ _AUTONOMY_THRESHOLDS = {
 }
 _MAX_DEFINED_LEVEL = max(_AUTONOMY_THRESHOLDS)
 
+# Sources with no live person on the other end to answer a CONFIRM
+# verdict -- a scheduled task was the original member; a coworker-agent
+# worker subprocess (Phase 10, agent/agents/worker.py's RequestContext.
+# create(..., source="agent_worker")) has the exact same property: it
+# runs to completion inside its own OS subprocess with no mid-task
+# round trip back to the user, so a verdict that would otherwise mean
+# "pause and ask" must mean DENY here too, for the same reason it
+# already does for "scheduled" -- silently hanging forever, or (worse)
+# silently proceeding, are the two wrong answers to "can't be asked."
+_NON_INTERACTIVE_SOURCES = frozenset({"scheduled", "agent_worker"})
+
 
 class Decision(str, Enum):
     ALLOW = "allow"
@@ -105,18 +116,31 @@ def should_request_confirmation(
     tool_name: str,
     autonomy_level: int,
     execution_context: Optional[ExecutionContext] = None,
+    permission_level: Optional[int] = None,
 ) -> Decision:
     """Pure, deterministic. Never consults the model. The caller (agent/
-    executor.py's _run_tool) is responsible for actually enforcing this
-    verdict -- this function only decides."""
+    executor.py's _run_tool, and -- Phase 10 -- a coworker agent's own
+    write path calling this directly) is responsible for actually
+    enforcing this verdict; this function only decides.
+
+    `permission_level`, when given, is used as-is instead of looked up
+    via tools.registry.permission_level(tool_name) -- the escape hatch
+    for a real action that is not, and must not become, a model-callable
+    registered tool (agent/agents/coding.py's write_file is the first
+    caller: CodingAgent's own internal write path, never exposed to the
+    model directly, still needs a real permission-level-vs-autonomy
+    decision, not a second, independently-written copy of this same
+    logic). Every existing caller passes nothing here and keeps the
+    original registry-lookup behavior byte-for-byte."""
 
     execution_context = execution_context or ExecutionContext()
 
-    permission_level = registry.permission_level(tool_name)
     if permission_level is None:
-        # Unregistered tool -- be conservative, never auto-allow
-        # something the permission system doesn't even know about.
-        return Decision.CONFIRM
+        permission_level = registry.permission_level(tool_name)
+        if permission_level is None:
+            # Unregistered tool -- be conservative, never auto-allow
+            # something the permission system doesn't even know about.
+            return Decision.CONFIRM
 
     if execution_context.source == "voice" and tool_name in _VOICE_ALWAYS_CONFIRMS:
         return Decision.CONFIRM
@@ -128,7 +152,7 @@ def should_request_confirmation(
     if permission_level <= threshold:
         return Decision.ALLOW
 
-    if execution_context.source == "scheduled":
+    if execution_context.source in _NON_INTERACTIVE_SOURCES:
         # No live person to confirm with -- a CONFIRM verdict here could
         # never actually be answered, so it must be a hard no instead of
         # silently hanging or (worse) silently proceeding.

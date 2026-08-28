@@ -64,6 +64,58 @@ class TestScheduledSourceDeniesInsteadOfConfirms(unittest.TestCase):
         ctx = ExecutionContext(source="chat")
         self.assertEqual(should_request_confirmation("run_python", 1, ctx), Decision.CONFIRM)
 
+    def test_agent_worker_source_denies_when_would_otherwise_confirm(self):
+        # Phase 10: a coworker-agent worker subprocess has the exact same
+        # "no live person to answer a CONFIRM verdict" property a
+        # scheduled task does -- it runs to completion inside its own OS
+        # process with no mid-task round trip back to the user.
+        ctx = ExecutionContext(source="agent_worker")
+        self.assertEqual(should_request_confirmation("run_python", 1, ctx), Decision.DENY)
+
+    def test_agent_worker_source_still_allows_within_threshold(self):
+        ctx = ExecutionContext(source="agent_worker")
+        self.assertEqual(should_request_confirmation("get_weather", 1, ctx), Decision.ALLOW)
+
+
+class TestPermissionLevelOverride(unittest.TestCase):
+    """Phase 10's chokepoint: a real action that is not, and must not
+    become, a model-callable registered tool (agent/agents/coding.py's
+    write_file) still needs a real permission-level-vs-autonomy
+    decision, through the SAME function _run_tool already calls -- not a
+    second, independently-written copy of this logic."""
+
+    def test_override_skips_the_registry_lookup(self):
+        # "not_a_real_tool" is unregistered -- would normally always
+        # CONFIRM (test_unregistered_tool_always_confirms above) -- but
+        # an explicit override bypasses that lookup entirely.
+        self.assertEqual(
+            should_request_confirmation("not_a_real_tool", 4, permission_level=2),
+            Decision.ALLOW,
+        )
+
+    def test_override_still_respects_the_autonomy_threshold(self):
+        self.assertEqual(
+            should_request_confirmation("not_a_real_tool", 1, permission_level=2),
+            Decision.CONFIRM,
+        )
+
+    def test_override_combined_with_a_non_interactive_source_denies(self):
+        ctx = ExecutionContext(source="agent_worker")
+        self.assertEqual(
+            should_request_confirmation("not_a_real_tool", 1, ctx, permission_level=2),
+            Decision.DENY,
+        )
+
+    def test_existing_registered_tools_are_completely_unaffected(self):
+        # The override is opt-in per call -- every existing caller that
+        # doesn't pass it keeps the exact original registry-lookup
+        # behavior, for every level, byte for byte.
+        for level in range(6):
+            self.assertEqual(
+                should_request_confirmation("send_email", level),
+                should_request_confirmation("send_email", level, permission_level=None),
+            )
+
 
 class TestVoiceSourceSafety(unittest.TestCase):
 

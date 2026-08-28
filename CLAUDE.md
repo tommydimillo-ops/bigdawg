@@ -252,9 +252,38 @@ CI, uses its own service namespace and synthetic credentials only).
 2. **Preserve existing tests; add new ones for new behavior.** Run the
    full suite before considering a change done.
 3. **New tools go through `tools/registry.py`** — never a special-cased
-   dispatch path. Exception already accepted: `agent/research_agent.py`'s
-   own tiny internal loop (2 tools, not registered in the main registry,
-   documented as a deliberate, narrow exception).
+   dispatch path. Two exceptions already accepted, both because
+   `agent/agents/worker.py`'s `coworker.execute()` runs in a genuinely
+   separate OS subprocess that never imports `agent.executor`, so
+   nothing a coworker agent does internally passes through
+   `agent/executor.py`'s `_run_tool` (where `tools.registry`'s
+   permission levels and `agent.autonomy`'s decision actually live) —
+   `tests/test_gating_structural.py` is the enforced, up-to-date list of
+   every such call site, re-derived from real source on every test run,
+   not a comment that can drift:
+   - `agent/research_agent.py`'s own tiny internal loop (`open_browser`/
+     `read_document`, both read-only) — documented, deliberate, narrow,
+     audited.
+   - `agent/agents/memory.py`'s `execute()` (`remember`/`recall`, real
+     memory-store writes and reads) — shaped identically to
+     ResearchAgent's exception above, but **found only during Phase 10's
+     M10.0 pass and never itself audited before that** — it predates
+     M10.0 by phases. `agent/memory/safety.py`'s content filter still
+     applies (it's inside `agent.memory.remember` itself, a layer below
+     the registry) — that is a content filter, not a permission gate,
+     and the registry/autonomy gate is genuinely bypassed. Not fixed as
+     of this writing; see `ROADMAP.md`'s "MemoryAgent bypass audit" item.
+   
+   `agent/agents/coding.py`'s `write_file` — the higher-stakes case
+   Phase 10 actually added — is explicitly **not** a third exception:
+   M10.0 routed it through `agent.autonomy.should_request_confirmation`
+   directly, the same decision engine `_run_tool` uses for every
+   registered tool, via an explicit `permission_level` override rather
+   than requiring it to become a model-callable registered tool. Reads
+   and test-suite spawns inside the same coworker agents (CodingAgent's
+   `_read_file`/`_run_test_suite`, QAAgent's `_run_test_suite`) remain
+   ungated by deliberate, documented choice — writes were M10.0's
+   stated blast radius, not reads.
 4. **New coworker-agent capability**: real execution must go through
    `agent/agents/manager.py`'s `execute_agent()` (subprocess-isolated),
    not by calling an agent's `.execute()` directly from a tool handler —
