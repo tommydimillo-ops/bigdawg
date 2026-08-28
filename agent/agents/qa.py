@@ -22,11 +22,11 @@ tool.
 """
 import os
 import subprocess
-import sys
 import time
 
 from agent.agents.base import Agent, AgentMetadata
 from agent.agents.models import AgentResult
+from agent.canonical_suite import canonical_suite_command
 from agent.request_context import RequestContext
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,12 +44,14 @@ def _wants_test_suite_run(task_lower: str) -> bool:
 
 def _run_test_suite() -> dict:
     """Runs this project's own test suite read-only and returns a
-    structured summary -- no destructive action, no test-suite mutation,
-    just the same `python -m unittest discover` invocation used
-    throughout this project's own development."""
+    structured summary -- no destructive action, no test-suite mutation.
+    Command construction is agent.canonical_suite.canonical_suite_command
+    (see that module's own docstring for why this used to be a locally
+    hand-written command missing the load-bearing `-t .` flag, found by
+    code review, and why it's a shared function now)."""
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+            canonical_suite_command(pattern="test_*.py"),
             capture_output=True, text=True, timeout=_TEST_SUITE_TIMEOUT_SECONDS,
             cwd=_PROJECT_ROOT,
         )

@@ -54,6 +54,24 @@ class TestQAAgent(unittest.TestCase):
         self.assertTrue(result.metadata.get("deferred_to_executor"))
 
     @patch("agent.agents.qa.subprocess.run")
+    def test_includes_the_load_bearing_t_flag(self, mock_run):
+        # Real, pre-existing bug found by code review, not a live
+        # incident: this call was missing -t ., which means
+        # tests/__init__.py's safety bootstrap (redirecting every
+        # production store path, blocking external network) never ran --
+        # and this path is already fully live in production (no setting
+        # needs to be turned on), so every real "do the tests still
+        # pass?" request before this fix ran against real production
+        # paths and the real Keychain. See CLAUDE.md's "How to test"
+        # section and tests/__init__.py's own docstring for why this
+        # flag is load-bearing, not cosmetic.
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK\n", stderr="")
+        self.agent.execute("run the tests", self.context)
+        args = mock_run.call_args.args[0]
+        self.assertIn("-t", args)
+        self.assertEqual(args[args.index("-t") + 1], ".")
+
+    @patch("agent.agents.qa.subprocess.run")
     def test_never_calls_a_destructive_command(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="OK\n", stderr="")
         self.agent.execute("run the tests", self.context)
