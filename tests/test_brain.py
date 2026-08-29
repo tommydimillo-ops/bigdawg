@@ -18,6 +18,24 @@ from agent.brain import build_system_prompt
 from config.settings import settings
 
 
+class TestGreetingInstructionForbidsNarrationBeforeToolCalls(unittest.TestCase):
+    """Real finding (ROADMAP.md's "'Say hi' -> two provider calls" entry,
+    `.relay/report-2.md`): a bare greeting produced a doubled "Hello,
+    master." in the streamed reply -- the model narrated ("let me check
+    the time and weather") before calling get_system_status/get_weather,
+    then produced the full templated greeting again once results came
+    back, so the user saw/heard two separate replies instead of one.
+    Not testable end-to-end without a real model call (this is a prompt
+    instruction, not code) -- this pins the instruction's presence so it
+    can't silently regress, the same way the codebase already treats
+    other must-not-drift prompt content."""
+
+    def test_prompt_forbids_narration_before_the_greeting_tool_calls(self):
+        prompt = brain.BASE_SYSTEM_PROMPT
+        self.assertIn("ZERO text before them", prompt)
+        self.assertIn("not a stylistic question", prompt)
+
+
 class IsolatedHistoryContextSettingsTestCase(unittest.TestCase):
 
     def setUp(self):
