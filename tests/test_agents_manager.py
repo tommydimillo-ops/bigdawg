@@ -243,6 +243,25 @@ class TestExecuteAgent(IsolatedRegistryTestCase):
         self.assertEqual(request_id, "req-42")
 
     @patch("agent.agents.manager._run_agent_subprocess")
+    def test_coding_agent_gets_its_own_longer_timeout(self, mock_run):
+        # Phase 10 increment 1: a real edit/test iteration loop plus a
+        # full canonical suite run doesn't fit the shared default every
+        # other coworker agent's typical call comfortably meets.
+        manager.register(_FakeAgent(name="coding"))
+        mock_run.return_value = (self._completed(json.dumps({
+            "success": True, "agent_name": "coding", "request_id": "req-1",
+            "result": "ok", "error": None,
+        })), False)
+
+        context = self._context("fix the bug", request_id="req-42")
+        manager.execute_agent("coding", "fix the bug", context)
+
+        args, _ = mock_run.call_args
+        _, _, timeout, _, _ = args
+        self.assertEqual(timeout, manager.settings.coding_agent_timeout_seconds)
+        self.assertNotEqual(manager.settings.coding_agent_timeout_seconds, manager.settings.agent_timeout_seconds)
+
+    @patch("agent.agents.manager._run_agent_subprocess")
     def test_timeout_is_reported_as_a_normal_result(self, mock_run):
         # _run_agent_subprocess itself guarantees the kill on
         # TimeoutExpired (see TestRunAgentSubprocess below) -- this test

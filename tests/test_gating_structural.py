@@ -1,10 +1,10 @@
 """M10.0 -- the structural regression guard for the finding this
 milestone exists to address: agent/agents/worker.py's `coworker.
 execute()` runs in a genuinely separate OS subprocess that never imports
-agent.executor, so none of the coworker agents' own real side-effecting
-actions pass through agent.executor's `_run_tool` -- where tools.
-registry's permission levels and agent.autonomy's decision actually
-live for every registered tool.
+agent.executor, so none of the four coworker agents' own real
+side-effecting actions pass through agent.executor's `_run_tool` --
+where tools.registry's permission levels and agent.autonomy's decision
+actually live for every registered tool.
 
 This does not claim to fix that gap in general. It does two things:
   1. Documents, in code (not in a comment someone can silently let
@@ -20,32 +20,27 @@ This does not claim to fix that gap in general. It does two things:
      silently drop out of the accepted set without anyone deciding that
      on purpose) fails it too.
 
-agent.autonomy.should_request_confirmation is this milestone's
-chokepoint: a pure decision function (never enforces anything itself --
-the caller is responsible for acting on its verdict, the same contract
-_run_tool has always had). Its signature and placement are deliberately
-general -- any coworker action could route through it -- but this round
-routes none of them through it yet; it only builds the mechanism and
-documents, with this file, exactly what is NOT yet covered. The one
-genuinely new finding from the audit that produced this file is
-MemoryAgent's: identical in shape to ResearchAgent's already-documented
-exception (agent/research_agent.py's own internal tool loop, CLAUDE.md
-rule 3's pre-existing, deliberate carve-out), but never itself named as
-accepted anywhere before this. agent/memory/safety.py's content filter
-still applies to MemoryAgent's writes (it's inside agent.memory.remember
-itself, a layer below the registry) -- but that is a content filter, not
-a permission gate, and the registry/autonomy gate is genuinely bypassed.
-Deliberately NOT fixed this round -- see CLAUDE.md rule 3 and ROADMAP.md's
+CodingAgent's own write_file is deliberately NOT in the accepted set --
+see agent/agents/coding.py's _write_file, which now calls agent.
+autonomy.should_request_confirmation directly (the first coworker action
+routed through the same chokepoint agent/executor.py's _run_tool
+already uses for every registered tool). This test proves that routing
+actually took: if _write_file's gate call were ever removed, this test
+would immediately re-classify it as a new, undocumented bypass and fail.
+
+Everything else found by the same audit that produced this file's own
+accepted set stays exactly as it already was -- reads (CodingAgent's
+_read_file), test-suite spawns (CodingAgent's _run_test_suite/
+_collected_test_count, QAAgent's _run_test_suite), and ResearchAgent's
+own pre-existing, CLAUDE.md-documented exception are all still ungated,
+by explicit choice this round, not by oversight -- this file is that
+explicit choice, in writing. MemoryAgent's bypass is the one genuinely
+new finding here: identical in shape to ResearchAgent's already-
+documented exception, but never itself named as accepted anywhere before
+this. See CLAUDE.md's "Important coding conventions" section (the
+ResearchAgent-exception rule, now joined by this one) and ROADMAP.md's
 "MemoryAgent bypass audit" entry for the follow-up this file does not
 attempt to resolve.
-
-A near-term follow-up commit (Phase 10 increment 1, landing right after
-this one) gives agent/agents/coding.py a real, non-stub implementation
-and is expected to extend this file's _SCAN_TARGETS/
-ACCEPTED_UNGATED_CALL_SITES accordingly, with CodingAgent's write path
-routed through should_request_confirmation as the first coworker action
-this chokepoint actually gates -- deliberately not attempted in this
-commit, which only builds and proves the mechanism itself.
 
 Run with: python -m unittest tests.test_gating_structural -v
 """
@@ -57,12 +52,13 @@ from dataclasses import dataclass
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Every file a genuinely separate OS subprocess can reach starting from
-# agent/agents/worker.py's `coworker.execute(task, context)`, that
-# already exists with real side-effecting behavior as of this commit --
-# agent/agents/coding.py is deliberately excluded here: at this point in
-# history it is still the Phase-9 stub (no real file I/O at all), so it
-# has nothing to scan yet. See module docstring.
+# agent/agents/worker.py's `coworker.execute(task, context)` -- the four
+# coworker agents' own modules, plus the one file each of ResearchAgent/
+# QAAgent's real work is one hop into (research_agent.py). Deliberately
+# NOT agent/coding_checkpoint.py: that file is the safety mechanism an
+# agent's own actions run through, not a task-directed action itself.
 _SCAN_TARGETS = (
+    "agent/agents/coding.py",
     "agent/agents/qa.py",
     "agent/agents/memory.py",
     "agent/research_agent.py",
@@ -73,8 +69,8 @@ _SCAN_TARGETS = (
 # real browser/network navigation, or a real memory-store write/read.
 # Matched by the bare function/attribute name (ast.Name.id or
 # ast.Attribute.attr), not fully-qualified -- precise enough for these
-# files' actual current import shapes (verified by direct inspection,
-# not assumed) without needing full call-graph resolution.
+# four files' actual current import shapes (verified by direct
+# inspection, not assumed) without needing full call-graph resolution.
 _DANGEROUS_CALL_NAMES = frozenset({
     "run", "Popen", "call", "check_call", "check_output",  # subprocess.*
     "open",  # builtin open() -- real file read or write
@@ -100,12 +96,30 @@ class AcceptedException:
 # The full, explicit table -- built from the M10.0 audit (this
 # conversation's own enumeration, independently re-verified here by
 # actually parsing the source, not copied from memory). Each entry is a
-# real decision, written down, not an omission. MemoryAgent's is the
-# genuinely new finding: shaped identically to ResearchAgent's already-
-# documented exception, never itself named as accepted before this file.
-# Also added to CLAUDE.md rule 3 and opened as its own ROADMAP.md item --
-# not fixed here.
+# real decision, written down, not an omission:
+#   - CodingAgent's write_file is NOT here -- it is the one write this
+#     round actually gates (see module docstring).
+#   - Reads and test-suite spawns stay ungated this round: the blast
+#     radius this milestone targets is writes specifically.
+#   - MemoryAgent's is the genuinely new finding: shaped identically to
+#     ResearchAgent's already-documented exception, never itself named
+#     as accepted before this file. Also added to CLAUDE.md rule 3 and
+#     opened as its own ROADMAP.md item -- not fixed here.
 ACCEPTED_UNGATED_CALL_SITES = frozenset({
+    AcceptedException(
+        file="agent/agents/coding.py", function="_read_file",
+        reason="Read-only. Writes are this round's blast radius, not reads.",
+    ),
+    AcceptedException(
+        file="agent/agents/coding.py", function="_run_test_suite",
+        reason="Real subprocess spawn, but read-only (runs the suite, mutates nothing "
+               "in the repo itself) -- CodingAgent's own mandatory final verification step.",
+    ),
+    AcceptedException(
+        file="agent/agents/coding.py", function="_collected_test_count",
+        reason="Same read-only test-suite-spawn shape as _run_test_suite, scoped to one "
+               "file -- the uncollected-test-file verification check.",
+    ),
     AcceptedException(
         file="agent/agents/qa.py", function="_run_test_suite",
         reason="Real subprocess spawn, but read-only by construction -- no write/delete "
@@ -174,8 +188,8 @@ class TestUngatedCallSitesMatchTheAcceptedSet(unittest.TestCase):
             new_bypasses, set(),
             f"New ungated call site(s) found that aren't in ACCEPTED_UNGATED_CALL_SITES: "
             f"{new_bypasses}. Either gate this action (route it through "
-            f"agent.autonomy.should_request_confirmation) or add it to the accepted set "
-            f"with a real reason.",
+            f"agent.autonomy.should_request_confirmation, the way agent/agents/coding.py's "
+            f"_write_file now does) or add it to the accepted set with a real reason.",
         )
         self.assertEqual(
             no_longer_present, set(),
@@ -184,6 +198,12 @@ class TestUngatedCallSitesMatchTheAcceptedSet(unittest.TestCase):
             f"ACCEPTED_UNGATED_CALL_SITES; leaving a stale entry hides that this actually "
             f"got safer.",
         )
+
+    def test_write_file_is_not_in_the_accepted_set(self):
+        # The one thing this round actually changed: confirms the fix
+        # didn't just get documented as an exception instead of applied.
+        accepted_functions = {exc.function for exc in ACCEPTED_UNGATED_CALL_SITES}
+        self.assertNotIn("_write_file", accepted_functions)
 
     def test_every_accepted_exception_has_a_real_reason(self):
         for exc in ACCEPTED_UNGATED_CALL_SITES:

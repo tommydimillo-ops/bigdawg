@@ -172,8 +172,9 @@ def verify_agent_result(result) -> VerificationResult:
     agent's result actually hold up" is answered the same way regardless
     of how many coworkers ran. Order matters: explicit failure signals
     (success=False, a cancelled run, an explicit verification_status of
-    "failed" -- e.g. QAAgent's own test-suite check) are checked before
-    falling through to the generic failure-marker string check every
+    "failed" -- e.g. QAAgent's own test-suite check -- or a non-zero
+    metadata["suite_exit_code"], CodingAgent's own equivalent) are checked
+    before falling through to the generic failure-marker string check every
     other tool result already gets, then any agent-specific check (today,
     only ResearchAgent's source-evidence heuristic -- see module note on
     why FILES/BROWSER-shaped checks aren't implemented yet: no current
@@ -184,6 +185,19 @@ def verify_agent_result(result) -> VerificationResult:
         return VerificationResult(ok=False, note=result.error or "agent reported failure")
     if result.verification_status == "failed":
         return VerificationResult(ok=False, note="agent's own verification_status reported failure (e.g. a failing test suite)")
+    suite_exit_code = result.metadata.get("suite_exit_code")
+    if suite_exit_code is not None and suite_exit_code != 0:
+        # Phase 10 increment 1: CodingAgent's own execute() runs the
+        # canonical test suite as its final step and reports the raw exit
+        # code rather than prose (see agent/agents/coding.py). A model
+        # saying "done" is not evidence -- this overrides success=True the
+        # same way the verification_status check above already does for
+        # QAAgent, extended by one field rather than a second dispatch path.
+        return VerificationResult(
+            ok=False,
+            note=f"agent's own test-suite run exited non-zero (exit code {suite_exit_code}); "
+                 "overrides success=True",
+        )
     if result.metadata.get("deferred_to_executor"):
         # Nothing to verify yet -- this agent didn't actually do the work
         # itself (see agent/agents/coding.py, agent/agents/qa.py's

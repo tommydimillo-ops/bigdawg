@@ -264,11 +264,37 @@ class Settings:
     # coworker-agent invocation (ResearchAgent/MemoryAgent's direct
     # execution path) is allowed to run before the manager gives up and
     # reports a timeout, rather than a runaway background agent silently
-    # never returning. CodingAgent/QAAgent don't run their own loop this
-    # phase (they defer to the ordinary executor, which already has its
-    # own bounds via max_agent_steps), so this specifically covers the
-    # two agents the manager calls directly.
+    # never returning. QAAgent doesn't run its own loop (it defers to the
+    # ordinary executor, which already has its own bounds via
+    # max_agent_steps); ResearchAgent and MemoryAgent's self-contained
+    # calls are typically well under this. CodingAgent (Phase 10
+    # increment 1, coding_agent_enabled) is the exception -- see
+    # coding_agent_timeout_seconds below, which agent.agents.manager.
+    # execute_agent() uses instead of this one specifically for it.
     agent_timeout_seconds: float = 60.0
+    # CodingAgent's own edit/test iteration loop plus a full canonical
+    # test-suite run needs materially longer than every other coworker
+    # agent's typical call -- a dedicated setting rather than raising the
+    # shared agent_timeout_seconds default for every agent just to
+    # accommodate CodingAgent's one, much heavier, still-unproven use
+    # case. Must genuinely exceed the loop's own worst-case inner budget,
+    # not just be "a bigger number": agent.agents.manager's real timeout
+    # path is an immediate proc.kill(), no grace period (unlike the
+    # cooperative-cancellation path), so a mismatch here means the whole
+    # worker subprocess -- including CodingAgent's own checkpoint
+    # rollback and pruning in its try/except/finally -- gets SIGKILLed
+    # before any of it runs. Found by review, not a live incident: the
+    # previous 300s default was smaller than the loop's own realistic
+    # worst case (max_agent_iterations=6 x up to 240s per iteration --
+    # agent.agents.coding._MODEL_CALL_TIMEOUT_SECONDS=120s for the model
+    # call plus up to another 120s if it calls run_tests mid-loop -- plus
+    # one mandatory final ~120s suite run = up to ~1560s), so a real
+    # long-running task could have been killed mid-rollback. 1800s gives
+    # real margin over that ~1560s worst case. Starting value, not yet
+    # tuned against real usage -- same "settings, not constants"
+    # reasoning as every other Phase 9/10 numeric knob introduced without
+    # production data yet.
+    coding_agent_timeout_seconds: float = 1800.0
     # Phase 9 Milestone 3: bounds concurrent coworker-agent subprocesses
     # launched from ONE delegate_parallel_tasks batch (agent/agents/
     # manager.py's execute_agents_parallel). Deliberately small and fixed
@@ -390,6 +416,22 @@ class Settings:
     # search_history()'s own max_results.
     history_context_max_results: int = 3
 
+    # --- CodingAgent (Phase 10 increment 1) ---
+    # Off by default, same posture as openclaw_messaging_enabled and
+    # proactive_history_enabled above: a real file-write + test-run loop
+    # is a materially larger blast radius than any tool this registry has
+    # today (see .relay/PHASE10-DESIGN.md), so it doesn't run for anyone
+    # until deliberately turned on. When False, CodingAgent.execute() is
+    # byte-for-byte the same deferred-to-executor stub it has always been.
+    coding_agent_enabled: bool = False
+    # How many refs/jarvis/checkpoints/<request_id> refs
+    # agent.coding_checkpoint.prune_checkpoints() keeps before deleting the
+    # oldest -- refs are cheap (git dedupes blobs) but not free, and
+    # nothing yet calls this automatically. Starting value, not yet tuned
+    # against real usage -- same "settings, not constants, because there's
+    # no production data yet" reasoning M4.4's four settings used.
+    coding_checkpoint_retention_count: int = 20
+
     # --- Debug / development mode ---
     # Wired to agent/observability.py's log level (DEBUG vs INFO).
     debug: bool = False
@@ -445,6 +487,9 @@ class Settings:
             ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             agent_timeout_seconds=_env_float("AGENT_TIMEOUT_SECONDS", cls.agent_timeout_seconds),
+            coding_agent_timeout_seconds=_env_float(
+                "CODING_AGENT_TIMEOUT_SECONDS", cls.coding_agent_timeout_seconds,
+            ),
             max_parallel_agents=_env_int("MAX_PARALLEL_AGENTS", cls.max_parallel_agents),
             max_agent_batch_retries=_env_int("MAX_AGENT_BATCH_RETRIES", cls.max_agent_batch_retries),
             usage_history_limit=_env_int("USAGE_HISTORY_LIMIT", cls.usage_history_limit),
@@ -471,6 +516,10 @@ class Settings:
             history_context_max_results=_env_int(
                 "HISTORY_CONTEXT_MAX_RESULTS", cls.history_context_max_results,
             ),
+            coding_checkpoint_retention_count=_env_int(
+                "CODING_CHECKPOINT_RETENTION_COUNT", cls.coding_checkpoint_retention_count,
+            ),
+            coding_agent_enabled=_env_bool("CODING_AGENT_ENABLED", cls.coding_agent_enabled),
             debug=_env_bool("DEBUG", cls.debug),
         )
 

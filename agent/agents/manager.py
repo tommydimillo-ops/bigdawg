@@ -353,10 +353,19 @@ def execute_agent(
         "autonomy_level": context.autonomy_level,
     })
 
+    # CodingAgent (Phase 10 increment 1) gets its own, much longer budget
+    # -- a real edit/test iteration loop plus a full canonical suite run
+    # doesn't fit in the shared default every other coworker agent's
+    # typical call comfortably meets. Every other agent's timeout is
+    # completely unchanged.
+    timeout_seconds = (
+        settings.coding_agent_timeout_seconds if agent_name == "coding" else settings.agent_timeout_seconds
+    )
+
     try:
         completed, cancelled_midflight = _run_agent_subprocess(
             [sys.executable, "-m", "agent.agents.worker"],
-            payload, settings.agent_timeout_seconds, _PROJECT_ROOT, context.request_id,
+            payload, timeout_seconds, _PROJECT_ROOT, context.request_id,
         )
     except subprocess.TimeoutExpired:
         log_event(

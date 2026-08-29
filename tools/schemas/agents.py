@@ -67,10 +67,15 @@ register(ToolSpec(
     name="consult_coworker_agent",
     description=(
         "Hand a task to a specialist coworker agent: 'research' (multi-step "
-        "web research with source cross-checking), or 'memory' (remember/"
-        "recall a fact or preference). 'coding' and 'qa' are registered but "
-        "don't execute anything yet this phase -- use the ordinary tools "
-        "available to you for coding/testing tasks instead of this one."
+        "web research with source cross-checking), 'memory' (remember/recall "
+        "a fact or preference), 'qa' (runs this project's own test suite for "
+        "a \"do the tests still pass\" request; anything else defers back to "
+        "your own ordinary tools), or 'coding' (real file edits plus test "
+        "verification against this deployment's own repository -- ONLY on "
+        "deployments where the operator has explicitly turned this on; "
+        "where it's off, this defers back to your own ordinary tools "
+        "instead, same as before -- try it for a genuine source-code change, "
+        "it will tell you plainly if it isn't enabled here)."
     ),
     input_schema={
         "type": "object",

@@ -129,6 +129,25 @@ class TestVerifyAgentResult(unittest.TestCase):
         ))
         self.assertTrue(result.ok)
 
+    def test_coding_agent_nonzero_suite_exit_code_overrides_success_true(self):
+        result = verify_agent_result(self._result(
+            agent_name="coding", success=True, result="done",
+            metadata={"suite_exit_code": 1, "tests_run": 1514, "tests_failed": 3},
+        ))
+        self.assertFalse(result.ok)
+        self.assertIn("exit code 1", result.note)
+
+    def test_coding_agent_zero_suite_exit_code_is_ok(self):
+        result = verify_agent_result(self._result(
+            agent_name="coding", success=True, result="done",
+            metadata={"suite_exit_code": 0, "tests_run": 1514, "tests_failed": 0},
+        ))
+        self.assertTrue(result.ok)
+
+    def test_missing_suite_exit_code_does_not_affect_unrelated_agents(self):
+        result = verify_agent_result(self._result(agent_name="memory", result="I'll remember that."))
+        self.assertTrue(result.ok)
+
     def test_deferred_to_executor_is_ok_with_nothing_to_verify_yet(self):
         result = verify_agent_result(self._result(
             agent_name="coding", success=True, result="", metadata={"deferred_to_executor": True},
