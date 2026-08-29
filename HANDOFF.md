@@ -1377,6 +1377,38 @@ false-trigger shape described above. `coding_agent_enabled` untouched
 ephemeral — this section and `CHANGELOG.md`'s entry are the durable
 record).
 
+## "Say hi" doubled greeting — investigated, partially fixed ⚠️ HONEST PARTIAL
+
+`ROADMAP.md`'s open "say hi → two provider calls" item, actually
+investigated with real evidence rather than left as a guess. Root cause,
+confirmed with two real `execute_task("say hi", source="chat")` calls
+(~$0.0034 total, not mocked): the model narrates a short lead-in
+sentence before calling `get_system_status`/`get_weather`, then
+re-applies the greeting instruction's rigid template fresh in the
+tool-result completion — that's what produced the literal doubled
+"Hello, master." the user would have seen/heard.
+
+`agent/brain.py`'s greeting instruction now explicitly forbids any text
+before the tool calls and forbids saying "Hello, master" until the
+single final reply. **What's actually fixed, confirmed live**: the
+literal "Hello, master." duplication is gone — neither retest produced
+it. **What isn't fixed**: a one-sentence narration lead-in
+("I'll get the real time and weather for you." / "I need to get the
+current time and weather for you first.") still appeared both times,
+even after strengthening the instruction to be maximally explicit ("ZERO
+text before them... no matter how short"). Stopped at two real,
+evidence-based attempts rather than keep spending real API calls on a
+third blind retry — a prompt instruction alone isn't reliably
+suppressing this specific model's (`claude-haiku-4-5`, this task type's
+routed model) narration tendency. A genuinely complete fix would need a
+structural change (gathering the greeting's data server-side before the
+model's first completion, so there's only ever one completion, not a
+narrate-then-tool-call round trip) — real executor request-shaping work,
+not another prompt tweak, and explicitly not attempted this round. See
+`ROADMAP.md`'s updated entry for the full, honest accounting.
+`tests/test_brain.py::TestGreetingInstructionForbidsNarrationBeforeToolCalls`
+pins the current instruction text against silent regression.
+
 ## Current project status
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
@@ -2213,16 +2245,17 @@ For the next session, in order of what's most likely to matter:
    increment 1 and M10.0 are both committed and CI-verified as of this
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
-0a. **Voice false-triggering (`.relay/plan-b3.md`) is done** — see the
-   dedicated section above. Per the user's own direct confirmation
-   (AskUserQuestion, not `.relay/AUTHORITY.md`'s own say-so), the active
-   thread after it is: turn `proactive_history_enabled` (M4.4) on by
-   default, then the "say hi costs two provider calls" issue, then
-   continue down `ROADMAP.md`'s "Next"/"Other candidates" sections
-   without further check-ins, using the same engineering discipline
-   (tests, full suite, CI verification, separate security/feature/docs
-   commits where that split applies) established this session. If a
-   later `.relay/plan-*.md`/`report-*.md` sequence exists beyond this
+0a. **Voice false-triggering (`.relay/plan-b3.md`) is done, and so is
+   the "say hi" doubled-greeting investigation** (honest partial fix —
+   see the dedicated sections above). Per the user's own direct
+   confirmation (AskUserQuestion, not `.relay/AUTHORITY.md`'s own
+   say-so), the active thread next is: turn `proactive_history_enabled`
+   (M4.4) on by default, then continue down `ROADMAP.md`'s
+   "Next"/"Other candidates" sections without further check-ins, using
+   the same engineering discipline (tests, full suite, CI verification,
+   separate security/feature/docs commits where that split applies)
+   established this session. If a later `.relay/plan-*.md`/`report-*.md`
+   sequence exists beyond this
    point, read those first — they are the authoritative record of
    exactly where that thread left off; this file only summarizes.
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s

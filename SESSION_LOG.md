@@ -5,6 +5,21 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-28 — "Say hi" doubled-greeting investigated with real evidence, partially fixed
+
+Investigated the open `ROADMAP.md` item rather than reflexively tweaking
+the prompt. Two real `execute_task("say hi")` calls (~$0.0034 total)
+confirmed the root cause: the model narrates before calling
+`get_system_status`/`get_weather`, then re-states the greeting template
+fresh once results return. `agent/brain.py`'s instruction now forbids
+that narration explicitly. Confirmed live: the literal "Hello, master."
+duplication is gone; a shorter narration lead-in still isn't fully
+suppressed even after strengthening the instruction twice. Stopped at
+two real attempts rather than keep spending on a third blind retry —
+documented as an honest partial fix, with what a complete fix would
+actually require (server-side data-gathering before the model's first
+completion, not another prompt tweak) recorded in `ROADMAP.md`.
+
 ### 2026-08-28 — Voice false-triggering fixed; M10.0 + Phase 10 increment 1 shipped as three commits
 
 After M10.0/Phase 10 increment 1 were both independently verified and

@@ -671,19 +671,48 @@ planned without a separate, explicit design pass) are both still open
 for whichever milestone ends up needing them, not yet scheduled to a
 specific one.
 
-- **"Say hi" → two provider calls, worth a routing/cost look.** Found
-  during M4.3's live E2E proof (`.relay/report-2.md`): a bare one-word
-  greeting ("say hi") led the model to call `get_system_status` and
-  `get_weather` on its own initiative before replying, turning a single
-  trivial turn into two provider round-trips ($0.00069 + $0.000986 =
-  $0.001656 for that one exchange) and a doubled "Hello, master." in the
-  streamed reply (the assistant's own opening phrase, repeated once per
-  completion — a real streaming artifact, faithfully captured by M4.2,
-  not a capture bug). Not investigated or scoped as M4.4 work — flagged
-  here as an open candidate: is this the system prompt inviting
-  proactive tool use too eagerly for a bare greeting, a model behavior
-  worth a routing-level nudge, or working as intended and just a minor
-  cost curiosity? Needs its own look, not a reflexive prompt tweak.
+- **"Say hi" → doubled greeting text, investigated, partially fixed.**
+  Found during M4.3's live E2E proof (`.relay/report-2.md`): a bare
+  one-word greeting led the model to call `get_system_status` and
+  `get_weather` before replying (two provider round-trips, ~$0.0017 for
+  that exchange — genuinely trivial as a cost question on its own) and
+  produced a doubled "Hello, master." in the streamed reply: the model
+  narrated a lead-in sentence in the first completion, then produced the
+  ENTIRE templated greeting (including "Hello, master." again) fresh in
+  the second completion once tool results came back — two separate
+  visible replies from the user's perspective, not a capture bug (M4.2
+  faithfully recorded exactly what was streamed).
+  - **Root cause, confirmed live** (two real `execute_task("say hi",
+    source="chat")` calls, ~$0.0034 total): the assistant narrates
+    before a tool call by default; the greeting instruction's rigid
+    template ("respond with a greeting in this shape: ...") is what the
+    model re-applies fresh in the tool-result completion, without
+    remembering its own first-completion text already said something.
+  - **Fixed**: `agent/brain.py`'s greeting instruction now explicitly
+    forbids narration before the tool calls and forbids saying "Hello,
+    master" until the single final reply. **Confirmed this eliminates
+    the literal doubled phrase** — neither live retest said "Hello,
+    master" twice. **Did NOT fully eliminate a lead-in sentence** — even
+    after strengthening the instruction to be maximally explicit ("ZERO
+    text before them... no matter how short"), `claude-haiku-4-5`
+    (this task type's routed model) still narrated once each time
+    ("I'll get the real time and weather for you." / "I need to get the
+    current time and weather for you first.") before calling the tools.
+    Two real, live-tested attempts is where this stopped — a prompt
+    instruction alone does not reliably suppress this model's narration
+    tendency, and a third blind retry with real API spend wasn't a good
+    trade for marginal, unverified improvement.
+  - **Open remainder, if it's ever worth closing further**: a genuinely
+    reliable fix likely needs a structural change, not another prompt
+    tweak — e.g. gathering `get_system_status`/`get_weather` server-side
+    before the model's first completion for a detected greeting, so the
+    model only ever produces ONE completion with the data already in
+    hand, never a narrate-then-tool-call round trip. That is a real
+    change to the executor's request-shaping, not a "reflexive prompt
+    tweak," and is exactly why this stops here as a documented, honest
+    partial fix rather than an unscoped attempt at a bigger rewrite.
+    `tests/test_brain.py`'s `TestGreetingInstructionForbidsNarrationBeforeToolCalls`
+    pins the current instruction text so it can't silently regress.
 
 Other candidates raised but not yet started, roughly in order of what's
 been discussed most recently:

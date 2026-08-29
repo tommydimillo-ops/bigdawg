@@ -7,6 +7,36 @@ needed.
 
 ---
 
+## 2026-08-28 — "Say hi" doubled-greeting investigated, partially fixed
+
+`ROADMAP.md`'s open "say hi → two provider calls" item, investigated as
+instructed rather than left as a reflexive prompt tweak. Root cause,
+confirmed with two real `execute_task("say hi", source="chat")` calls
+(~$0.0034 total): the model narrates a short lead-in sentence before
+calling `get_system_status`/`get_weather`, then re-applies the greeting
+instruction's rigid template fresh in the tool-result completion —
+producing the literal doubled "Hello, master." the user would see.
+
+`agent/brain.py`'s greeting instruction now explicitly forbids any text
+before the tool calls and forbids saying "Hello, master" until the
+single final reply. First live retest: the literal "Hello, master."
+duplication was gone, but a different one-sentence narration lead-in
+still appeared ("I'll get the real time and weather for you."). Second
+live retest, with the instruction strengthened to be maximally explicit:
+same result shape — narration lead-in still present, phrase duplication
+still gone. Stopped after two real, evidence-based attempts rather than
+keep spending real API calls chasing a fully clean single-utterance
+result a prompt instruction alone doesn't reliably produce with this
+task's routed model (`claude-haiku-4-5`). See `ROADMAP.md`'s updated
+entry for the honest accounting of what's fixed, what isn't, and what a
+genuinely complete fix would require (gathering the greeting's data
+server-side before the model's first completion, not another prompt
+tweak). New regression test:
+`tests/test_brain.py::TestGreetingInstructionForbidsNarrationBeforeToolCalls`
+pins the current instruction text.
+
+---
+
 ## 2026-08-28 — Voice false-triggering: fixed the substring wake-match, openWakeWord infeasible here
 
 Priority reordering (per the user, sourced from `.relay/AUTHORITY.md` and
