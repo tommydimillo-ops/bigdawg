@@ -530,7 +530,69 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
 
 ## In progress
 
-Nothing currently in progress — Phase 9 / M4 (M4.1 through M4.4) is now
+**Phase 10 increment 1 — real CodingAgent + checkpoint/rollback.** Built,
+fully tested (1583/1583), and committed as three separate, reviewable
+commits: M10.0 (`f8c638a`) first, Phase 10 increment 1 itself (`df26bc0`)
+second, docs last — each with the suite green beforehand and CI green on
+the first attempt. A structured `/code-review high` pass had found and
+fixed six more real
+issues — a missing denylist entry, a case-insensitivity bypass of the
+whole write denylist, a real timeout-vs-loop-budget mismatch, a stale
+model-visible tool description that made the new capability practically
+unreachable, a concurrent-writer rollback-protection gap, and **a
+pre-existing, already-shipped, live production bug in
+`agent/agents/qa.py` unrelated to any of Phase 10's gating** — QAAgent's
+real "do the tests still pass?" capability was missing the load-bearing
+`-t .` flag, meaning every real invocation ran the actual suite against
+real production paths and the real Keychain (**this one fix has since
+been committed and pushed separately, `37fb078`, CI-verified**). See
+`HANDOFF.md`'s "Structured code review pass" subsection for the full
+account. **Then M10.0**: the user independently verified those findings
+against the repo and directed a full audit of `agent/agents/worker.py`'s
+own gating gap — every coworker agent's real side-effecting call site
+was enumerated (five found, across four agents), CodingAgent's
+`write_file` was routed through the same permission/autonomy decision
+`agent/executor.py`'s `_run_tool` already uses for every registered
+tool (ResearchAgent's and MemoryAgent's own pre-existing bypasses
+deliberately left as-is this round), and a structural test
+(`tests/test_gating_structural.py`) now fails automatically on any new,
+undocumented bypass — demonstrated live (a bypass added, the test shown
+failing, the bypass removed, the test shown passing again). See
+`HANDOFF.md`'s "M10.0" subsection for the full account.
+Real, user-authorized dogfooding (turned on via an env var, never the
+shipped default) found and fixed five more real bugs — a `.git`-as-
+worktree-file assumption, a checkpoint-prune ordering tie, a too-short
+API timeout, a truncated-response-treated-as-success gap, and a real
+test-isolation gap in `tests/test_agents_coding.py` — plus surfaced, and
+in a follow-up pass resolved, one more important finding: a fully
+"successful" run's own new test was silently never collected by
+`unittest discover` because it didn't match this project's test-writing
+convention, and the suite reporting green couldn't detect that class of
+problem on its own. Now caught explicitly (a new test file that
+collects zero tests is treated as a real verification failure, rolled
+back like any other) — deliberately narrower than the ideal check
+("collects zero," not "collects too few"), left for a real future need.
+See `HANDOFF.md`'s "Real dogfooding pass" subsection for the
+full account, including ~$0.296 real spend and how ten stray checkpoint
+refs ended up in this real repo (a worktree-isolation gap in the
+dogfooding methodology, not the product) and were cleaned up.
+`agent/coding_checkpoint.py` (private git-ref checkpoint/rollback) and
+`agent/agents/coding.py`'s real `execute()`, gated by `config.settings.
+coding_agent_enabled` (default `False` — original stub behavior
+unchanged until this is explicitly turned on). Full detail:
+`HANDOFF.md`'s dedicated section, `CHANGELOG.md`'s 2026-08-27 entry,
+`ARCHITECTURE.md` §4/§12e, `.relay/PHASE10-DESIGN.md`. Increment 1 is
+scoped narrower than that design doc allows (Anthropic only, no
+"run a named script" tool). The design doc's flagged-as-genuinely-open
+concurrent-CodingAgent-runs locking question has since been resolved by
+direct reproduction (real multiprocess, not a guess): checkpoint
+creation needed no lock, `restore_paths` did, now fixed and covered by
+a real regression test — see `ARCHITECTURE.md` §12e. Turning
+`coding_agent_enabled` on by default is explicitly gated on real usage
+evidence that doesn't exist yet, same posture already applied to
+`openclaw_messaging_enabled`/`proactive_history_enabled`.
+
+Otherwise nothing in progress — Phase 9 / M4 (M4.1 through M4.4) is
 fully complete and on `main`, all four milestones CI-verified. M4.4 is
 intentionally left off by default (`proactive_history_enabled=False`);
 turning it on for real use is tracked as a "Next" candidate below, not
@@ -555,11 +617,11 @@ in-progress work.
   tracked by `tests/test_gating_structural.py`'s
   `ACCEPTED_UNGATED_CALL_SITES` (so it can't silently disappear from
   view again) — not fixed. Whether it needs the same
-  `should_request_confirmation` treatment a near-term follow-up gives
-  `agent/agents/coding.py`'s `write_file`, or is fine as-is given the
-  content filter and MemoryAgent's narrower blast radius (a fact
-  recorded, not something wiped), is an open question for a future pass,
-  not a bug fix to reflexively apply.
+  `should_request_confirmation` treatment `agent/agents/coding.py`'s
+  `write_file` just got, or is fine as-is given the content filter and
+  MemoryAgent's narrower blast radius (a fact recorded, not something
+  wiped), is an open question for a future pass, not a bug fix to
+  reflexively apply.
 
 **Phase 9 / M4A — Conversation & History Intelligence Architecture
 Audit is complete** (an audit-and-design-only pass, delivered as an
@@ -709,17 +771,6 @@ been discussed most recently:
 Larger, not-yet-started capabilities, matching the long-term architecture
 this project is meant to grow into:
 
-- **Phase 10 — Real CodingAgent capability + checkpoint/rollback** —
-  CodingAgent is currently a stub
-  (`metadata={"deferred_to_executor": True}` for everything). Real
-  code-editing/execution capability needs to land *on top of* Phase 8's
-  subprocess isolation and usage limits, not bypass them — this was an
-  explicit design constraint when Phase 8 was built ("before we allow
-  long-running coworker agents to do computer/code work, we should make
-  agent execution genuinely killable"). Checkpoint/rollback (the ability
-  to undo a CodingAgent's changes) is part of this same phase, not a
-  separate later item — real code-editing capability without a way back
-  out is not considered safe to ship on its own.
 - **QAAgent expansion beyond today's test-suite check and coworker-
   result verification** — Milestone 3 (complete, see above) added
   `agent/verification.py`'s `verify_agent_result()`, evaluating whether
@@ -727,11 +778,14 @@ this project is meant to grow into:
   agent-reported `verification_status`, plus a bounded source-evidence
   heuristic for ResearchAgent). Deliberately NOT extended to FILES/
   BROWSER-shaped checks (e.g. "does the expected file exist," "does the
-  resulting page show X") this milestone: no current coworker agent
-  produces that shape of result to check yet (CodingAgent still defers
-  entirely; QAAgent's non-test-suite path still defers too) — building
-  that verification now would be speculative, unused code. Revisit once
-  a coworker actually produces file/browser-state results to check.
+  resulting page show X") this milestone: QAAgent's own non-test-suite
+  path still defers entirely — building that verification now would be
+  speculative, unused code. CodingAgent (Phase 10 increment 1, off by
+  default, see "In progress" above) now produces a test-suite-shaped
+  result of its own, but that already goes through
+  `verify_agent_result()`'s new `suite_exit_code` check directly, not
+  through this FILES/BROWSER gap. Revisit this item only if a coworker
+  produces an actual file-existence/page-content result to check.
 - **MCP integration** — remains future/deferred; no client/server exists
   yet. If built, tools reached through MCP should register through the
   existing `tools/registry.py`, not create a parallel dispatch path (same

@@ -7,6 +7,391 @@ needed.
 
 ---
 
+## 2026-08-28 — `agent/agents/qa.py`'s missing `-t .` (committed separately, `37fb078`)
+
+Split out of the code-review findings below and committed on its own,
+first, ahead of everything else in Phase 10 — a live production safety
+bug unrelated to any feature gating shouldn't sit uncommitted behind an
+unmerged milestone. Full detail in the entry below (this is the same
+finding); see `37fb078` for the isolated commit. Pushed, CI green on the
+first attempt (run `33215394141`).
+
+---
+
+## 2026-08-28 — M10.0: enumerate and partially close the `agent/agents/worker.py` gating gap (`f8c638a`)
+
+**What**: `agent/agents/worker.py`'s `coworker.execute(task, context)`
+runs in a genuinely separate OS subprocess that never imports
+`agent.executor`, so nothing a coworker agent does internally passes
+through `_run_tool` — where `tools.registry`'s permission levels and
+`agent.autonomy`'s decision actually live for every registered tool.
+This session's own earlier design pass flagged the gap in principle
+before any Phase 10 code existed; the user directed this pass to
+actually audit and address it, in a specific order: enumerate first and
+stop if more than one path is ungated, then fix narrowly, then prove the
+fix with a structural regression test.
+
+**Enumeration** (full table in `HANDOFF.md`'s "M10.0" subsection): traced
+`tools.registry.dispatch` to its one real caller anywhere in the
+codebase (`agent/executor.py:158`, fully gated), then every real
+side-effecting call reachable from `coworker.execute()`. Found five
+ungated call sites across four coworker agents — CodingAgent's
+`_write_file`/`_read_file`/`_run_test_suite`/`_collected_test_count`,
+ResearchAgent's `open_and_read`/`read_document` (a pre-existing,
+CLAUDE.md-documented exception), MemoryAgent's `remember`/`recall` (a
+pre-existing, **never before named or audited** bypass, shaped
+identically to ResearchAgent's), and QAAgent's `_run_test_suite`. More
+than one ungated path — stopped and reported before writing any code,
+per instruction.
+
+**Scope, per explicit instruction**: build the chokepoint general,
+route only CodingAgent's `write_file` through it this round.
+ResearchAgent's and MemoryAgent's own bypasses are deliberately left
+exactly as they were — routing them too would change their existing,
+already-live permission outcomes, and this round was scoped as "change
+WHERE gating is decided, not WHAT it decides."
+
+**The chokepoint**: `agent.autonomy.should_request_confirmation` gained
+an optional `permission_level: Optional[int] = None` parameter — when
+given, skips the `tools.registry.permission_level(tool_name)` lookup and
+uses the supplied value directly. Every existing caller
+(`agent/executor.py`'s `_run_tool`) passes nothing here and keeps the
+exact original behavior (proven: a dedicated test compares every
+autonomy level 0-5 with and without the parameter and asserts identical
+results). `_NON_INTERACTIVE_SOURCES` generalizes the pre-existing
+`source == "scheduled"` → DENY-instead-of-hang rule to also cover
+`source == "agent_worker"` — a coworker-agent subprocess has the
+identical "no live person to answer a CONFIRM verdict" property.
+`agent/agents/coding.py`'s `_write_file` now calls
+`should_request_confirmation` with `permission_level=2` (`LEVEL_NAMES[2]`,
+the same classification `run_python` already has) before ever touching
+disk. At the default autonomy level, nothing about today's behavior
+changes; the gate only denies something if the operator has deliberately
+lowered autonomy below where a level-2 action auto-allows.
+
+**The structural test**: new `tests/test_gating_structural.py`.
+`ACCEPTED_UNGATED_CALL_SITES` is an explicit `frozenset` of `(file,
+function, reason)` records — the four remaining ungated sites, written
+down with real reasons, not omitted. A real `ast` scan of the four
+coworker-agent source files finds every function calling a
+known-dangerous primitive without also calling
+`should_request_confirmation` in the same body, and asserts that set
+equals the documented one exactly. Demonstrated live: a throwaway
+function calling `subprocess.run` with no gate call was added to
+`agent/agents/coding.py`, the test run (FAILED, naming the exact
+function), then removed and the test run again (OK) — confirmed via
+`grep` that no trace remained.
+
+**MemoryAgent's bypass — documented, not fixed, per instruction**:
+added to `CLAUDE.md` rule 3 alongside ResearchAgent's, with an explicit
+note that it was never audited before this pass (it predates Phase 10
+by phases), and opened as its own item in `ROADMAP.md`'s "Next" section.
+A content filter at a lower layer (`agent/memory/safety.py`) is not the
+same claim as a permission gate, and the documentation now says so
+plainly.
+
+**Tests**: `tests/test_autonomy.py` (+6), `tests/test_agents_coding_
+enabled.py` (+3: `TestWriteFilePermissionGate`), new `tests/
+test_gating_structural.py` (+3). Full canonical suite: **1583 passed, 0
+failed** (1571 going in). `coding_agent_enabled` remains off by default
+throughout.
+
+---
+
+## 2026-08-28 — Structured code review: six more real findings, one a live production bug (`df26bc0`, one fix `37fb078`)
+
+**What**: run via this project's own `/code-review high` against the
+full uncommitted Phase 10 diff, then every finding independently
+verified against the actual code/filesystem before fixing anything
+(none taken on the reviewer's word alone).
+
+**Six real findings, all fixed**: (1) `tests/__init__.py` — the file
+whose only job is arming the test-safety bootstrap — was missing from
+CodingAgent's write denylist; added. (2) The denylist comparison was
+case-sensitive while this Mac's default APFS volume is not
+(case-insensitive-but-case-preserving) — verified directly that
+`confine_to_repo("Agent/Autonomy.py")` returns that exact casing and the
+real filesystem resolves it to the same file as `agent/autonomy.py`, a
+real, exploitable bypass of the entire denylist; fixed with a
+case-insensitive `_is_never_writable()`. (3) `coding_agent_timeout_
+seconds` (300s) didn't cover the loop's own real worst-case budget
+(`MAX_ITERATIONS` x up to 240s/iteration + one final ~120s suite run =
+up to ~1560s) — `_run_agent_subprocess`'s real timeout path is an
+immediate `proc.kill()`, no grace period, so a long real task could have
+been SIGKILLed before CodingAgent's own rollback/pruning ever ran;
+raised to 1800s with the real arithmetic in the setting's own comment.
+(4) `consult_coworker_agent`'s own model-visible tool description
+actively told the model not to bother calling it for coding tasks, and
+it's the only real production entry point to `CodingAgent.execute()` —
+rewritten to describe both `coding` and `qa`'s real, conditional
+capability accurately. (5) `restore_paths` didn't protect a path made
+dirty by a genuinely concurrent, unrelated process *during* the task
+(only one already dirty at checkpoint time) — a real scenario for this
+project specifically, given relay mode's own premise of a second Claude
+Code session in the same working tree; rollback scope is now the
+intersection of `changed_paths_since` and the agent's own
+`files_written`, never a path the tree diff shows changed but the agent
+never touched.
+
+**The sixth, more serious**: comparing `agent/agents/coding.py`'s and
+`agent/agents/qa.py`'s near-identical test-runner implementations
+surfaced a real divergence — `qa.py`'s own `_run_test_suite()`, QAAgent's
+real "do the tests still pass?" capability, **already live in
+production, no setting needs to be turned on for it**, was missing the
+load-bearing `-t .` flag entirely. Without it, `tests/__init__.py`'s
+safety bootstrap never runs, meaning every real invocation through
+QAAgent has been running the actual suite against real production paths
+and the real Keychain — exactly the incident CLAUDE.md's "How to test"
+section documents having happened for real, from a different command,
+in a prior session. The existing test file mocked `subprocess.run`
+throughout (correct) but never asserted on the real argv, which is
+exactly why this went uncaught until two implementations were compared
+side by side. Fixed by extracting the command into new
+`agent/canonical_suite.py` — one function, so this flag can't diverge
+between callers again — used by both `qa.py` and `coding.py`.
+Deliberately not a full merge of the two `_run_test_suite` functions:
+they return genuinely different shapes for genuinely different callers,
+and reconciling that under time pressure risked a new bug for the sake
+of removing a few duplicated lines.
+
+**Tests**: `tests/test_agents_coding_enabled.py` (+4:
+`test_refuses_a_denylisted_path_regardless_of_case`,
+`TestTimeoutBudgetCoversTheLoopsOwnWorstCase`,
+`TestConcurrentWriterProtection`), `tests/test_agents_qa.py` (+1:
+`test_includes_the_load_bearing_t_flag`), new
+`tests/test_canonical_suite.py` (+4). Full canonical suite: **1571
+passed, 0 failed** (1563 going in). `refs/jarvis/` confirmed empty and
+`git log`/`git status` on `main` unaffected — this pass made no real API
+calls at all (pure static review plus mocked/real-local test fixtures).
+
+---
+
+## 2026-08-28 — Phase 10 increment 1: close the uncollected-test-file verification gap (`df26bc0`)
+
+**What**: the deeper finding from the same day's dogfooding pass — a
+fully "successful" run's own new test file was silently never collected
+by `python -m unittest discover` (wrong convention: bare `assert` + a
+plain function, not this project's exclusive `unittest.TestCase`) —
+recorded as genuinely open rather than guessed at is now resolved, not
+just documented. New `agent.coding_checkpoint.existed_at_checkpoint()`
+(a public wrapper over the already-tested `_checkpointed_content`) and
+`agent.agents.coding._new_test_files_collecting_nothing()`: for every
+path in `changed_paths` that looks like a test file, didn't exist at
+checkpoint time, and still exists on disk, runs that ONE file through
+the exact same discovery mechanism `_run_test_suite` itself uses
+(`-p <basename>`) and treats "collects zero tests" as a real
+verification failure — rolled back the same as an actual test failure,
+never a silent pass. Deliberately narrower than the ideal fix: catches
+"collects zero," not "collects fewer than the task needed" — a stronger
+check (a real expected-count comparison) was considered and left for a
+real future need rather than built speculatively now.
+
+**Tests**: `tests/test_coding_checkpoint.py::TestExistedAtCheckpoint`
+(3 new), `tests/test_agents_coding_enabled.py::TestUncollectedTestFile`
+(2 new — confirms both the catch, with a real bare-`assert` file, and
+the no-false-positive case with a properly-written one). Full canonical
+suite: **1563 passed, 0 failed** (1558 going in). `refs/jarvis/`
+confirmed empty and `git log`/`git status` on `main` unaffected.
+
+---
+
+## 2026-08-28 — Phase 10 increment 1: real dogfooding, five more real bugs found (`df26bc0`)
+
+**What**: with the user's direct, per-decision authorization,
+`coding_agent_enabled` was turned on via `CODING_AGENT_ENABLED=true`
+(env var only, never the shipped default) and CodingAgent given real
+tasks against a real copy of this repo (a git worktree of the current
+uncommitted state, built via the same scratch-index technique
+`create_checkpoint` itself uses, since a plain worktree or `git stash
+create` alone silently drop untracked files — which would have meant
+testing without the very module under test). Six real Anthropic calls
+across several attempts, ~$0.296 total, tracked precisely via
+`agent.usage.total_cost_for_request`.
+
+**Five real bugs found and fixed**, each confirmed by direct
+reproduction before and after the fix: (1) `.git` assumed to always be a
+directory — breaks in a linked worktree, where it's a plain file; fixed
+with a new `_git_path()` helper (`git rev-parse --git-path`). (2)
+`prune_checkpoints` pruned the wrong ref — `--sort=-creatordate` only
+has 1-second resolution and ties within that window weren't broken by
+creation order; fixed by embedding a `seq=<nanoseconds>` marker in each
+checkpoint's commit message. (3) The shared `api_read_timeout` (25s) is
+too short for this loop's own non-streaming calls, which accumulate real
+file content across iterations — two consecutive real calls hit a real
+`APITimeoutError`; fixed with a per-call `timeout=120s` override scoped
+to just this call site, the shared client's default used by every other
+caller is untouched. (4) A truncated response (`stop_reason ==
+"max_tokens"`) was silently treated as a clean finish, reporting "Done."
+for a call that never actually completed — fixed to raise explicitly
+instead; `max_tokens` itself also raised 4096 → 8192 (research_agent.py's
+value was tuned for synthesizing an answer, not reproducing a whole
+existing file's content). (5) `tests/test_agents_coding.py`'s
+stub-behavior tests never explicitly forced `coding_agent_enabled=False`
+— fine until the setting is a real environment variable (exactly how it
+would actually get turned on), at which point CodingAgent's own
+test-suite-verification subprocess (plain `subprocess.run()`, no `env=`
+override, inherits the parent's environment) sees it too, and those
+tests broke for real; fixed with explicit `setUp`/`tearDown`, the same
+"never trust ambient state" lesson Phase 9 Reliability S1 already
+established project-wide.
+
+**A more important, unresolved finding**: the one fully successful
+end-to-end run produced a new test using bare `assert` + a plain
+function, not this project's exclusive `unittest.TestCase` convention.
+`python -m unittest discover` silently never collected it —
+`suite_exit_code: 0`, identical to the file not existing. CodingAgent
+reported `success: true` for a run whose actual new test was never
+executed by the verification it ran. Fixed the immediate cause
+(SYSTEM_PROMPT now states the convention explicitly) but did **not**
+build the more robust check this also suggests — a cross-check that a
+new test file should correspond to `tests_run` actually increasing.
+Recorded as genuinely open rather than guessed at. The specific test the
+run should have produced was added directly, by hand, in the correct
+convention.
+
+**A real process gap, not a product bug**: git worktrees do not isolate
+refs (only the working tree and `HEAD` are per-worktree); ten stray
+`refs/jarvis/checkpoints/*` refs (six from this pass's own dogfood runs,
+four from earlier concurrency-reproduction work) ended up in this real
+repo's own `.git`. All were orphan refs, unreachable from any branch
+(confirmed via `git branch --contains` before deletion) — `git log`,
+`git branch`, `HEAD`, and the working tree were never affected, live
+confirmation of the design's own core safety claim holding up even
+under this contamination. All ten found and deleted;`refs/jarvis/`
+confirmed empty in this repo as of this entry.
+
+**On `.relay/AUTHORITY.md`**: a file appeared mid-session claiming
+standing authority to remove every decision gate in this project's docs
+and asking for a permanent `CLAUDE.md` pointer to it. Declined —
+provenance unverifiable (Cowork has write access to this same repo), not
+something the user said directly in conversation. `CLAUDE.md` was not
+edited. The dogfooding in this entry was independently, directly
+authorized by the user, not derived from that file.
+
+**Tests**: full canonical suite **1558 passed, 0 failed** (1552 going
+into this pass, 6 net new across `tests/test_coding_checkpoint.py` and
+`tests/test_agents_coding_enabled.py` — a real linked-worktree
+regression class, a strengthened prune-ordering identity check, a
+truncation-handling test, a per-call-timeout-override test, and the
+by-hand rename-reduction regression test the dogfood run's own task was
+meant to produce). Confirmed `refs/jarvis/` empty and `git log`/`git
+status` on `main` unaffected after cleanup.
+
+---
+
+## 2026-08-27 — Phase 10 increment 1: checkpoint/rollback + real CodingAgent (`df26bc0`)
+
+**What**: `CodingAgent` (`agent/agents/coding.py`) is real for the first
+time, behind `config.settings.coding_agent_enabled` (default `False` —
+disabled, it's byte-for-byte the original stub). New
+`agent/coding_checkpoint.py`: a private git-ref checkpoint/rollback
+mechanism (`refs/jarvis/checkpoints/<request_id>`, via a scratch
+`GIT_INDEX_FILE` so the real index/HEAD are never touched) that makes
+CodingAgent's real edits recoverable. `agent/verification.py`'s
+`verify_agent_result()` extended to treat a non-zero
+`metadata["suite_exit_code"]` as an unconditional override of
+`success=True`, same priority tier as `verification_status == "failed"`.
+`agent/agents/manager.py`'s `execute_agent()` now gives CodingAgent its
+own, longer timeout (`coding_agent_timeout_seconds`, 300s) instead of
+the shared 60s default every other coworker agent keeps using unchanged.
+
+**Built through relay mode**, on direct live instruction rather than a
+written `plan-bN.md` — `.relay/PHASE10-DESIGN.md` is Cowork's design
+document; three build steps in the order it recommended (checkpoint
+machinery first, inert and tested; then the verification extension; then
+CodingAgent's real loop), each run through the full canonical suite
+before the next began.
+
+**A real structural safety finding, not just an implementation
+detail**: `agent/agents/coding.py`'s own prior docstring anticipated
+wiring CodingAgent through `agent.claude_gateway.invoke()`. Checked
+against what that function actually does rather than assumed safe: it
+re-enters `agent.executor.execute_task_stream`, the full orchestrator,
+with the complete tool registry attached — including
+`consult_coworker_agent` itself. Calling it from inside CodingAgent would
+start a brand-new depth-0 execution context that never touches
+`agent/agents/manager.py`'s `MAX_AGENT_DEPTH` counter at all, a genuine
+structural bypass of that guard. Built a narrow, dedicated internal
+3-tool loop instead (`read_file`/`write_file`/`run_tests`, a direct
+Anthropic call), mirroring `agent/research_agent.py`'s own
+already-established exception to "tools go through
+`tools/registry.py`" — no delegation tool exists in this loop's set, so
+nothing here can recurse into another agent even by accident.
+
+**The one rule the design rests on, enforced in code**: checkpoint
+creation records whether the tree was already dirty; if it was,
+CodingAgent refuses to make any edit at all (not just "skip rollback") —
+restoring over a path the user had already changed would silently
+destroy their work, not the agent's. `changed_paths_since()` (a
+tree-to-tree `git diff`, not a self-reported `files_written` list, which
+the design doc flagged as circular) is what rollback actually operates
+on, and it refuses to touch anything that was dirty at checkpoint time.
+
+**A hard denylist wired into code that neither design pass had actually
+built**: `write_file` unconditionally refuses nine safety/CI files
+(`agent/autonomy.py`, `tools/registry.py`, `config/settings.py`, and six
+others — see `ARCHITECTURE.md` §4) plus anything under
+`.github/workflows/`, regardless of task or confirmation — a tool that
+could edit the files implementing its own gating logic would break "the
+actual gate is always code."
+
+**Two real, self-caught issues during this pass**: (1) `restore_paths`
+reported a path as "changed" whenever it ran `git restore` on it, even
+when the content already matched the checkpoint — fixed by comparing
+content before touching the file, caught by the test suite itself, not
+inspection. (2) The first version of the enabled-path test fixture had
+no `.gitignore`, so running its own tiny suite (CodingAgent's own
+verification step) created `.pyc` files that `changed_paths_since` swept
+in as "changed" — the real repo already gitignores
+`__pycache__`/`*.pyc`; the fixture was just missing it.
+
+**Scope deliberately narrower than the design doc allowed**: Anthropic
+only, no multi-provider fallback loop; no "run a named script" tool; no
+`git` writes from the loop beyond the checkpoint mechanism's own
+plumbing.
+
+**Tests**: `tests/test_coding_checkpoint.py` (27, real throwaway git
+repos, never mocked), `tests/test_agents_coding_enabled.py` (27, real
+Anthropic client mocked at the boundary only, everything else real
+against a throwaway fixture repo with its own tiny suite), plus 3 new
+tests in `tests/test_verification.py` and 1 in
+`tests/test_agents_manager.py`.
+
+**Same-day follow-up: the design doc's concurrency question, resolved
+by direct reproduction rather than left open.** Barrier-synchronized
+real OS processes (`multiprocessing`, matching
+`tests/test_history_store.py`'s own real-process convention for a
+filesystem/git-level race, not a GIL artifact): `create_checkpoint`
+needed no lock at all — 8 processes × 5+ rounds against the same repo,
+zero errors, `git fsck` clean every time, because its scratch
+`GIT_INDEX_FILE` never touches the real index. `restore_paths`
+reproducibly failed with a real `fatal: Unable to create
+'.git/index.lock': File exists` in every round tested, before a fix —
+`git restore` operates on the real index by design and has no
+scratch-index escape hatch. Fixed with `_restore_lock`
+(`agent/coding_checkpoint.py`), a narrow, `restore_paths`-scoped
+`fcntl.flock` — **blocking**, deliberately not the skip-if-busy pattern
+`agent/scheduler_lock.py`/`agent/browser_lock.py` use, since a queued
+rollback must still happen rather than be silently dropped. Verified
+fixed (8/8 across 8 rounds, versus 2-5 failures per round before) and
+covered by 2 new real-multiprocess tests
+(`tests/test_coding_checkpoint.py::TestConcurrency`).
+
+Full suite after this fix: **1552 passed, 0 failed**, run repeatedly
+through the whole build; the real repo's `refs/jarvis/` confirmed empty
+and git log/status confirmed untouched after every run.
+
+**Deliberately not done**: no commit, no push (not requested). No flip
+of `coding_agent_enabled`'s default — gated on real usage evidence that
+doesn't exist yet, same posture `openclaw_messaging_enabled`/
+`proactive_history_enabled` already established. The design doc's other
+two "genuinely unresolved" items (what counts as "paths the agent
+wrote" — already resolved at initial build time via
+`changed_paths_since`'s tree-diff approach; iteration cap by attempts
+vs. wall clock) were not revisited this pass.
+
+---
+
 ## 2026-08-23 — Phase 9 / M4.4: proactive history retrieval (`c992432`, `6fbc076`)
 
 **What**: the final M4 sub-milestone — bounded, relevance-gated,

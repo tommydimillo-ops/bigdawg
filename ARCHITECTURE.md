@@ -165,7 +165,7 @@ them:**
 |---|---|---|
 | `research` | `agent/agents/research.py` | Wraps `agent/research_agent.py` — real multi-step web research (its own small tool loop: `open_browser`, `read_document`), returns a synthesized answer. The **only** coworker that directly makes an LLM call — see "ResearchAgent's M2 routing" below |
 | `memory` | `agent/agents/memory.py` | Wraps `agent/memory_agent.py`'s `remember`/`recall` — real memory read/write, no model call |
-| `coding` | `agent/agents/coding.py` | **Stub.** Returns `metadata={"deferred_to_executor": True}` — no real code-editing capability, no model call. Do not treat this as functional; see `ROADMAP.md`'s Phase 10 |
+| `coding` | `agent/agents/coding.py` | **Real, off by default** (`config.settings.coding_agent_enabled`, `False`). When disabled: byte-for-byte the original stub (`metadata={"deferred_to_executor": True}`). When enabled: a real checkpoint/edit/test/rollback loop — see "CodingAgent's real execution (Phase 10 increment 1)" below and `ROADMAP.md` |
 | `qa` | `agent/agents/qa.py` | Real, but narrow: runs this project's own test suite read-only (`python -m unittest discover`) when the task text matches test-running phrasing, no model call; everything else defers |
 
 **Execution model (Phase 8 Part 4, hardened in Phase 9 Milestone 3):**
@@ -269,10 +269,14 @@ flagged unverified if it contains no source/URL evidence at all (cheap
 regex, no extra model call — not proof the sources are real, only that
 the answer at least looks sourced). **Deliberately not extended to
 FILES/BROWSER-shaped checks** ("does the expected file exist," "does the
-resulting page show X") this milestone — no current coworker agent
-produces that shape of result to check yet (CodingAgent and QAAgent's
-non-test-suite path both still fully defer to the ordinary executor); see
-`ROADMAP.md`'s "QAAgent expansion" entry.
+resulting page show X") — QAAgent's non-test-suite path still fully
+defers to the ordinary executor; see `ROADMAP.md`'s "QAAgent expansion"
+entry. CodingAgent (Phase 10 increment 1, off by default) is the one
+exception, but its own `suite_exit_code` metadata field is read directly
+by `verify_agent_result()` as its own explicit-failure-signal check
+(same priority tier as `verification_status == "failed"`), not folded
+into this FILES/BROWSER-shaped-check gap — see the CodingAgent
+subsection below.
 
 **Cross-process audit-log safety**: `agent/audit.py`'s `log_action` — the
 security/action log every coworker subprocess also writes to (e.g.
@@ -994,6 +998,167 @@ this buildable later without a backend change); no injection for
 elsewhere in this project already, and there's no clear benefit case yet
 for injecting conversational context into an autonomous task).
 
+### 12e. Coding checkpoint/rollback (Phase 10 increment 1)
+
+`agent/coding_checkpoint.py` — pure runtime machinery, no ToolSpec,
+exists to make CodingAgent's real file edits (below) recoverable. Not a
+database like §12a-d; a private git ref namespace inside the same
+repository the edits happen in.
+
+**Mechanism**: `create_checkpoint(request_id)` snapshots the working tree
+into `refs/jarvis/checkpoints/<request_id>` via a scratch
+`GIT_INDEX_FILE` (`git add -A` / `write-tree` / `commit-tree -p HEAD` /
+`update-ref`) — the real index and `HEAD` are never touched. A ref
+outside `refs/heads/` never appears in `git log`, `git branch`, or a
+push. Two alternatives were rejected during design specifically because
+this repo can have a second, concurrent Claude Code session with its own
+uncommitted edits in the same working tree (relay mode's own premise): a
+branch commit would pollute history and fight that session's own git
+state; a temp-directory file copy would race with it and lose git's
+object-store deduplication. `restore_paths(checkpoint, paths)` is a
+path-scoped `git restore --source=<ref>` — never `git reset --hard` —
+that also handles the one thing a plain `git restore` cannot express
+(verified empirically, not assumed): a path absent from the checkpoint
+tree means the agent created it since, so restoring it means deleting it,
+not erroring.
+
+**The one rule the whole design rests on**: `dirty_at_checkpoint` and
+`dirty_paths_at_checkpoint` are recorded via `git status --porcelain` at
+checkpoint time, *before* any edit. `restore_paths` refuses to touch any
+path already in that dirty list — restoring over a path the user (or
+another process) had already changed before the agent even started would
+silently destroy their work, not the agent's. This is enforced in code
+(`CheckpointRestoreFailed`), not left to caller discipline.
+
+**`changed_paths_since(checkpoint)`** is the authoritative "what actually
+changed" — a tree-to-tree `git diff --name-only` between the checkpoint
+commit and a second scratch-index snapshot of the current working tree,
+not a self-reported `files_written` list (which the design pass flagged
+as circular: an agent's own claim about what it touched isn't
+independent evidence of it). A plain `git diff <ref>` alone would miss
+brand-new untracked files entirely, since diff never reports untracked
+paths on its own — comparing two full trees does not have that gap
+(verified empirically). This is what `restore_paths` is actually called
+with, not `files_written`.
+
+**Confinement**: `confine_to_repo(repo_root, path)` resolves and
+prefix-checks against `repo_root` (same pattern
+`tools/sandbox_python.py` already uses), additionally hard-rejecting
+anything under `.git/` — this module's own plumbing touches `.git`
+internally, but a caller-supplied path must never reach a hook, config,
+or ref through this interface.
+
+**Retention**: `prune_checkpoints(keep_last)` deletes all but the most
+recent N checkpoint refs (`config.settings.
+coding_checkpoint_retention_count`, default 20) — deleting a ref only,
+never a branch or commit, so nothing else in a normal git workflow is
+affected either way. Called automatically at the end of every
+`CodingAgent.execute()` run (success or failure alike) once
+`coding_agent_enabled` is on; a prune failure is swallowed rather than
+allowed to override the actual task's own reported outcome.
+
+Every checkpoint creation and restore (and every deliberately-skipped
+restore, at the CodingAgent layer below) goes through
+`agent.audit.log_action`. Tested end-to-end against real, throwaway git
+repositories per test (`tests/test_coding_checkpoint.py`) — never mocked,
+never the real CampusPilot repo (confirmed via `refs/jarvis/` staying
+empty in this repo after every test run).
+
+**Concurrency — resolved by direct reproduction, not left as a design
+guess.** Barrier-synchronized real OS processes (`multiprocessing`, not
+threads — the same real-process convention `tests/test_history_store.py`
+already established for a filesystem/git-level race, since it isn't a
+GIL artifact): 8 processes calling `create_checkpoint` concurrently
+against the same repo, 5+ rounds, zero errors, `git fsck` clean every
+time — its scratch `GIT_INDEX_FILE` never touches the real index, so
+**checkpoint creation needs no lock at all**. The identical experiment
+against `restore_paths` failed with a real `fatal: Unable to create
+'.git/index.lock': File exists` in every round tested, before a fix —
+`git restore` operates on the real index by design and has no
+scratch-index escape hatch. Fixed with `_restore_lock`, a narrow,
+`restore_paths`-scoped `fcntl.flock` — **blocking, not the skip-if-busy
+pattern `agent/scheduler_lock.py`/`agent/browser_lock.py` use**, since a
+queued rollback must still happen rather than be silently dropped.
+Verified fixed (8/8 across 8 rounds, versus 2-5 failures per round
+before) and covered by `tests/test_coding_checkpoint.py::TestConcurrency`
+(real multiprocess, never mocked).
+
+### CodingAgent's real execution (Phase 10 increment 1)
+
+`agent/agents/coding.py`'s `execute()`, gated by `config.settings.
+coding_agent_enabled` (default `False` — when off, byte-for-byte the
+original `metadata={"deferred_to_executor": True}` stub, proven by the
+pre-existing `tests/test_agents_coding.py` continuing to pass
+unmodified).
+
+**Why not `agent.claude_gateway.invoke()`** — the path this file's own
+earlier docstring anticipated: that function re-enters
+`agent.executor.execute_task_stream`, the full top-level orchestrator,
+with the complete tool registry attached, including
+`consult_coworker_agent` itself. Calling it from inside CodingAgent would
+start a brand-new, depth-0 execution context that never increments
+`agent/agents/manager.py`'s `MAX_AGENT_DEPTH` counter at all — a real,
+structural bypass of that guard, not a theoretical risk. Built instead
+as a narrow, dedicated internal loop with its own fixed 3-tool set
+(`read_file`, `write_file`, `run_tests`) and a direct Anthropic call,
+mirroring `agent/research_agent.py`'s own already-established exception
+to "tools go through `tools/registry.py`" (no delegation tool exists in
+this loop's set, so there is nothing here that could recurse into
+another agent even by accident).
+
+**Scope, deliberately narrower than the design pass allowed**: Anthropic
+only (no OpenAI/xAI/Perplexity fallback loop — `agent/research_agent.py`'s
+full 3-provider-shape split was judged not worth replicating for a first,
+still-unproven increment); no "run a single named script" tool (the
+edit/test loop's real need is covered by `run_tests` alone); no `git`
+writes of any kind from inside the loop (only the checkpoint mechanism's
+own plumbing touches git).
+
+**Flow**: checkpoint first; refuse outright (not just "skip rollback") if
+`dirty_at_checkpoint`; run the internal loop (bounded by
+`settings.max_agent_iterations`, cancellation- and cost-limit-checked
+every iteration, same as `agent/research_agent.py`'s loop); then,
+**regardless of what the model did or said**, run the real canonical
+suite (`python -m unittest discover -s tests -t . -v`, the load-bearing
+`-t .`) as a deterministic final step — a model saying "done" is never
+treated as evidence on its own. A non-zero exit with real changed paths
+triggers automatic rollback of exactly those paths (never a whole-tree
+restore); a non-zero exit with no changed paths is reported as an
+unrelated pre-existing failure, not rolled back (nothing to roll back);
+an undeterminable exit code (e.g. the suite itself timed out) is reported
+as uncertain, never auto-rolled-back — the checkpoint ref persists either
+way for a human to act on later. Every branch feeds `metadata[
+"suite_exit_code"]`, which `agent.verification.verify_agent_result()`
+now treats as an unconditional override of `success=True`, at the same
+priority tier as `verification_status == "failed"` (one field added to
+an existing mechanism, not a second dispatch path).
+
+**A hard denylist neither design pass had wired into code**:
+`write_file` refuses `agent/autonomy.py`, `agent/verification.py`,
+`agent/coding_checkpoint.py`, `agent/agents/coding.py`,
+`agent/agents/manager.py`, `agent/agents/worker.py`,
+`tools/registry.py`, `tests/_safety.py`, `config/settings.py`, and
+anything under `.github/workflows/` — unconditionally, regardless of task
+or confirmation. A tool that could edit the files implementing its own
+gating logic would break "the actual gate is always code," CLAUDE.md's
+own stated security invariant; deliberately not exhaustive (a
+comprehensive security boundary is a separate, larger effort), narrow
+and explicit to match increment 1's own scope.
+
+**Own timeout**: `settings.coding_agent_timeout_seconds` (300s default)
+— `agent/agents/manager.py`'s `execute_agent()` now picks this instead
+of the shared `agent_timeout_seconds` (60s) specifically for
+`agent_name == "coding"`; every other coworker agent's timeout is
+unchanged. An edit/test iteration loop plus a full suite run does not fit
+the budget every other coworker agent's typical call comfortably meets.
+
+Tested with the real Anthropic client mocked at the boundary and
+everything else real (`tests/test_agents_coding_enabled.py`) — genuine
+git checkpoint/restore, genuine file reads/writes, a genuine test-suite
+subprocess run against a throwaway fixture repository (its own tiny
+`tests/` directory and `.gitignore`, never the real CampusPilot repo or
+suite).
+
 ## 13. Authentication / security
 
 - **Secrets**: `agent/secrets.py` — macOS Keychain first
@@ -1020,6 +1185,42 @@ for injecting conversational context into an autonomous task).
   `source="scheduled"`) and `unattended_allowed=False` (the whole
   `computer_*` family — blocked from scheduled runs for a broader reason:
   real unsupervised screen control).
+- **The `agent/agents/worker.py` gap, and the one chokepoint fix so far
+  (Phase 10 M10.0)**: a coworker agent's `execute()` runs in a genuinely
+  separate OS subprocess that never imports `agent.executor`, so nothing
+  it does internally passes through `_run_tool` — where the permission-
+  level/autonomy check above actually lives for every registered tool.
+  `tests/test_gating_structural.py` enumerates every such call site
+  across all four coworker agents by parsing the real source (not a
+  hand-maintained list), and asserts it matches an explicit, reasoned,
+  written table — a genuinely new bypass fails that test immediately.
+  `agent/agents/coding.py`'s `write_file` (the highest-stakes instance —
+  real repo file writes, not read-only browsing or a content-filtered
+  memory write) is the one routed through a real fix this round:
+  `agent.autonomy.should_request_confirmation` gained an optional
+  `permission_level` parameter that skips the registry lookup for a real
+  action that is not, and must not become, a model-callable registered
+  tool — every existing caller (`_run_tool`) is unaffected, since none
+  of them pass it. A second addition, `_NON_INTERACTIVE_SOURCES`
+  (`"scheduled"`, now joined by `"agent_worker"`), generalizes the
+  pre-existing "no live person to answer a CONFIRM verdict, so it must
+  resolve to DENY, not hang" rule to the worker-subprocess case, which
+  has the identical property. ResearchAgent's and MemoryAgent's own
+  pre-existing bypasses (browsing, and real memory-store writes/reads
+  respectively) were deliberately **not** routed through this chokepoint
+  this round — see CLAUDE.md rule 3 and `ROADMAP.md`'s "MemoryAgent
+  bypass audit" item for the reasoning and what's still open.
+  `should_request_confirmation` itself only **decides** — it has never
+  enforced anything (the caller has always owned that), and this fix
+  doesn't change that contract, only who else calls it. It now has two
+  real callers enforcing its verdict two different ways: `_run_tool`'s
+  pre-existing enforcement, and `agent/agents/coding.py`'s `write_file`,
+  which checks `decision != Decision.ALLOW` (not `== Decision.DENY`, so a
+  CONFIRM verdict also refuses — a coworker subprocess has no live person
+  to answer a confirmation prompt) before ever reaching `open()`. Worth
+  stating plainly: calling `should_request_confirmation` is never, by
+  itself, sufficient — a third future caller still has to enforce
+  whatever it returns, the same way these first two do.
 - **Memory safety filter**: `agent/memory/safety.py` — refuses
   credential-shaped content and content that reads as an instruction
   aimed at Jarvis rather than a fact about the user.

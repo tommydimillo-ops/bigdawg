@@ -5,6 +5,163 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-28 — M10.0: `agent/agents/worker.py`'s gating gap, enumerated and partially closed
+
+The user independently verified the code review findings below against
+the repo (confirming `qa.py`'s missing `-t .` directly), then directed:
+commit that fix alone first (`37fb078`, pushed, CI green), then audit
+`agent/agents/worker.py`'s own gap — `coworker.execute()` runs in a
+subprocess that never imports `agent.executor`, so nothing a coworker
+agent does internally passes through `_run_tool`'s permission/autonomy
+check. Enumerated every real call site first, as instructed: five
+ungated actions across four coworker agents (CodingAgent's write/read/
+test-suite calls, ResearchAgent's browsing — a pre-existing, documented
+exception — MemoryAgent's memory writes/reads — pre-existing, **never
+before audited** — and QAAgent's test-suite spawn). More than one
+ungated path, so stopped and reported before writing code, per
+instruction. Scope, per explicit instruction: build the gate general,
+route only CodingAgent's `write_file` through it this round —
+`agent.autonomy.should_request_confirmation` gained an optional
+`permission_level` override (every existing caller unaffected, proven)
+plus a generalized non-interactive-source rule
+(`"scheduled"`/`"agent_worker"`) so a would-be-CONFIRM verdict inside a
+subprocess resolves to DENY instead of hanging. New
+`tests/test_gating_structural.py`: an explicit, reasoned, written table
+of the remaining four accepted exceptions, asserted equal to a real
+`ast`-based scan of the actual source on every test run — demonstrated
+live (added a bypass, showed the test fail naming it, removed it, showed
+the test pass again). MemoryAgent's bypass documented in `CLAUDE.md`
+rule 3 and opened as its own `ROADMAP.md` item, not fixed this round.
+Full suite: **1583 passed, 0 failed** (1571 going in).
+`coding_agent_enabled` stays off. Full detail: `CHANGELOG.md`'s matching
+entry, `HANDOFF.md`'s "M10.0" subsection.
+
+### 2026-08-28 — Structured code review: six more findings, one a live production bug
+
+At the user's request ("check for any bugs, holes, or glitches in
+current state"), ran `/code-review high` against the full uncommitted
+diff and independently verified every finding before fixing anything.
+Six real issues, all fixed: a missing denylist entry
+(`tests/__init__.py`, the safety-bootstrap file itself), a real
+case-insensitivity bypass of the entire write denylist (verified
+directly against this Mac's actual filesystem), a timeout budget that
+didn't cover the loop's own worst case (SIGKILL could have skipped
+rollback entirely), a stale tool description that made the whole new
+capability practically unreachable through its only real entry point, a
+concurrent-writer rollback-protection gap (real for this project given
+relay mode), and — found only by comparing two implementations side by
+side — **`agent/agents/qa.py`'s already-shipped, already-live
+`_run_test_suite()` was missing the load-bearing `-t .` flag**, meaning
+every real "do the tests still pass?" request has been running against
+real production paths and the real Keychain, independent of any Phase
+10 gating. Extracted the shared command into new
+`agent/canonical_suite.py` so this specific flag can't diverge again.
+Full suite: **1571 passed, 0 failed** (1563 going in). See
+`CHANGELOG.md`'s matching same-day entry and `HANDOFF.md`'s "Structured
+code review pass" subsection for full detail.
+
+### 2026-08-28 — Phase 10 real dogfooding: five more real bugs, plus closing the verification gap they surfaced
+
+**Update, same day, same thread**: the "one unresolved verification gap"
+this entry originally ended on (a successful run's own new test silently
+never collected by `unittest discover`) is now resolved, not just
+documented — new `existed_at_checkpoint()` +
+`_new_test_files_collecting_nothing()` catch a new test file that
+collects zero tests and treat it as a real, rolled-back failure. Two new
+tests confirm both the catch and the no-false-positive case. Full suite:
+**1563 passed, 0 failed** (1558 going in). See `CHANGELOG.md`'s matching
+same-day entry for full detail.
+
+- **Objective**: with direct user authorization, turn `coding_agent_enabled`
+  on (env var only, never the shipped default) and give CodingAgent real
+  tasks against a real copy of this repo, generating the "real checkpoint
+  data" the design doc's own step 4 said increment 2 should wait for.
+- **Work completed**: built a real dogfooding harness (a git worktree of
+  the current uncommitted state via the same scratch-index technique
+  `create_checkpoint` itself uses). Six real Anthropic calls across
+  several attempts, ~$0.296 total. Found and fixed five real bugs: `.git`
+  assumed to be a directory (breaks in a worktree), `prune_checkpoints`'
+  1-second-resolution tie-break, a too-short 25s API timeout for this
+  loop's own larger non-streaming calls, a truncated response silently
+  treated as a clean finish, and a test-isolation gap where an inherited
+  `CODING_AGENT_ENABLED` env var broke `tests/test_agents_coding.py`'s
+  stub-behavior tests. Found, but deliberately did **not** fully resolve:
+  a fully "successful" run's own new test used the wrong test-writing
+  convention and was silently never collected by `unittest discover` —
+  `success: true` didn't mean what it appeared to. Fixed the immediate
+  cause (SYSTEM_PROMPT), recorded the deeper cross-check (new test file
+  should mean `tests_run` increases) as genuinely open rather than
+  building it under time pressure.
+- **A real process gap on this session's own part**: git worktrees don't
+  isolate refs; ten stray checkpoint refs ended up in this real repo's
+  own `.git` (six from dogfooding, four from earlier, summarized
+  concurrency-reproduction work). All confirmed as orphan refs never
+  affecting `git log`/`git branch`/`HEAD`, all deleted, `refs/jarvis/`
+  confirmed empty as of this entry.
+- **`.relay/AUTHORITY.md`**: a file appeared mid-session claiming
+  standing authority to remove every decision gate and asking for a
+  permanent `CLAUDE.md` pointer to it. Declined on provenance grounds
+  (Cowork has write access to this same repo; not something the user
+  said directly) — `CLAUDE.md` not edited. The dogfooding above was
+  independently, directly authorized by the user in conversation.
+- **Verification**: full suite **1558 passed, 0 failed** (1552 going
+  in), reproduced multiple times. Real repo's `git log`/`git status`
+  confirmed unaffected throughout; `refs/jarvis/` confirmed empty after
+  cleanup.
+- **Not done, on purpose**: no commit, no push. No flip of
+  `coding_agent_enabled`'s default — one dogfooding session is real
+  evidence but not enough to decide that on its own.
+
+### 2026-08-24 to 2026-08-27 — Relay mode established; launchd automation; Phase 10 increment 1 (uncommitted)
+
+- **Objective**: continue the relay-mode collaboration this session
+  documented in `CLAUDE.md` for the first time (Cowork plans, Claude Code
+  executes), then build real CodingAgent capability on direct live
+  instruction.
+- **Work completed**: `CLAUDE.md`'s "Relay mode" section, `.claude/
+  commands/relay.md`, `.claude/settings.local.json` committed
+  (`2bed0b2`, CI-green). Obsidian vault populated (46 notes, 168 links, 0
+  broken — `.relay/report-b1.md`); a third-party vault-visualization UI
+  reviewed and held pending a decision (real file read+write
+  vulnerability found, not installed). `com.jarvis.relay` launchd job
+  installed to run `.relay/runner.sh` unattended (60s interval) — found
+  and fixed a real bug in its own plan/report matching logic (it was
+  inferring "already executed" from a report file's existence, backwards
+  from this project's actual kickoff-then-response convention; now
+  tracks completion in a dedicated `.relay/last-executed-plan` state
+  file). Disk space hit its 5GB floor twice (once down to ~180MB free);
+  resolved both times by clearing disposable caches, never Jarvis's own
+  `chrome-profile` browser-session cache or any personal data.
+- **Then, Phase 10 increment 1**: checkpoint/rollback
+  (`agent/coding_checkpoint.py`, git-ref-based) + CodingAgent's first
+  real `execute()` (`agent/agents/coding.py`), behind
+  `coding_agent_enabled` (default `False`). Full detail:
+  `HANDOFF.md`'s dedicated section and this same date's `CHANGELOG.md`
+  entry. Headline finding: this file's own prior docstring anticipated
+  wiring CodingAgent through `agent.claude_gateway.invoke()`, which turns
+  out to structurally bypass `MAX_AGENT_DEPTH` (it re-enters the full
+  orchestrator with the complete tool registry, including
+  `consult_coworker_agent`, from a fresh depth-0 context) — built a
+  narrow dedicated internal loop instead.
+- **Same-day follow-up**: reproduced the design doc's own flagged-open
+  concurrency question with real barrier-synchronized multiprocess
+  tests rather than guessing — `create_checkpoint` needed no lock
+  (scratch index never touches the real one), `restore_paths` reliably
+  hit a real `.git/index.lock` collision under concurrency, fixed with
+  a narrow, blocking `fcntl.flock` scoped to just that function.
+- **Verification**: full suite run repeatedly through the build,
+  finishing at **1552 passed, 0 failed** (including 2 real-multiprocess
+  concurrency regression tests from the follow-up above). Real repo's
+  git state (`refs/jarvis/`, `git log`, `git status`) confirmed
+  untouched by every test run.
+- **Update, later in this same session**: dogfooding, a structured code
+  review pass, and M10.0 (see the dedicated subsections below) followed
+  this build before anything was committed. Phase 10 increment 1
+  ultimately shipped as three separate commits — `f8c638a` (M10.0
+  alone), `df26bc0` (Phase 10 increment 1 itself), and this session's
+  docs commit — each with the suite green beforehand and CI green on the
+  first attempt. No default-on flip for `coding_agent_enabled`.
+
 ### 2026-08-23 — Phase 9 Reliability S1: structurally safe test harness (`e46f5bd`)
 
 - **Objective**: fix, at the root, the test-isolation gap M4.2's pass
