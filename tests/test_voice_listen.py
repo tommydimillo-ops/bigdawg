@@ -79,6 +79,71 @@ class TestIsExitPhrase(unittest.TestCase):
     def test_wake_word_alone_without_a_stop_word_is_not_an_exit_phrase(self):
         self.assertFalse(listen.is_exit_phrase("jarvis what time is it"))
 
+    def test_wake_word_embedded_in_another_word_is_not_a_match(self):
+        # Word-boundary regression: a bare substring test would have
+        # matched "jarvis" inside "jarvisson" too.
+        self.assertFalse(listen.is_exit_phrase("jarvisson said stop"))
+
+
+class TestWakeWordDetected(unittest.TestCase):
+    """Real production gap this closes: a bare `WAKE_WORD in text.lower()`
+    substring test previously matched the wake word appearing anywhere in
+    a transcript, of any length -- exactly what a mis-transcribed or
+    hallucinated background-audio (TV, music, nearby conversation)
+    transcript could do. wake_word_detected requires a word-boundary
+    match, near the start of the utterance, in a short transcript."""
+
+    def test_wake_word_alone_is_detected(self):
+        self.assertTrue(listen.wake_word_detected("Jarvis."))
+
+    def test_wake_word_at_the_start_of_a_command_is_detected(self):
+        self.assertTrue(listen.wake_word_detected("Jarvis, what's the weather?"))
+
+    def test_is_case_insensitive(self):
+        self.assertTrue(listen.wake_word_detected("JARVIS"))
+
+    def test_no_wake_word_present_is_not_detected(self):
+        self.assertFalse(listen.wake_word_detected("what's the weather"))
+
+    def test_wake_word_embedded_in_another_word_is_not_detected(self):
+        self.assertFalse(listen.wake_word_detected("jarvisson can you help"))
+
+    def test_wake_word_buried_deep_in_a_long_transcript_is_not_detected(self):
+        # The exact shape of the real production incident this closes:
+        # a long, unrelated transcript that happens to mention the wake
+        # word well past the start.
+        text = "so then he said something to the other guy and later jarvis showed up in the movie"
+        self.assertGreater(text.lower().index("jarvis"), settings.wake_word_max_lookahead_chars)
+        self.assertFalse(listen.wake_word_detected(text))
+
+    def test_wake_word_at_the_start_of_an_otherwise_long_transcript_is_not_detected(self):
+        # The position check alone isn't enough -- a long transcript that
+        # happens to start with the wake word (e.g. two unrelated
+        # sentences run together by Whisper) is still implausible as a
+        # single deliberate wake utterance.
+        text = "jarvis " + ("word " * 60)
+        self.assertGreater(len(text), settings.wake_word_max_transcript_chars)
+        self.assertFalse(listen.wake_word_detected(text))
+
+    def test_empty_text_is_not_detected(self):
+        self.assertFalse(listen.wake_word_detected(""))
+
+    def test_lookahead_boundary_is_configurable(self):
+        original = settings.wake_word_max_lookahead_chars
+        try:
+            object.__setattr__(settings, "wake_word_max_lookahead_chars", 5)
+            self.assertFalse(listen.wake_word_detected("well, jarvis"))
+        finally:
+            object.__setattr__(settings, "wake_word_max_lookahead_chars", original)
+
+    def test_transcript_length_boundary_is_configurable(self):
+        original = settings.wake_word_max_transcript_chars
+        try:
+            object.__setattr__(settings, "wake_word_max_transcript_chars", 10)
+            self.assertFalse(listen.wake_word_detected("jarvis, what's the weather today?"))
+        finally:
+            object.__setattr__(settings, "wake_word_max_transcript_chars", original)
+
 
 class _MockInputStream:
     """Stands in for sd.InputStream -- a context manager whose .read(n)
@@ -392,6 +457,40 @@ class TestWakeDispatchGuards(unittest.TestCase):
     @patch("voice.listen.listen_for_utterance", return_value=(MagicMock(), 16000))
     def test_rejected_followup_drops_back_to_passive(self, mock_listen, mock_transcribe):
         self.assertIsNone(listen.listen_for_followup())
+
+    @patch("voice.listen.transcribe")
+    @patch("voice.listen.listen_for_utterance")
+    def test_wake_word_buried_in_a_long_ambient_transcript_is_rejected(self, mock_listen, mock_transcribe):
+        # The exact real-world shape this session's fix closes: a
+        # background TV/conversation transcript mentioning the wake word
+        # somewhere in a long, unrelated sentence must not wake Jarvis --
+        # the old bare substring check would have matched this.
+        mock_listen.side_effect = [
+            (MagicMock(), 16000),
+            (MagicMock(), 16000),
+        ]
+        mock_transcribe.side_effect = [
+            "so then he said something to the other guy and later jarvis showed up in the movie",
+            "Jarvis, what's the weather?",
+        ]
+
+        result = listen.wait_for_command()
+
+        self.assertEqual(result, "what's the weather?")
+        self.assertEqual(mock_listen.call_count, 2)
+
+    @patch("voice.listen.log_event")
+    @patch("voice.listen.transcribe", return_value="Jarvis, what's the weather?")
+    @patch("voice.listen.listen_for_utterance", return_value=(MagicMock(), 16000))
+    def test_wake_attempt_is_logged(self, mock_listen, mock_transcribe, mock_log_event):
+        listen.wait_for_command()
+
+        wake_attempt_calls = [c for c in mock_log_event.call_args_list if c.args[:1] == ("wake_attempt",)]
+        self.assertEqual(len(wake_attempt_calls), 1)
+        _, kwargs = wake_attempt_calls[0]
+        self.assertEqual(kwargs["component"], "voice")
+        self.assertTrue(kwargs["woke"])
+        self.assertIn("what's the weather", kwargs["transcript_preview"])
 
 
 if __name__ == "__main__":

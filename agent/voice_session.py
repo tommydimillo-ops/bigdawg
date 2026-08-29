@@ -32,11 +32,11 @@ from agent.executor import execute_task_stream
 from agent.voice_state import VoiceState
 from config.settings import settings
 from voice.listen import (
-    WAKE_WORD,
     is_exit_phrase,
     listen_for_utterance,
     strip_wake_word,
     transcribe,
+    wake_word_detected,
 )
 from voice.speak import speak_natural
 
@@ -225,9 +225,14 @@ def _watch_for_speech_interrupt(
         if done_event.is_set() or audio is None:
             return None
         text = transcribe(audio, samplerate).strip()
-        if not text or WAKE_WORD not in text.lower():
+        if not text or not wake_word_detected(text):
             # Ignore room speech and keep watching for an intentional wake
-            # word while playback is still active.
+            # word while playback is still active -- same bare-substring
+            # gap voice/listen.py's wait_for_command had (background
+            # audio containing the wake word anywhere would interrupt
+            # active playback identically to a deliberate interruption),
+            # closed the same way here since Jarvis is *speaking* for a
+            # meaningful fraction of active use, not a rare edge case.
             continue
         tts_control.stop_speaking()
         return strip_wake_word(text) or None

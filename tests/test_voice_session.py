@@ -306,6 +306,35 @@ class TestSpeakWithInterruptionWatch(unittest.TestCase):
         self.assertEqual(result, "stop talking")
         self.assertEqual(mock_listen.call_count, 2)
 
+    @patch("agent.voice_session.tts_control")
+    @patch("agent.voice_session.transcribe")
+    @patch("agent.voice_session.listen_for_utterance")
+    def test_wake_word_buried_in_a_long_ambient_transcript_does_not_interrupt(
+        self, mock_listen, mock_transcribe, mock_tts_control,
+    ):
+        # Same real gap as voice/listen.py's wait_for_command: a
+        # background TV/conversation transcript mentioning the wake word
+        # somewhere in a long, unrelated sentence must not interrupt
+        # active playback -- the old bare substring check would have.
+        def _fake_listen(stop_flag=None, max_wait_seconds=None, on_ready=None):
+            if on_ready:
+                on_ready()
+            return MagicMock(), 16000
+
+        mock_listen.side_effect = _fake_listen
+        mock_transcribe.side_effect = [
+            "so then he said something to the other guy and later jarvis showed up in the movie",
+            "jarvis stop talking",
+        ]
+
+        result = voice_session._watch_for_speech_interrupt(
+            threading.Event(), threading.Event(), max_wait_seconds=1,
+        )
+
+        mock_tts_control.stop_speaking.assert_called_once()
+        self.assertEqual(result, "stop talking")
+        self.assertEqual(mock_listen.call_count, 2)
+
 
 class TestClassifyConfirmationResponse(unittest.TestCase):
 

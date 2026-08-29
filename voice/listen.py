@@ -17,7 +17,7 @@ import sounddevice as sd
 
 from agent import voice_state
 from agent.chat import openai_client
-from agent.observability import log_event
+from agent.observability import log_event, preview
 from agent.request_context import get_current_request_id
 from agent.usage import record_llm_usage
 from agent.voice_state import VoiceState
@@ -45,8 +45,53 @@ _HALLUCINATION_ONLY = {
 }
 
 
+def _find_wake_word(text):
+    """Word-boundary match for the wake word anywhere in `text`, or None.
+    Shared by is_exit_phrase and wake_word_detected below so every check
+    in this module agrees with strip_wake_word's own \\b-bounded regex --
+    a real inconsistency found by direct source review: this used to be
+    a bare `WAKE_WORD in text.lower()` substring test, so "jarvis"
+    embedded inside an unrelated word would match here but not get
+    stripped by strip_wake_word."""
+    return re.search(r"\b" + re.escape(WAKE_WORD) + r"\b", text.lower())
+
+
 def is_exit_phrase(text):
-    return WAKE_WORD in text.lower() and bool(EXIT_WORDS.search(text))
+    return _find_wake_word(text) is not None and bool(EXIT_WORDS.search(text))
+
+
+def wake_word_detected(text):
+    """True only if `text` plausibly contains a deliberate wake attempt --
+    not just the wake word appearing anywhere in a long or unrelated
+    transcript. Real production gap, found by direct source review: a
+    television, background music, or nearby conversation crossing the
+    energy-gate VAD and getting hallucinated or mis-transcribed by
+    Whisper as containing "jarvis" anywhere in a long transcript
+    previously woke Jarvis exactly like a deliberate address would.
+    Three checks, all closing part of that same chain:
+      - word-boundary match (see _find_wake_word) -- not a bare
+        substring test.
+      - position: the wake word must appear near the start of what was
+        said (settings.wake_word_max_lookahead_chars) -- a deliberate
+        address happens at the start of an utterance, not buried
+        partway into a transcript of something else entirely.
+      - length: the whole transcript must be short
+        (settings.wake_word_max_transcript_chars) -- a genuine "hey
+        Jarvis, <short command>" utterance is short; Whisper
+        transcribing several seconds of ambient dialogue in full is not.
+    Deliberately NOT applied to is_exit_phrase above -- ending an
+    already-active exchange ("okay, that's all, Jarvis") can legitimately
+    say the wake word anywhere in the sentence, and the background-audio
+    false-wake risk this exists for is specific to *starting* a session
+    from passive listening, not to a conversation already underway."""
+    match = _find_wake_word(text)
+    if match is None:
+        return False
+    if match.start() > settings.wake_word_max_lookahead_chars:
+        return False
+    if len(text) > settings.wake_word_max_transcript_chars:
+        return False
+    return True
 
 
 def strip_wake_word(text):
@@ -334,8 +379,30 @@ def wait_for_command(stop_flag=None):
             return None
 
         text = transcribe(audio, samplerate)
+        woke = bool(text) and wake_word_detected(text)
 
-        if not text or WAKE_WORD not in text.lower():
+        # Real gap this closes: before wake_word_detected existed, a
+        # background TV/music/conversation transcript that happened to
+        # contain "jarvis" anywhere looked, in the logs, identical to a
+        # deliberate wake -- there was no record of what almost woke
+        # Jarvis and why, or how often the energy-gate VAD is triggering
+        # on non-speech in the first place. transcript_preview is
+        # truncated via agent.observability's own preview() helper, never
+        # the full transcript (that module's own "never log full user
+        # content" rule). Whether a resulting session got cancelled
+        # quickly (a signal of a bad wake) is deliberately not computed
+        # here -- this call returns before that could be known; it's a
+        # log-correlation question against this event's timestamp and
+        # whatever later logs a cancellation, not something this
+        # function can determine synchronously.
+        log_event(
+            "wake_attempt", component="voice",
+            transcript_preview=preview(text or ""), woke=woke,
+            wake_word_max_lookahead_chars=settings.wake_word_max_lookahead_chars,
+            wake_word_max_transcript_chars=settings.wake_word_max_transcript_chars,
+        )
+
+        if not woke:
             continue
 
         command = strip_wake_word(text)

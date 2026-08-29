@@ -255,6 +255,27 @@ class Settings:
     # regression in that isolation needs a fast way to fall back to
     # silence rather than a resource leak.
     local_transcription_fallback_enabled: bool = True
+    # IS wired (voice/listen.py's wait_for_command): the wake-word check
+    # was a bare `WAKE_WORD in text.lower()` substring test -- no word
+    # boundary (disagreeing with strip_wake_word, which already used
+    # one), no position requirement, no length cap. A television, music,
+    # or background conversation containing "jarvis" anywhere in a long
+    # transcript matched identically to a deliberate wake attempt. This
+    # bounds how many characters into the transcript the wake word may
+    # start and still count as a genuine, deliberate address rather than
+    # something a much longer, unrelated transcript happens to contain.
+    # Starting value, not yet tuned against real usage -- same "settings,
+    # not constants, because there's no production data yet" reasoning
+    # M4.4's four settings used; agent.observability's new wake_attempt
+    # log event (see voice/listen.py) is what real tuning data would
+    # come from.
+    wake_word_max_lookahead_chars: int = 40
+    # A genuine "hey Jarvis, <short command>" utterance is short. A much
+    # longer transcript that happens to contain the wake word somewhere
+    # is far more likely to be an ambient recording Whisper transcribed
+    # in full than someone actually addressing Jarvis. Starting value,
+    # not yet tuned against real usage.
+    wake_word_max_transcript_chars: int = 200
 
     # --- Scheduler ---
     scheduler_poll_seconds: int = 30
@@ -484,6 +505,12 @@ class Settings:
             voice_interruption_enabled=_env_bool("VOICE_INTERRUPTION_ENABLED", cls.voice_interruption_enabled),
             local_transcription_fallback_enabled=_env_bool(
                 "LOCAL_TRANSCRIPTION_FALLBACK_ENABLED", cls.local_transcription_fallback_enabled,
+            ),
+            wake_word_max_lookahead_chars=_env_int(
+                "WAKE_WORD_MAX_LOOKAHEAD_CHARS", cls.wake_word_max_lookahead_chars,
+            ),
+            wake_word_max_transcript_chars=_env_int(
+                "WAKE_WORD_MAX_TRANSCRIPT_CHARS", cls.wake_word_max_transcript_chars,
             ),
             scheduler_poll_seconds=_env_int("SCHEDULER_POLL_SECONDS", cls.scheduler_poll_seconds),
             agent_timeout_seconds=_env_float("AGENT_TIMEOUT_SECONDS", cls.agent_timeout_seconds),
