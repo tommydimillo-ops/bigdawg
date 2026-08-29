@@ -5,6 +5,18 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-28 — M4.4 (proactive history retrieval) turned on by default
+
+Per the user's direct instruction and confirmed autonomy grant,
+`proactive_history_enabled` flips to `True`. Mechanism unchanged from
+what shipped (`c992432`/`6fbc076`) — this starts the real-use
+evidence-gathering period `ROADMAP.md`'s M4.4 entry said was the actual
+prerequisite for validating the 500-token/150ms/top-3 defaults, since
+that evidence can't exist until the setting is on. Also fixed one
+already-stale docstring in `agent/history_context.py` (claimed not
+wired into the request path; had been since `6fbc076`) found while
+working in this area. `coding_agent_enabled` untouched.
+
 ### 2026-08-28 — "Say hi" doubled-greeting investigated with real evidence, partially fixed
 
 Investigated the open `ROADMAP.md` item rather than reflexively tweaking

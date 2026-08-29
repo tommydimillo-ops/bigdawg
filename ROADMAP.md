@@ -84,9 +84,11 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   Milestone 4 (now reframed as "Phase 9 / M4 — Conversation & History
   Intelligence", audited and split into sub-milestones M4.1-M4.4; all four
   are now complete and committed, M4.1-M4.3 merged to `main`, M4.4 built,
-  wired, tested, and CI-verified but shipped **off by default**
-  (`proactive_history_enabled=False`) pending real-use evidence — see
-  "Completed" below for the full M4.4 entry) is not yet complete;
+  wired, tested, CI-verified, and **now turned on by default**
+  (`proactive_history_enabled=True` — shipped off pending real-use
+  evidence, flipped once that evidence-gathering period itself needed
+  to begin) — see "Completed" below for the full M4.4 entry) is not yet
+  complete;
   OpenClaw interoperability landed between Milestone 3 and Milestone 4,
   see "Completed" above):
   - **Milestone 0 — GitHub Actions CI** (`d3481fc`) ✅: added
@@ -505,8 +507,10 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   `history_context_budget_tokens` (default `500`),
   `history_context_timeout_ms` (default `150`),
   `history_context_max_results` (default `3`). **Shipped off by
-  default** — same posture as `openclaw_messaging_enabled` — nobody gets
-  this behavior until `PROACTIVE_HISTORY_ENABLED=true` is set.
+  default** at the time — same posture as `openclaw_messaging_enabled` —
+  nobody got this behavior until `PROACTIVE_HISTORY_ENABLED=true` was
+  set. **Since turned on by default** (`proactive_history_enabled=True`
+  as of this writing) — see "Next" below for when/why.
   A real design-premise correction found while writing the tests, not
   shipped quietly: the original justification for the new
   `search_history(busy_timeout_ms=...)` parameter (a normal write
@@ -594,9 +598,9 @@ evidence that doesn't exist yet, same posture already applied to
 
 Otherwise nothing in progress — Phase 9 / M4 (M4.1 through M4.4) is
 fully complete and on `main`, all four milestones CI-verified. M4.4 is
-intentionally left off by default (`proactive_history_enabled=False`);
-turning it on for real use is tracked as a "Next" candidate below, not
-in-progress work.
+now turned on by default (`proactive_history_enabled=True`); its
+evidence-gathering period (see "Next" below) is the tracked follow-up,
+not in-progress work.
 
 ## Next
 
@@ -653,16 +657,18 @@ four now complete**, see "Completed" above for full detail on each):
 - **M4.4 — proactive context injection** ✅ complete, on `main`
   (`c992432`, `6fbc076`). Bounded, relevance-gated, provenance-visible,
   cost-aware, opt-in retrieval that surfaces relevant history
-  automatically rather than only on explicit search. **Shipped off by
-  default** — see "Completed" above and `ARCHITECTURE.md` §12d.
-  **Turning it on for real use is the open next step**, not yet
-  scheduled: the evidence worth collecting first is real
-  `history_retrieved` log volume/relevance from someone running with
-  `PROACTIVE_HISTORY_ENABLED=true` for a while (are the top-3 FTS hits
-  actually relevant, does 500 tokens feel right, does 150ms ever
-  actually matter) — not a code change, a usage-observation period. No
-  target date; revisit once M4.3's tools have seen some real use too,
-  since both draw on the same store.
+  automatically rather than only on explicit search. **Turned on by
+  default** (was off pending real-use evidence — see "Completed" above
+  and `ARCHITECTURE.md` §12d) — the evidence worth collecting is real
+  `history_retrieved` log volume/relevance from actually running with
+  this on for a while (are the top-3 FTS hits actually relevant, does
+  500 tokens feel right, does 150ms ever actually matter), which can
+  only start accumulating once it's on. **The evidence-gathering itself
+  is still not done** — turning it on starts the clock, it doesn't
+  substitute for the observation period. Revisit the three
+  budget/timeout/max-results defaults once real `history_retrieved` log
+  data exists; no target date, and once M4.3's tools have seen some real
+  use too helps, since both draw on the same store.
 
 `conversation.json` backfill (a product decision already made — it
 *will* eventually happen, just not as part of M4.1/M4.2) and history

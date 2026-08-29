@@ -7,6 +7,36 @@ needed.
 
 ---
 
+## 2026-08-28 — M4.4 (proactive history retrieval) turned on by default
+
+Per the user's direct instruction and confirmed autonomy grant
+(AskUserQuestion), `config/settings.py`'s `proactive_history_enabled`
+flips `False` -> `True`. This does not change what M4.4 *is* — the
+mechanism, budget/timeout/max-results settings, and the disabled-path
+byte-identical guarantee are all exactly as shipped in `c992432`/
+`6fbc076`. It starts the real-use evidence-gathering period
+`ROADMAP.md`'s M4.4 "Next" entry described as the actual prerequisite
+for this flip: real `history_retrieved` log volume/relevance from
+someone actually running with it on, which cannot exist until it is on.
+The three budget/timeout/max-results defaults (500 tokens / 150ms /
+top-3) remain unvalidated starting values — this flip is what makes
+validating them against real data possible, not a claim that they're
+already right.
+
+Updated two comments that referenced the old default as an "off by
+default" example (`config/settings.py`'s own field comment,
+`agent/brain.py`'s call site) and one already-stale docstring in
+`agent/history_context.py` that predated even this session (claimed
+"not called from anywhere in the real request path yet," which stopped
+being true the moment `6fbc076` wired it into `build_system_prompt()` —
+found and fixed while working in this area, not caused by this change).
+`tests/test_history_context.py::test_default_setting_value_is_true`
+(renamed from `..._is_false`) now pins the new real default. Full suite
+green before commit. `coding_agent_enabled` untouched (still `False`) —
+this flip is specific to M4.4, not a general "turn defaults on" pass.
+
+---
+
 ## 2026-08-28 — "Say hi" doubled-greeting investigated, partially fixed
 
 `ROADMAP.md`'s open "say hi → two provider calls" item, investigated as

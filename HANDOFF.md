@@ -495,7 +495,7 @@ an accurate historical record of the S1 pass itself.
   — docs only, no code change; also the fast-forward merge tip landing
   all of the above on `main`.
 
-## Phase 9 / M4.4 — PROACTIVE HISTORY RETRIEVAL ✅ COMPLETE, ON `main`, CI-VERIFIED, OFF BY DEFAULT
+## Phase 9 / M4.4 — PROACTIVE HISTORY RETRIEVAL ✅ COMPLETE, ON `main`, CI-VERIFIED, **ON BY DEFAULT** (turned on this session — was off; see the dedicated section below)
 
 - **What it does**: `agent/history_context.py`'s
   `build_history_context(user_input, request_id, state)`, called from
@@ -504,11 +504,16 @@ an accurate historical record of the S1 pass itself.
   excerpts into the system prompt automatically — no ToolSpec, no model
   choice involved; the decision is pure code, matching M4.2's "the LLM
   never decides" framing for capture, now mirrored for retrieval.
-- **Off by default, real evidence needed before flipping it on.**
-  `config.settings.proactive_history_enabled` defaults to `False`. This
-  is a deliberate product decision, not a placeholder — see "Exact
-  recommended next steps" below for what turning it on for real would
-  need.
+- **Was off by default pending real evidence; turned on this session.**
+  `config.settings.proactive_history_enabled` shipped `False` as a
+  deliberate product decision, not a placeholder — flipped to `True`
+  once it became clear the evidence needed to validate the defaults
+  (real `history_retrieved` log volume/relevance) can only start
+  accumulating once the setting is actually on. See the dedicated M4.4
+  default-flip section (right after "Current project status" below) for
+  the exact reasoning and what's still genuinely open (the
+  evidence-gathering period itself hasn't happened yet — turning the
+  setting on starts the clock, it isn't the observation period itself).
 - **The WAL finding** (do not re-litigate; see `ARCHITECTURE.md` §12d
   for the full account): the original justification for the new
   `search_history(busy_timeout_ms=...)` parameter was that a 5-second
@@ -521,7 +526,8 @@ an accurate historical record of the S1 pass itself.
   but the docstrings now say plainly that it is defense-in-depth, not a
   fix for a reproduced hazard.
 - **The four settings** (`config/settings.py`, all `_env_*`-
-  overridable): `proactive_history_enabled` (default `False`),
+  overridable): `proactive_history_enabled` (`True` — shipped `False`,
+  see the dedicated flip section below for when/why),
   `history_context_budget_tokens` (default `500` — a hard token
   ceiling, hits dropped whole once the next one would overflow it,
   never truncated/summarized), `history_context_timeout_ms` (default
@@ -1409,6 +1415,34 @@ not another prompt tweak, and explicitly not attempted this round. See
 `tests/test_brain.py::TestGreetingInstructionForbidsNarrationBeforeToolCalls`
 pins the current instruction text against silent regression.
 
+## M4.4 turned on by default ✅ COMPLETE
+
+Per the user's direct instruction and confirmed autonomy grant
+(AskUserQuestion), `config/settings.py`'s `proactive_history_enabled`
+flips `False` -> `True`. This is not a claim that M4.4's defaults (500
+tokens / 150ms / top-3 results) are now validated — `ROADMAP.md`'s own
+M4.4 "Next" entry was explicit that the evidence needed to validate them
+is real `history_retrieved` log volume/relevance from someone actually
+running with this on, which cannot exist until it's on. Turning the
+setting on **starts** that evidence-gathering period; it does not
+substitute for it. The mechanism itself (bounded, relevance-gated,
+provenance-visible, cost-aware retrieval; the disabled-path
+byte-identical guarantee; the WAL-timeout finding) is unchanged from
+what `c992432`/`6fbc076` shipped.
+
+Two comments that referenced the old default as an "off by default"
+example were updated (`config/settings.py`'s own field comment,
+`agent/brain.py`'s call site), plus one docstring in
+`agent/history_context.py` found already stale independent of this
+change — it claimed `build_history_context()` was "not called from
+anywhere in the real request path yet," which stopped being true the
+moment `6fbc076` wired it into `build_system_prompt()`, a fact this
+session found while working in this area, not something this change
+caused. `tests/test_history_context.py::test_default_setting_value_is_true`
+(renamed from `_is_false`) pins the new real default. Full suite green
+before commit. `coding_agent_enabled` untouched (still `False`) — this
+flip is specific to M4.4.
+
 ## Current project status
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
@@ -2245,16 +2279,15 @@ For the next session, in order of what's most likely to matter:
    increment 1 and M10.0 are both committed and CI-verified as of this
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
-0a. **Voice false-triggering (`.relay/plan-b3.md`) is done, and so is
-   the "say hi" doubled-greeting investigation** (honest partial fix —
-   see the dedicated sections above). Per the user's own direct
-   confirmation (AskUserQuestion, not `.relay/AUTHORITY.md`'s own
-   say-so), the active thread next is: turn `proactive_history_enabled`
-   (M4.4) on by default, then continue down `ROADMAP.md`'s
-   "Next"/"Other candidates" sections without further check-ins, using
-   the same engineering discipline (tests, full suite, CI verification,
-   separate security/feature/docs commits where that split applies)
-   established this session. If a later `.relay/plan-*.md`/`report-*.md`
+0a. **Voice false-triggering, the "say hi" doubled-greeting
+   investigation, and turning M4.4 on are all done** (see their
+   dedicated sections above). Per the user's own direct confirmation
+   (AskUserQuestion, not `.relay/AUTHORITY.md`'s own say-so), the active
+   thread next is: continue down `ROADMAP.md`'s "Next"/"Other
+   candidates" sections without further check-ins, using the same
+   engineering discipline (tests, full suite, CI verification, separate
+   security/feature/docs commits where that split applies) established
+   this session. If a later `.relay/plan-*.md`/`report-*.md`
    sequence exists beyond this
    point, read those first — they are the authoritative record of
    exactly where that thread left off; this file only summarizes.
