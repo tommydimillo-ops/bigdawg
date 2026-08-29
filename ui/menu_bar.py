@@ -82,6 +82,7 @@ from agent import quiet_mode, scheduler_lock, voice_session, voice_state
 from agent.audit import recent_actions_text
 from agent.computer_use_status import is_active as computer_use_active
 from agent.executor import execute_task
+from agent.history_context import retrieval_evidence_summary
 from agent.memory_agent import recall
 from agent.observability import log_event
 from agent.scheduled_tasks import list_tasks, mark_run
@@ -169,6 +170,7 @@ class CampusPilotApp(rumps.App):
             "Recent Tasks",
             "Recent Actions",
             "Estimated Cost",
+            "Proactive History Stats",
         ]
 
         # Background thread -> main thread handoff, so AppKit calls
@@ -569,6 +571,47 @@ class CampusPilotApp(rumps.App):
             return
 
         rumps.alert("Estimated Cost", f"${cost:.2f} estimated today.")
+
+    @rumps.clicked("Proactive History Stats")
+    def show_history_retrieval_stats(self, _):
+        # Same lazy-on-click, no-background-timer, honest-"unavailable"
+        # pattern as show_cost above (Phase 8's precedent). M4.5: the
+        # read-back path M4.4's own defaults (500 tokens/150ms/top-3
+        # results) could not be validated without -- see ROADMAP.md's
+        # M4.4 entry and agent.history_context.retrieval_evidence_summary's
+        # own docstring for exactly what these numbers can and can't tell
+        # you (e.g. "requests_with_hits_below_max_results" is genuinely
+        # ambiguous between "budget cut it short" and "fewer results
+        # existed"). Reads all available log history, not just today --
+        # there's no "M4.4 was enabled at this timestamp" marker to cut
+        # against.
+        summary = retrieval_evidence_summary()
+
+        if summary is None:
+            rumps.alert("Proactive History Stats", "History retrieval data isn't available right now.")
+            return
+
+        if summary.total_requests == 0:
+            rumps.alert(
+                "Proactive History Stats",
+                "No requests recorded yet in the available log history.",
+            )
+            return
+
+        failures = (
+            ", ".join(f"{reason} x{count}" for reason, count in summary.failures_by_reason.items())
+            or "none"
+        )
+        rumps.alert(
+            "Proactive History Stats",
+            f"{summary.total_requests} requests, {summary.requests_with_retrieval} with retrieval.\n"
+            f"{summary.total_hits} hits, {summary.total_tokens_added} tokens added "
+            f"(budget {settings.history_context_budget_tokens}, closest single request: "
+            f"{summary.max_tokens_in_a_single_request}).\n"
+            f"{summary.requests_with_hits_below_max_results} requests had fewer than "
+            f"{settings.history_context_max_results} hits.\n"
+            f"Failures: {failures}",
+        )
 
 
 def _handle_termination_signal(signum, frame):

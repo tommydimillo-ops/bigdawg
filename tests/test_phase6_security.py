@@ -18,6 +18,7 @@ Three guarantees this covers, specific to voice:
 Run with: python -m unittest tests.test_phase6_security -v
 """
 import fcntl
+import json
 import os
 import signal
 import tempfile
@@ -31,6 +32,7 @@ import tools.schemas  # noqa: F401 -- populates the registry
 import agent.execution_history as execution_history
 import agent.history_store as history_store
 import agent.jarvis_state as jarvis_state
+import agent.observability as observability
 import agent.quiet_mode as quiet_mode
 import agent.scheduled_tasks as scheduled_tasks
 import agent.scheduler_lock as scheduler_lock
@@ -431,6 +433,94 @@ class TestMenuBarCostReadout(unittest.TestCase):
 
         with patch("rumps.alert"):
             menu_bar.CampusPilotApp.show_cost(app, None)
+
+        app._run_conversation_turn.assert_not_called()
+
+
+class TestMenuBarHistoryRetrievalStats(unittest.TestCase):
+    """M4.5: the "Proactive History Stats" dropdown item
+    (agent/history_context.py's retrieval_evidence_summary(), read lazily
+    on click -- same pattern as TestMenuBarCostReadout above, Phase 8's
+    "Estimated Cost" precedent)."""
+
+    def setUp(self):
+        self._real_log_file = observability.MENUBAR_LOG_FILE
+        observability.MENUBAR_LOG_FILE = tempfile.mktemp(suffix=".log")
+
+    def tearDown(self):
+        if os.path.exists(observability.MENUBAR_LOG_FILE):
+            os.remove(observability.MENUBAR_LOG_FILE)
+        observability.MENUBAR_LOG_FILE = self._real_log_file
+
+    def _write_log(self, *records):
+        with open(observability.MENUBAR_LOG_FILE, "w") as file:
+            for record in records:
+                file.write(json.dumps(record) + "\n")
+
+    @patch("rumps.alert")
+    def test_no_log_at_all_fails_safely(self, mock_alert):
+        # setUp points MENUBAR_LOG_FILE at a path that was never created.
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_history_retrieval_stats(app, None)
+
+        mock_alert.assert_called_once_with(
+            "Proactive History Stats", "History retrieval data isn't available right now.",
+        )
+
+    @patch("rumps.alert")
+    def test_empty_log_reports_no_requests_not_an_error(self, mock_alert):
+        self._write_log()
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_history_retrieval_stats(app, None)
+
+        mock_alert.assert_called_once_with(
+            "Proactive History Stats", "No requests recorded yet in the available log history.",
+        )
+
+    @patch("rumps.alert")
+    def test_real_retrieval_activity_is_summarized(self, mock_alert):
+        self._write_log(
+            {"timestamp": 1.0, "event": "request_started", "request_id": "r1"},
+            {
+                "timestamp": 1.0, "event": "history_retrieved", "request_id": "r1",
+                "approx_tokens": 10,
+            },
+        )
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_history_retrieval_stats(app, None)
+
+        mock_alert.assert_called_once()
+        title, message = mock_alert.call_args.args
+        self.assertEqual(title, "Proactive History Stats")
+        self.assertIn("1 requests, 1 with retrieval", message)
+        self.assertIn("1 hits, 10 tokens added", message)
+        self.assertIn("Failures: none", message)
+
+    @patch("rumps.alert")
+    def test_failures_are_listed_in_the_message(self, mock_alert):
+        self._write_log(
+            {"timestamp": 1.0, "event": "request_started", "request_id": "r1"},
+            {
+                "timestamp": 1.0, "event": "history_retrieval_skipped",
+                "reason": "busy", "error_type": "HistoryBusy",
+            },
+        )
+        app = MagicMock()
+
+        menu_bar.CampusPilotApp.show_history_retrieval_stats(app, None)
+
+        _, message = mock_alert.call_args.args
+        self.assertIn("busy:HistoryBusy x1", message)
+
+    def test_does_not_touch_conversation_or_voice_machinery(self):
+        self._write_log()
+        app = MagicMock()
+
+        with patch("rumps.alert"):
+            menu_bar.CampusPilotApp.show_history_retrieval_stats(app, None)
 
         app._run_conversation_turn.assert_not_called()
         app._speak_and_notify.assert_not_called()

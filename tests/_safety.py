@@ -149,6 +149,7 @@ def _install_store_redirects(root: str) -> None:
     import agent.execution_history as execution_history
     import agent.history_store as history_store
     import agent.jarvis_state as jarvis_state
+    import agent.observability as observability
     import agent.personal_context as personal_context
     import agent.quiet_mode as quiet_mode
     import agent.scheduled_tasks as scheduled_tasks
@@ -176,6 +177,10 @@ def _install_store_redirects(root: str) -> None:
     _set(execution_history, "HISTORY_FILE", os.path.join(root, "execution_history.json"), "agent.execution_history.HISTORY_FILE")
     _set(scheduler_lock, "SCHEDULER_LOCK_FILE", os.path.join(root, "scheduler.lock"), "agent.scheduler_lock.SCHEDULER_LOCK_FILE")
     _set(usage, "USAGE_FILE", os.path.join(root, "usage_history.json"), "agent.usage.USAGE_FILE")
+    _set(
+        observability, "MENUBAR_LOG_FILE", os.path.join(root, "menubar.err.log"),
+        "agent.observability.MENUBAR_LOG_FILE",
+    )
     _set(database_memory, "MEMORY_FILE", os.path.join(root, "memory.json"), "database.memory.MEMORY_FILE")
     _set(credential_store, "CONFIG_DIR", root, "tools.credential_store.CONFIG_DIR")
     _set(credential_store, "LOGINS_FILE", os.path.join(root, "logins.json"), "tools.credential_store.LOGINS_FILE")

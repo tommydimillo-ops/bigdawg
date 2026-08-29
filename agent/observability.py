@@ -20,14 +20,27 @@ conversations shouldn't end up sitting in a diagnostics log by default.
 """
 import json
 import logging
+import os
 import sys
 import time
 from contextlib import contextmanager
-from typing import Optional
+from typing import List, Optional
 
 from config.settings import settings
 
 PREVIEW_LENGTH = 120
+
+# M4.5: the one place in this codebase that redirects log_event's stderr
+# output to a real, durable file -- ui/menu_bar.py, when launched via the
+# actual .app bundle (its __CFBundleIdentifier check). Streamlit (app.py)
+# and agent/scheduler_daemon.py do not redirect stderr anywhere durable,
+# so events logged from either path are invisible to events_since()
+# below; that is a real architectural gap this module cannot paper over,
+# not something a smarter read function could fix. See ROADMAP.md's
+# M4.5 entry.
+MENUBAR_LOG_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "menubar.err.log",
+)
 
 _logger = logging.getLogger("jarvis")
 _logger.setLevel(logging.DEBUG if settings.debug else logging.INFO)
@@ -97,3 +110,53 @@ def timed_event(event: str, request_id: Optional[str] = None, component: Optiona
             component=component,
             duration=time.time() - start,
         )
+
+
+def events_since(cutoff_timestamp: float, event: Optional[str] = None, log_path: Optional[str] = None) -> Optional[List[dict]]:
+    """M4.5: read-only query over this module's own persisted output --
+    mirrors agent.usage.get_since()'s shape (a time-window filter over
+    parsed records) applied to log_event's JSON lines instead of
+    UsageRecord. Returns None if the log can't be opened at all, distinct
+    from a real empty window with zero matching events -- same
+    None-vs-empty-list convention agent.usage.cost_since() uses for
+    "can't tell" vs "genuinely zero," so a caller like the menu-bar
+    readout can fail safely by omitting the figure rather than ever
+    showing a wrong-looking "zero."
+
+    `log_path` defaults to None and reads MENUBAR_LOG_FILE inside this
+    function body, not as the default value itself -- a default bound at
+    definition time would not pick up tests/_safety.py's later redirect
+    (see CLAUDE.md's "How to test" section for the exact class of bug
+    this pattern avoids; agent/history_store.py and
+    agent/personal_context.py both had it for real once).
+
+    Never mutates or rotates the log -- opens for reading only. A
+    malformed or partial line (e.g. a write caught mid-append) is
+    skipped, never allowed to break the whole read; this file is a
+    live-appended log, not an atomically-replaced document like
+    usage_history.json, so tolerating a torn line is the correct
+    default, not defensive overkill."""
+    if log_path is None:
+        log_path = MENUBAR_LOG_FILE
+
+    try:
+        with open(log_path) as file:
+            lines = file.readlines()
+    except OSError:
+        return None
+
+    matches = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        timestamp = record.get("timestamp")
+        if not isinstance(timestamp, (int, float)) or timestamp < cutoff_timestamp:
+            continue
+        if event is not None and record.get("event") != event:
+            continue
+        matches.append(record)
+    return matches

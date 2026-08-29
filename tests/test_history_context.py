@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import agent.history_context as history_context
 import agent.history_store as history_store
 from agent.history_context import build_history_context
 from config.settings import settings
@@ -240,6 +241,96 @@ class TestLogEventsEmittedPerHit(IsolatedHistoryContextTestCase):
             context = build_history_context("quarterly budget review meeting")
         self.assertEqual(len(context.retrieved), 1)
         self.assertEqual(mock_log.call_count, 1)
+
+
+class TestRetrievalEvidenceSummary(unittest.TestCase):
+    """M4.5: aggregation logic only -- events_since() itself (the real
+    log-reading half) is agent/observability.py's own concern and
+    already covered by tests/test_observability.py::TestEventsSince.
+    Mocked here at that boundary so these tests exercise exactly the
+    counting/grouping logic, not file I/O."""
+
+    def setUp(self):
+        self._real_max_results = settings.history_context_max_results
+        object.__setattr__(settings, "history_context_max_results", 3)
+
+    def tearDown(self):
+        object.__setattr__(settings, "history_context_max_results", self._real_max_results)
+
+    def test_unreadable_log_returns_none(self):
+        with patch("agent.history_context.events_since", return_value=None):
+            self.assertIsNone(history_context.retrieval_evidence_summary())
+
+    def test_empty_log_returns_all_zeros(self):
+        with patch("agent.history_context.events_since", return_value=[]):
+            summary = history_context.retrieval_evidence_summary()
+        self.assertEqual(summary.total_requests, 0)
+        self.assertEqual(summary.requests_with_retrieval, 0)
+        self.assertEqual(summary.total_hits, 0)
+        self.assertEqual(summary.total_tokens_added, 0)
+        self.assertEqual(summary.max_tokens_in_a_single_request, 0)
+        self.assertEqual(summary.requests_with_hits_below_max_results, 0)
+        self.assertEqual(summary.failures_by_reason, {})
+
+    def test_counts_distinct_requests_and_requests_with_retrieval(self):
+        records = [
+            {"event": "request_started", "request_id": "r1"},
+            {"event": "request_started", "request_id": "r2"},
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 10},
+        ]
+        with patch("agent.history_context.events_since", return_value=records):
+            summary = history_context.retrieval_evidence_summary()
+        self.assertEqual(summary.total_requests, 2)
+        self.assertEqual(summary.requests_with_retrieval, 1)
+
+    def test_sums_hits_and_tokens_across_requests(self):
+        records = [
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 10},
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 20},
+            {"event": "history_retrieved", "request_id": "r2", "approx_tokens": 5},
+        ]
+        with patch("agent.history_context.events_since", return_value=records):
+            summary = history_context.retrieval_evidence_summary()
+        self.assertEqual(summary.total_hits, 3)
+        self.assertEqual(summary.total_tokens_added, 35)
+        self.assertEqual(summary.max_tokens_in_a_single_request, 30)  # r1's 10+20
+
+    def test_below_max_results_counts_requests_with_fewer_hits_than_the_setting(self):
+        records = [
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 10},
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 10},
+            {"event": "history_retrieved", "request_id": "r1", "approx_tokens": 10},
+            {"event": "history_retrieved", "request_id": "r2", "approx_tokens": 10},
+        ]
+        with patch("agent.history_context.events_since", return_value=records):
+            summary = history_context.retrieval_evidence_summary()
+        # r1 has 3 hits (== max_results, not below); r2 has 1 (below).
+        self.assertEqual(summary.requests_with_hits_below_max_results, 1)
+
+    def test_groups_failures_by_reason_and_error_type(self):
+        records = [
+            {"event": "history_retrieval_skipped", "reason": "busy", "error_type": "HistoryBusy"},
+            {"event": "history_retrieval_skipped", "reason": "busy", "error_type": "HistoryBusy"},
+            {"event": "history_retrieval_skipped", "reason": "store_error", "error_type": "HistoryCorruption"},
+        ]
+        with patch("agent.history_context.events_since", return_value=records):
+            summary = history_context.retrieval_evidence_summary()
+        self.assertEqual(summary.failures_by_reason, {"busy:HistoryBusy": 2, "store_error:HistoryCorruption": 1})
+
+    def test_records_with_missing_fields_do_not_crash_and_are_skipped(self):
+        records = [
+            {"event": "history_retrieved", "request_id": "r1"},  # no approx_tokens
+            {"event": "history_retrieved", "approx_tokens": 10},  # no request_id
+        ]
+        with patch("agent.history_context.events_since", return_value=records):
+            summary = history_context.retrieval_evidence_summary()
+        self.assertEqual(summary.total_hits, 0)
+        self.assertEqual(summary.total_tokens_added, 0)
+
+    def test_since_timestamp_is_passed_through_to_events_since(self):
+        with patch("agent.history_context.events_since", return_value=[]) as mock_events:
+            history_context.retrieval_evidence_summary(since_timestamp=12345.0)
+        mock_events.assert_called_once_with(12345.0)
 
 
 if __name__ == "__main__":

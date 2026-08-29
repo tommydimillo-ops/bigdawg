@@ -10,10 +10,12 @@ Run with: python -m unittest tests.test_observability -v
 import io
 import json
 import logging
+import os
 import tempfile
 import unittest
 
 import agent.jarvis_state as jarvis_state
+import agent.observability as observability
 from agent.observability import _logger, log_event, preview, timed_event
 from agent.executor import _run_tool
 from agent.request_context import RequestContext
@@ -163,6 +165,102 @@ class TestRealToolDispatchLogging(unittest.TestCase):
             _run_tool("get_system_status", {}, source="chat", context=context)
         raw_output = capture.buffer.getvalue()
         self.assertNotIn(real_key, raw_output)
+
+
+class TestEventsSince(unittest.TestCase):
+    """M4.5: events_since() is the read-back half of log_event's write-only
+    output -- the mechanism M4.4's own defaults (500 tokens/150ms/top-3)
+    cannot be validated without. Never touches the real MENUBAR_LOG_FILE;
+    every test writes its own throwaway file."""
+
+    def setUp(self):
+        self.log_path = tempfile.mktemp(suffix=".log")
+
+    def tearDown(self):
+        try:
+            os.remove(self.log_path)
+        except FileNotFoundError:
+            pass
+
+    def _write_lines(self, *records):
+        with open(self.log_path, "w") as file:
+            for record in records:
+                file.write(json.dumps(record) + "\n")
+
+    def test_missing_file_returns_none_not_empty_list(self):
+        result = observability.events_since(0, log_path=tempfile.mktemp())
+        self.assertIsNone(result)
+
+    def test_readable_but_empty_file_returns_empty_list(self):
+        self._write_lines()
+        result = observability.events_since(0, log_path=self.log_path)
+        self.assertEqual(result, [])
+
+    def test_filters_by_cutoff_timestamp(self):
+        self._write_lines(
+            {"timestamp": 100.0, "event": "a"},
+            {"timestamp": 200.0, "event": "b"},
+        )
+        result = observability.events_since(150.0, log_path=self.log_path)
+        self.assertEqual([r["event"] for r in result], ["b"])
+
+    def test_filters_by_event_name(self):
+        self._write_lines(
+            {"timestamp": 100.0, "event": "a"},
+            {"timestamp": 100.0, "event": "b"},
+        )
+        result = observability.events_since(0, event="b", log_path=self.log_path)
+        self.assertEqual([r["event"] for r in result], ["b"])
+
+    def test_no_event_filter_returns_everything_in_the_window(self):
+        self._write_lines(
+            {"timestamp": 100.0, "event": "a"},
+            {"timestamp": 100.0, "event": "b"},
+        )
+        result = observability.events_since(0, log_path=self.log_path)
+        self.assertEqual(len(result), 2)
+
+    def test_malformed_line_is_skipped_not_fatal(self):
+        with open(self.log_path, "w") as file:
+            file.write("not json at all\n")
+            file.write(json.dumps({"timestamp": 100.0, "event": "a"}) + "\n")
+            file.write('{"truncated": tr\n')
+        result = observability.events_since(0, log_path=self.log_path)
+        self.assertEqual([r["event"] for r in result], ["a"])
+
+    def test_non_dict_json_line_is_skipped(self):
+        with open(self.log_path, "w") as file:
+            file.write(json.dumps([1, 2, 3]) + "\n")
+            file.write(json.dumps({"timestamp": 100.0, "event": "a"}) + "\n")
+        result = observability.events_since(0, log_path=self.log_path)
+        self.assertEqual([r["event"] for r in result], ["a"])
+
+    def test_line_missing_timestamp_is_skipped(self):
+        with open(self.log_path, "w") as file:
+            file.write(json.dumps({"event": "no_timestamp"}) + "\n")
+        result = observability.events_since(0, log_path=self.log_path)
+        self.assertEqual(result, [])
+
+    def test_default_log_path_reads_the_redirected_menubar_constant(self):
+        # No log_path passed -- must resolve observability.MENUBAR_LOG_FILE
+        # dynamically inside the function body, not a value captured at
+        # import/definition time (the exact class of bug CLAUDE.md's "How
+        # to test" section warns about).
+        self._write_lines({"timestamp": 100.0, "event": "a"})
+        real_constant = observability.MENUBAR_LOG_FILE
+        try:
+            observability.MENUBAR_LOG_FILE = self.log_path
+            result = observability.events_since(0)
+        finally:
+            observability.MENUBAR_LOG_FILE = real_constant
+        self.assertEqual([r["event"] for r in result], ["a"])
+
+    def test_never_writes_to_the_log_file(self):
+        self._write_lines({"timestamp": 100.0, "event": "a"})
+        before = os.path.getmtime(self.log_path)
+        observability.events_since(0, log_path=self.log_path)
+        after = os.path.getmtime(self.log_path)
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
