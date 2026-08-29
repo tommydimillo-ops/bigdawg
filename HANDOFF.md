@@ -1804,12 +1804,28 @@ first real messaging channel afterward.
   canonical tests never touch the real `memory.json` because of it — but
   still an open production design decision.
 
-Otherwise none remaining. The two real bugs M1.5's smoke test found
-(`client.platform`, `client.deviceFamily` both missing from the wire
-`connect` params) are fixed and verified against a real Gateway — see
-item 1 in "What was completed" above. The device-ID hash algorithm
-(flagged in a prior session) remains CONFIRMED against real primary
-source.
+Otherwise none remaining (Python-level). The two real bugs M1.5's smoke
+test found (`client.platform`, `client.deviceFamily` both missing from
+the wire `connect` params) are fixed and verified against a real
+Gateway — see item 1 in "What was completed" above. The device-ID hash
+algorithm (flagged in a prior session) remains CONFIRMED against real
+primary source.
+
+- **CI reliability: an intermittent, unproven-root-cause slowdown that
+  once exceeded the test-run timeout entirely.** `a051e1b`'s CI run was
+  cancelled at 15:17 elapsed against `.github/workflows/tests.yml`'s
+  then-`timeout-minutes: 15`, with code byte-identical to the
+  immediately prior commit (`5b05dba`), which had passed the same suite
+  in 129s. Local runs on a quiet machine are consistently ~55-60s;
+  confirmed no test spawns the real, full suite as a nested subprocess
+  (which would double real runtime) — CodingAgent/QAAgent's own
+  test-suite-spawning tests only ever run against tiny, throwaway
+  fixture repos. Mitigated by raising `timeout-minutes` to 30 (real
+  margin over the evidenced worst case), but the underlying cause
+  (working theory: this suite's real subprocess/multiprocessing load
+  running slower on a shared CI runner under some conditions) is not
+  proven or eliminated — worth real investigation if it recurs, not
+  something to keep silently re-mitigating with an ever-larger timeout.
 
 ## Current blockers
 

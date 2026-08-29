@@ -7,6 +7,38 @@ needed.
 
 ---
 
+## 2026-08-29 — Raised CI's test-run timeout after a real, evidenced cancellation
+
+`a051e1b`'s CI run was cancelled at exactly 15:17 elapsed, hitting
+`.github/workflows/tests.yml`'s `timeout-minutes: 15` on the actual test
+step. Not dismissed as a fluke without checking: `a051e1b`'s code is
+byte-identical to the immediately prior commit (`5b05dba`), which had
+passed the same suite in 129s — so this isn't a regression the test
+content introduced. Local runs on a quiet machine are consistently
+~55-60s (confirmed again during this investigation: 1598/1598 in 54.4s);
+one local outlier earlier this same session hit 805s under heavy
+concurrent local diagnostic load. Checked whether any test spawns the
+real, full 1598-test suite as a nested subprocess (which would roughly
+double real runtime) — confirmed no: `agent/agents/coding.py`'s
+`_run_test_suite`/`_collected_test_count` are only ever exercised in
+tests against tiny, throwaway fixture repos (1-2 tests each), never the
+real project root.
+
+Working theory, not a proven root cause: this suite's real subprocess/
+multiprocessing load (git subprocesses in `agent/coding_checkpoint.py`'s
+tests, `multiprocessing.Process` barrier tests in
+`tests/test_coding_checkpoint.py::TestConcurrency`, nested test-suite
+subprocess spawns in CodingAgent/QAAgent's own tests) occasionally runs
+much slower on a shared GitHub Actions macOS runner than on a quiet
+local machine, and `timeout-minutes: 15` was set when this suite was
+lighter than it is now. Raised to 30 — real margin over the evidenced
+worst case, not removing the timeout as a safety net. This is a
+mitigation for a real, intermittent CI reliability gap, not a claim the
+gap itself is understood or eliminated; worth actually investigating
+further if it recurs.
+
+---
+
 ## 2026-08-28 — M4.4 (proactive history retrieval) turned on by default
 
 Per the user's direct instruction and confirmed autonomy grant

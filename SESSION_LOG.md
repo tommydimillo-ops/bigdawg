@@ -5,6 +5,18 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-29 — CI test-run timeout raised after a real cancellation
+
+`a051e1b`'s CI run was cancelled at exactly the 15-minute
+`timeout-minutes` limit, with code byte-identical to `5b05dba`
+immediately before it, which had passed in 129s. Investigated rather
+than assumed a fluke: confirmed local runs stay ~55-60s on a quiet
+machine, confirmed no test nests the real full suite as a subprocess.
+Working theory (not proven): this suite's real subprocess/multiprocess
+load runs slower on a shared CI runner under some conditions than
+locally. Raised `timeout-minutes` 15 -> 30 as a real-margin mitigation,
+documented honestly as unproven-root-cause rather than "fixed."
+
 ### 2026-08-28 — M4.4 (proactive history retrieval) turned on by default
 
 Per the user's direct instruction and confirmed autonomy grant,

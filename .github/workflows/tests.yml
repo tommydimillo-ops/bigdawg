@@ -7,7 +7,20 @@ on:
 jobs:
   test:
     runs-on: macos-15
-    timeout-minutes: 15
+    # Was 15 -- raised after a real, evidenced timeout: commit a051e1b's
+    # run was cancelled at exactly 15:17 elapsed with code byte-identical
+    # to the immediately prior commit (5b05dba), which had passed in
+    # 129s. Local runs are consistently ~55-60s on a quiet machine (one
+    # local outlier this same session hit 805s under heavy concurrent
+    # local load). Since the code was identical between the fast and the
+    # timed-out CI run, this isn't a regression in what's being tested --
+    # it's this suite's real subprocess/multiprocessing load (git
+    # subprocesses, multiprocessing.Process barrier tests, nested
+    # test-suite subprocess spawns) occasionally running much slower on a
+    # shared CI runner than on a quiet local machine. 30 gives real
+    # margin over the evidenced worst case without removing the timeout
+    # as a real safety net.
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
