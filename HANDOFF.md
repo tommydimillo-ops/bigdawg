@@ -1443,6 +1443,71 @@ caused. `tests/test_history_context.py::test_default_setting_value_is_true`
 before commit. `coding_agent_enabled` untouched (still `False`) — this
 flip is specific to M4.4.
 
+## M4.5 — evidence read-back for M4.4 ✅ COMPLETE
+
+Chosen and scoped by Cowork (`.relay/plan-b4.md`, `.relay/AUTHORITY.md`'s
+"Next milestone decided" section) after M10.0/Phase 10/voice/say-hi/M4.4
+all shipped this same session — read and acted on only after the user
+directly confirmed, via a live `AskUserQuestion` answer, wanting to
+proceed autonomously per `AUTHORITY.md`; that confirmation is what
+authorized continuing, not the file's own claim to standing authority.
+
+**The real gap this closes**: `agent/observability.py`'s `log_event()`
+only ever writes forward (to stderr) — this codebase had no function
+that read a structured event back. `ROADMAP.md`'s M4.4 entry said
+turning the feature on was the prerequisite for validating its
+500-token/150ms/top-3 defaults against real `history_retrieved` volume,
+but with no read-back path, that evidence had nowhere to actually be
+read from once it existed.
+
+**What shipped**: `agent.observability.events_since(cutoff_timestamp,
+event=None, log_path=None)` — mirrors `agent.usage`'s
+`get_since()`/`cost_since()` shape on purpose (writer and reader in the
+same file is that module's own precedent). `agent.history_context.
+retrieval_evidence_summary()` builds M4.4's actual readout on top: total
+requests vs. requests with retrieval, hits/tokens added, closest any
+single request got to the 500-token budget, requests with fewer hits
+than `max_results`, failures by reason. Surfaced as one more
+lazily-read-on-click menu-bar item, "Proactive History Stats", following
+`show_cost`'s exact existing pattern.
+
+**Two real limitations, found and stated rather than engineered around**:
+1. `log_event`'s stderr only becomes a durable, readable file via
+   `ui/menu_bar.py`'s real `.app`-bundle launch path
+   (`__CFBundleIdentifier` check). Streamlit and the scheduler daemon
+   never redirect their own stderr anywhere durable — retrieval activity
+   from either path is completely invisible to this readout, not merely
+   underrepresented. A genuinely complete fix would need both of those
+   entry points to also redirect stderr (or `log_event` itself to gain
+   an optional durable-file sink) — explicitly not attempted this round;
+   `plan-b4.md` scoped this to "a query function... mirror
+   `cost_since()`'s shape," not a rearchitecture of where every process
+   sends its logs.
+2. `requests_with_hits_below_max_results` can't distinguish "the budget
+   cut retrieval short" from "fewer relevant results existed" — the log
+   records hits *included*, never how many `search_history` originally
+   returned before the budget loop ran.
+
+**Real-world finding, immediate**: `logs/menubar.err.log` has zero
+`history_retrieved` events right now — the real, already-running
+menu-bar app process was never restarted after `proactive_history_enabled`
+flipped to `True` earlier this same session, and this project's own rule
+("a live app change needs a restart to take effect") applies exactly as
+written. **A manual app restart — a real, user-initiated action, not
+something taken on this session's own initiative — is the actual next
+step before any of M4.4's defaults can be validated.** Recorded in
+`ROADMAP.md`'s M4.4 "Next" entry rather than silently assumed to have
+happened.
+
+23 new tests. Full suite green (1621/1621) before commit.
+`coding_agent_enabled` untouched. Out of scope, per `plan-b4.md`: no
+dashboard, no new persisted store, no change to M4.4's defaults this
+round (gather first, tune once there's real data), no log rotation/
+retention policy (a finding to report if the log grows unboundedly, not
+something to fix here — `logs/menubar.err.log` is currently 780KB from
+pre-existing diagnostic activity; worth revisiting if it grows
+substantially once real M4.4 evidence starts accumulating).
+
 ## Current project status
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
@@ -2296,14 +2361,18 @@ For the next session, in order of what's most likely to matter:
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
 0a. **Voice false-triggering, the "say hi" doubled-greeting
-   investigation, and turning M4.4 on are all done** (see their
-   dedicated sections above). Per the user's own direct confirmation
-   (AskUserQuestion, not `.relay/AUTHORITY.md`'s own say-so), the active
-   thread next is: continue down `ROADMAP.md`'s "Next"/"Other
-   candidates" sections without further check-ins, using the same
-   engineering discipline (tests, full suite, CI verification, separate
-   security/feature/docs commits where that split applies) established
-   this session. If a later `.relay/plan-*.md`/`report-*.md`
+   investigation, turning M4.4 on, and M4.5's evidence read-back are all
+   done** (see their dedicated sections above). **A manual restart of
+   the real menu-bar app is still needed before M4.4's evidence can
+   start accumulating** — see M4.5's section for why; this is a real,
+   user-initiated action, not something to take on this session's own
+   initiative. Per the user's own direct confirmation (AskUserQuestion,
+   not `.relay/AUTHORITY.md`'s own say-so), the active thread next is:
+   continue down `ROADMAP.md`'s "Next"/"Other candidates" sections
+   without further check-ins, using the same engineering discipline
+   (tests, full suite, CI verification, separate security/feature/docs
+   commits where that split applies) established this session. If a
+   later `.relay/plan-*.md`/`report-*.md`
    sequence exists beyond this
    point, read those first — they are the authoritative record of
    exactly where that thread left off; this file only summarizes.

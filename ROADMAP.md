@@ -531,6 +531,33 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   builder") — both pushed directly to `main`, **CI-verified on the first
   attempt** (GitHub Actions run `32672234602`, `run_attempt: 1`,
   1492/1492 passed). Full design: `ARCHITECTURE.md` §12d.
+- **Phase 9 / M4.5 — Evidence read-back for M4.4** ✅: closes the real
+  gap that made M4.4's own defaults unvalidatable — `agent/
+  observability.py`'s `log_event()` only ever writes forward (to
+  stderr); nothing in this codebase could read it back. New `events_since
+  (cutoff_timestamp, event=None, log_path=None)`, mirroring `agent.usage`'s
+  `get_since()`/`cost_since()` shape (same file as the writer, same
+  None-vs-empty-list convention for "can't read" vs "genuinely zero").
+  New `agent.history_context.retrieval_evidence_summary()` builds on it
+  to answer M4.4's own open questions from real data — total requests,
+  requests with retrieval, hits/tokens added, how close to the 500-token
+  budget it gets, and failures by reason. Surfaced as one more
+  lazily-read-on-click menu-bar dropdown item ("Proactive History
+  Stats"), following the "Estimated Cost" precedent exactly.
+  **Two real, honestly-documented limitations, not silently worked
+  around**: (1) `log_event` only gets redirected to a durable file by
+  `ui/menu_bar.py`'s real `.app`-bundle launch path — Streamlit (`app.py`)
+  and `agent/scheduler_daemon.py` don't redirect stderr anywhere durable,
+  so retrieval activity from either path is invisible to this readout
+  entirely; (2) `requests_with_hits_below_max_results` is genuinely
+  ambiguous between "the budget cut retrieval short" and "fewer relevant
+  results existed to begin with" — the log doesn't record how many
+  results `search_history` originally returned before the budget loop
+  ran, only how many were included. See `retrieval_evidence_summary()`'s
+  own docstring for the full account. 23 new tests
+  (`tests/test_observability.py`'s `TestEventsSince`,
+  `tests/test_history_context.py`'s `TestRetrievalEvidenceSummary`,
+  `tests/test_phase6_security.py`'s `TestMenuBarHistoryRetrievalStats`).
 
 ## In progress
 
@@ -663,9 +690,16 @@ four now complete**, see "Completed" above for full detail on each):
   `history_retrieved` log volume/relevance from actually running with
   this on for a while (are the top-3 FTS hits actually relevant, does
   500 tokens feel right, does 150ms ever actually matter), which can
-  only start accumulating once it's on. **The evidence-gathering itself
-  is still not done** — turning it on starts the clock, it doesn't
-  substitute for the observation period. Revisit the three
+  only start accumulating once it's on. **M4.5 (see "Completed" above)
+  built the read-back path this validation needs — but real evidence
+  still does not exist yet.** `logs/menubar.err.log` (the one durable
+  observability sink that exists) has zero `history_retrieved` events as
+  of M4.5 landing, because the real, already-running menu-bar app
+  process was not restarted when `proactive_history_enabled` flipped to
+  `True` earlier this same session (this project's own established
+  rule: a live app change needs a restart to take effect). **A manual
+  restart of the real app is the actual next step before any of this
+  can be validated** — not more code. Revisit the three
   budget/timeout/max-results defaults once real `history_retrieved` log
   data exists; no target date, and once M4.3's tools have seen some real
   use too helps, since both draw on the same store.

@@ -5,6 +5,25 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-29 — M4.5: evidence read-back for M4.4 (`.relay/plan-b4.md`)
+
+Cowork's chosen next milestone after M10.0/Phase10/voice/say-hi/M4.4,
+acted on only after the user's direct `AskUserQuestion` confirmation to
+proceed autonomously. Closed a real gap: `agent/observability.py` could
+write structured events but never read them back, so M4.4's own
+"turning it on validates the defaults" claim had no path to actually
+answer anything. New `events_since()` (mirrors `agent.usage`'s
+`cost_since()` shape) plus `retrieval_evidence_summary()` answer the
+real questions from log data, surfaced via one more menu-bar dropdown
+item. Two real limitations found and stated rather than hidden:
+Streamlit/scheduler-daemon activity is invisible to this readout
+entirely (no durable stderr redirect on those paths), and one metric is
+genuinely ambiguous between two causes given what the log currently
+records. Also found: the real menu-bar app hasn't been restarted since
+M4.4 was turned on this session, so zero real evidence exists yet — a
+manual restart is the actual next step, recorded rather than assumed.
+23 new tests, full suite green (1621/1621).
+
 ### 2026-08-29 — CI test-run timeout raised after a real cancellation
 
 `a051e1b`'s CI run was cancelled at exactly the 15-minute

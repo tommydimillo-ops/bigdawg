@@ -7,6 +7,81 @@ needed.
 
 ---
 
+## 2026-08-29 — M4.5: evidence read-back for M4.4 (`.relay/plan-b4.md`)
+
+Chosen by Cowork (`.relay/AUTHORITY.md`'s "Next milestone decided" section,
+read and acted on after direct user confirmation to proceed autonomously)
+as the milestone that actually needs no new credential, isn't an
+unapproved feature, and isn't a security decision -- closing the real gap
+that M4.4's own "turning it on is the prerequisite for validating its
+defaults" claim depended on: `agent/observability.py`'s `log_event()`
+only ever writes forward (to stderr); nothing in this codebase could read
+it back, so the evidence M4.4 was turned on to gather had nowhere to be
+read from.
+
+**New `agent.observability.events_since(cutoff_timestamp, event=None,
+log_path=None)`** -- read-only, never mutates or rotates the log. Mirrors
+`agent.usage`'s `get_since()`/`cost_since()` shape deliberately (writer
+and reader living in the same file is that module's own established
+precedent, not a new pattern): returns `None` if the log can't be opened
+at all, an empty list for "readable, zero matches" -- the same
+None-vs-empty convention `cost_since()` uses so a caller can fail safely
+rather than ever show a wrong-looking number. `log_path` defaults to
+`None` and reads the new `MENUBAR_LOG_FILE` module constant inside the
+function body, not as the parameter's own default value -- the exact
+"captured at definition time" bug class CLAUDE.md's "How to test" section
+warns about, so `MENUBAR_LOG_FILE` was also added to
+`tests/_safety.py`'s central redirect list.
+
+**New `agent.history_context.retrieval_evidence_summary(since_timestamp=0.0)`**
+builds M4.4's actual readout on top: total requests vs. requests where
+retrieval fired, total hits/tokens added, the closest any single request
+got to the 500-token budget, how many requests had fewer hits than
+`max_results` (3), and failures grouped by reason.
+
+**Two real, honestly-documented limitations, found and stated rather than
+silently worked around**:
+1. `log_event`'s output only ever becomes a durable, readable file via
+   `ui/menu_bar.py`'s own real `.app`-bundle stderr redirect
+   (`__CFBundleIdentifier` check). Streamlit (`app.py`) and
+   `agent/scheduler_daemon.py` never redirect their own stderr anywhere
+   durable -- so retrieval activity from either of those paths is
+   completely invisible to this readout, not just underrepresented.
+2. `requests_with_hits_below_max_results` cannot distinguish "the
+   500-token budget cut retrieval short" from "search_history simply
+   found fewer than 3 relevant results" -- the log records how many hits
+   were *included*, never how many `search_history` originally returned
+   before the budget loop ran. Splitting these two causes apart would
+   need a further instrumentation change, itself a real finding rather
+   than something this function can compute its way around.
+
+**Surfaced via one more menu-bar dropdown item, "Proactive History
+Stats"** -- lazily read on click, no background timer, fails to an
+honest "isn't available right now" rather than ever showing a wrong
+number, following `show_cost`'s exact existing pattern
+(`tests/test_phase6_security.py::TestMenuBarCostReadout`'s own
+established test style, mirrored for the new item).
+
+**Real-world finding this session's own M4.4 flip immediately
+surfaced**: `logs/menubar.err.log` (the one durable observability sink
+that exists) has zero `history_retrieved` events right now, because the
+real, already-running menu-bar app process was never restarted after
+`proactive_history_enabled` flipped to `True` earlier this same
+session -- this project's own established rule (`CLAUDE.md`: "Live app
+changes need a restart to take effect") applies here exactly as written.
+A manual app restart is the actual next step before M4.4's defaults can
+be validated at all, not more code -- recorded in `ROADMAP.md` rather
+than silently assumed to have already happened.
+
+23 new tests (`tests/test_observability.py::TestEventsSince`,
+`tests/test_history_context.py::TestRetrievalEvidenceSummary`,
+`tests/test_phase6_security.py::TestMenuBarHistoryRetrievalStats`). Full
+suite green (1621/1621) before commit. `coding_agent_enabled` untouched
+(still `False`). No dashboard, no new persisted store, no change to
+M4.4's defaults -- all explicitly out of scope per `plan-b4.md`.
+
+---
+
 ## 2026-08-29 — Raised CI's test-run timeout after a real, evidenced cancellation
 
 `a051e1b`'s CI run was cancelled at exactly 15:17 elapsed, hitting
