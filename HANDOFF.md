@@ -6,17 +6,21 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-27. **Phase 9 / M4 (Conversation & History
+Last updated: 2026-08-28. **Phase 9 / M4 (Conversation & History
 Intelligence) is fully complete — all four sub-milestones (M4.1
-through M4.4) are committed, on `main`, CI-verified.** `main` HEAD is
-still `2bed0b2` ("Document relay mode and record Walmart as a roadmap
-candidate") as of this update — nothing from the work described below
-has been committed yet. This is a correction of every
-earlier version of this paragraph, which described M4.3 as stuck on a
-feature branch and M4.4 as not started — both are done (see CLAUDE.md's
-NEW SESSION PROTOCOL — trust `git log` over this file when they
-disagree; that protocol is exactly why this correction happened rather
-than silently trusting a stale file).
+through M4.4) are committed, on `main`, CI-verified.** `main` HEAD has
+since moved well past `2bed0b2`: `37fb078` (QAAgent's missing `-t .`,
+a live production safety fix), `f8c638a` (M10.0 — the general
+permission chokepoint), `df26bc0` (Phase 10 increment 1 — real
+CodingAgent + checkpoint/rollback, `coding_agent_enabled` still
+`False`), `923f8f5` (docs for both), then this session's voice
+false-triggering fix (see the dedicated section below) — all CI-green
+on the first attempt. This is a correction of every earlier version of
+this paragraph, which described M4.3 as stuck on a feature branch and
+M4.4 as not started — both are done (see CLAUDE.md's NEW SESSION
+PROTOCOL — trust `git log` over this file when they disagree; that
+protocol is exactly why this correction happened rather than silently
+trusting a stale file).
 
 **This file is now itself known to be behind several real sessions of
 work that happened through relay mode** (see `CLAUDE.md`'s "Relay mode"
@@ -1297,10 +1301,81 @@ passed, 0 failed** (1571 going in). `coding_agent_enabled` remains off
 by default throughout — this pass changed WHERE a decision is made, not
 the shipped default.
 
-**Status**: uncommitted, per the user's own explicit instruction ("Don't
-commit Phase 10 until M10.0 is green"). M10.0 is green. The commit
-decision for all of Phase 10 (increment 1 plus the code-review fixes
-plus M10.0) is still the user's to make.
+**Status**: committed as `f8c638a`, CI-green on the first attempt, ahead
+of Phase 10 increment 1 itself (`df26bc0`) as instructed — see that
+commit's own message for why `agent/agents/coding.py`'s real
+`_write_file` (and this file's own scan of it) had to land in the
+second commit rather than the first: at `f8c638a`'s point in history,
+`agent/agents/coding.py` is still the Phase-9 stub with no real file I/O
+to scan or gate yet.
+
+## Voice false-triggering fix — priority reordering, not Phase 10 ✅ COMPLETE
+
+Directly after M10.0/Phase 10 increment 1 shipped, the user reordered
+priority to voice false-triggering (`.relay/plan-b3.md`, itself
+downstream of `.relay/AUTHORITY.md`'s "Priority correction" — confirmed
+live via a direct AskUserQuestion rather than taken on the file's own
+say-so, after this session flagged that it couldn't otherwise verify
+who wrote `.relay/AUTHORITY.md` or treat a file's own authority claim as
+the enforced boundary). Real production incident this addresses:
+background TV audio, music, or nearby conversation crossing the
+energy-gate VAD and getting hallucinated or mis-transcribed by Whisper
+as containing "jarvis" anywhere in a long transcript previously woke
+Jarvis identically to a deliberate address — `voice/listen.py`'s wake
+check was a bare `WAKE_WORD in text.lower()` substring test with no word
+boundary, no position requirement, and no length cap, disagreeing with
+`strip_wake_word`'s own `\b`-bounded regex.
+
+**openWakeWord (real neural wake-word detection, fully local) tried
+first, found infeasible**: `pip install openwakeword` fails with
+`ResolutionImpossible` in this project's real venv (Python 3.14.6, Intel
+macOS) — every version needs `onnxruntime<2,>=1.10.0`, and `onnxruntime`
+has no matching wheel for this Python/platform combination. Confirmed by
+an actual install attempt (nothing left behind), not by reading
+changelogs. Recorded as a decision note (also covering why the rest of
+the user-supplied second Jarvis implementation this came from was not
+adopted as a stack — the third time this exact call has been made, same
+reasoning as Hermes-Rejection/OpenJarvis-Rejection):
+`JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md`.
+
+**Shipped instead**: a new `voice.listen.wake_word_detected(text)`,
+used by both real wake-check call sites (`voice/listen.py`'s
+`wait_for_command`, `agent/voice_session.py`'s
+`_watch_for_speech_interrupt` — deliberately not
+`classify_confirmation_response`, a different function the user's plan
+explicitly said not to touch). Three checks: a word-boundary match
+(shared with `is_exit_phrase`, fixed identically but without the two
+checks below — ending an active exchange can legitimately name the wake
+word anywhere in the sentence), a position check
+(`settings.wake_word_max_lookahead_chars`, default 40 characters), and a
+length cap (`settings.wake_word_max_transcript_chars`, default 200) —
+both new, `_env_int`-overridable settings, documented as starting values
+not yet tuned against real usage, same posture as M4.4's four settings.
+Instrumentation: `wait_for_command` now logs one `wake_attempt` event
+per loop iteration (truncated transcript preview, whether it woke, both
+thresholds in force) — this is what real tuning data would come from.
+Two fields from the original ask (a numeric "score/signal level," and
+whether a resulting session got cancelled quickly) were deliberately not
+built this round — see `CHANGELOG.md`'s entry for the specific reasoning
+on each; both are log-correlation questions answerable against existing
+events by timestamp, not something this function can compute
+synchronously without a larger refactor.
+
+Two `ROADMAP.md` "Other candidates" entries added from files found
+useful in the same not-adopted second Jarvis implementation:
+`.relay/reference/telegram_bot.py`'s owner-chat-ID whitelist referenced
+from the existing OpenClaw M2 follow-up entry, and a new standalone
+inbound-Gmail-tool candidate referencing `.relay/reference/gmail_tool.py`
+and this repo's real `LEVEL_NAMES`.
+
+**Verification**: 12 new tests, full suite green (1597/1597) before
+commit. No real recorded audio was available in this environment (no
+microphone hardware, matching this project's no-real-audio-in-tests
+policy) — tested at the unit level against a reproduction of the exact
+false-trigger shape described above. `coding_agent_enabled` untouched
+(still `False`). Full account: `.relay/report-b3.md` (gitignored,
+ephemeral — this section and `CHANGELOG.md`'s entry are the durable
+record).
 
 ## Current project status
 
@@ -2138,11 +2213,18 @@ For the next session, in order of what's most likely to matter:
    increment 1 and M10.0 are both committed and CI-verified as of this
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
-0a. **The active thread as of this session's end is voice
-   false-triggering** (`.relay/plan-b3.md`) — a priority reordering, not
-   a Phase 10 follow-up. If `.relay/report-b3.md` exists, read it first
-   for exactly where that thread left off; it is the authoritative
-   record, this file only summarizes.
+0a. **Voice false-triggering (`.relay/plan-b3.md`) is done** — see the
+   dedicated section above. Per the user's own direct confirmation
+   (AskUserQuestion, not `.relay/AUTHORITY.md`'s own say-so), the active
+   thread after it is: turn `proactive_history_enabled` (M4.4) on by
+   default, then the "say hi costs two provider calls" issue, then
+   continue down `ROADMAP.md`'s "Next"/"Other candidates" sections
+   without further check-ins, using the same engineering discipline
+   (tests, full suite, CI verification, separate security/feature/docs
+   commits where that split applies) established this session. If a
+   later `.relay/plan-*.md`/`report-*.md` sequence exists beyond this
+   point, read those first — they are the authoritative record of
+   exactly where that thread left off; this file only summarizes.
 1. Re-verify this file against actual git state first (per `CLAUDE.md`'s
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count on
    `main` match what this file claims before trusting it. `main` should

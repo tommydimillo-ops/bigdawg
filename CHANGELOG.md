@@ -7,6 +7,78 @@ needed.
 
 ---
 
+## 2026-08-28 — Voice false-triggering: fixed the substring wake-match, openWakeWord infeasible here
+
+Priority reordering (per the user, sourced from `.relay/AUTHORITY.md` and
+confirmed live via direct question after Phase 10/M10.0 shipped): voice
+false-triggering over further Phase 10 work. Real production incident this
+addresses: background TV audio, music, or nearby conversation crossing the
+energy-gate VAD and getting hallucinated or mis-transcribed by Whisper as
+containing "jarvis" anywhere in a long transcript previously woke Jarvis
+identically to a deliberate address.
+
+**§1 — openWakeWord, tried, infeasible.** `.relay/plan-b3.md` proposed
+replacing the wake chain with openWakeWord's pretrained `hey_jarvis` model
+(real neural detection, fully local, confidence-scored). Checked feasibility
+before writing integration code, per the plan's own instruction: `pip install
+openwakeword` fails with `ResolutionImpossible` in this project's real venv
+(Python 3.14.6, Intel macOS) — every version depends on
+`onnxruntime<2,>=1.10.0`, and `onnxruntime` has no matching wheel for this
+Python version/platform. Confirmed by an actual install attempt (nothing left
+behind). Recorded as a decision note:
+`JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md` (also covers
+why the rest of the user-supplied second Jarvis implementation this came from
+was not adopted as a stack — the third time this same call has been made, see
+Hermes-Rejection/OpenJarvis-Rejection in the vault).
+
+**§3 — the real, shipped fix.** Both real wake-detection call sites
+(`voice/listen.py`'s `wait_for_command`, `agent/voice_session.py`'s
+`_watch_for_speech_interrupt`) had the same bare `WAKE_WORD in text.lower()`
+substring test — matching the wake word anywhere in a transcript of any
+length, disagreeing with `strip_wake_word`'s own `\b`-bounded regex. Both now
+call a new `voice.listen.wake_word_detected(text)`: a word-boundary match
+(shared with `is_exit_phrase`, which had the identical bug and is fixed too,
+*without* the checks below — ending an active exchange can legitimately name
+the wake word anywhere in the sentence), a position check (the wake word must
+start within `settings.wake_word_max_lookahead_chars`, default 40 characters),
+and a length cap (`settings.wake_word_max_transcript_chars`, default 200) — a
+genuine "hey Jarvis, <short command>" is short; a much longer transcript that
+happens to contain the wake word is far more likely to be ambient audio
+Whisper transcribed in full. Both new settings are `_env_int`-overridable and
+documented as starting values, not yet tuned against real usage — same
+posture as M4.4's four settings.
+
+**§2 — instrumentation, partial.** `wait_for_command` now logs one
+`wake_attempt` event (`agent.observability.log_event`) per loop iteration:
+`transcript_preview` (truncated via `preview()`, never the full transcript),
+`woke`, and both thresholds in force — this is what real tuning data for the
+two new settings above would come from. Two fields from the original ask were
+deliberately not built this round: a "score/signal level" (the closest real
+analogue, the energy-gate's calibrated `speech_threshold`, is already logged
+separately by the pre-existing `voice_calibrated` event; duplicating it
+seemed less honest than correlating by timestamp) and "cancelled within a few
+seconds" (this function returns before that could be known — a log-
+correlation question against later events, not something computable
+synchronously here without a real cross-module refactor this round didn't
+attempt).
+
+Two `ROADMAP.md` "Other candidates" entries added from files found useful in
+the (not-adopted-as-a-stack) second Jarvis implementation: `telegram_bot.py`'s
+owner-chat-ID whitelist added as a reference implementation to the existing
+OpenClaw M2 follow-up entry, and a new standalone inbound-Gmail-tool candidate
+referencing `gmail_tool.py` and this repo's real `LEVEL_NAMES`.
+
+**Verification**: 12 new tests (`tests/test_voice_listen.py`'s
+`TestWakeWordDetected` plus regression tests in `TestWakeDispatchGuards`,
+`tests/test_voice_session.py`'s buried-wake-word regression test), full suite
+green (1597/1597) before commit. No real recorded audio was available in this
+environment to run end-to-end (no microphone hardware, matching this
+project's no-real-audio-in-tests policy) — tested at the unit level instead
+against a reproduction of the exact false-trigger shape described above.
+`coding_agent_enabled` untouched (still `False`).
+
+---
+
 ## 2026-08-28 — `agent/agents/qa.py`'s missing `-t .` (committed separately, `37fb078`)
 
 Split out of the code-review findings below and committed on its own,

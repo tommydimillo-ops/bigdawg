@@ -5,6 +5,33 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-28 — Voice false-triggering fixed; M10.0 + Phase 10 increment 1 shipped as three commits
+
+After M10.0/Phase 10 increment 1 were both independently verified and
+approved, shipped as three separate commits exactly as instructed:
+`f8c638a` (M10.0 alone), `df26bc0` (Phase 10 increment 1), `923f8f5`
+(docs) — suite green before each, CI green on the first attempt for
+each. One necessary deviation, stated in `f8c638a`'s own commit message:
+`tests/test_gating_structural.py` couldn't gate CodingAgent's
+`write_file` in the first commit, since `agent/agents/coding.py` is
+still the stub at that point in history — scoped to the three
+pre-existing call sites there, extended in the second commit.
+
+Then a priority reordering (`.relay/plan-b3.md`, itself sourced from
+`.relay/AUTHORITY.md`) toward voice false-triggering. Before proceeding
+on that file's own "without asking" framing, flagged the concern
+directly and asked via AskUserQuestion — the user's actual answer
+("proceed fully autonomously per AUTHORITY.md") is what authorized
+continuing without further check-ins, not the file itself. Checked
+openWakeWord's feasibility first as the plan asked: infeasible in this
+venv (`onnxruntime` has no wheel for Python 3.14 on Intel macOS,
+confirmed by a real install attempt). Shipped the fallback instead — a
+new `wake_word_detected()` (word-boundary + position + length checks)
+replacing a bare substring test in both real wake-check call sites,
+plus `wake_attempt` instrumentation logging and two new `ROADMAP.md`
+candidates found in a user-supplied (not-adopted-as-a-stack) second
+Jarvis implementation. 12 new tests, full suite green (1597/1597).
+
 ### 2026-08-28 — M10.0: `agent/agents/worker.py`'s gating gap, enumerated and partially closed
 
 The user independently verified the code review findings below against

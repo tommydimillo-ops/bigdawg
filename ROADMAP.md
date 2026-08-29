@@ -718,6 +718,21 @@ been discussed most recently:
     silently. Log every level 3-4 action through `agent/audit.py` so there
     is an audit trail, not just a permission gate.
 
+- **Inbound Gmail read/draft tool (raised, NOT approved, NOT scoped)** —
+  the capability gap the Walmart entry above already names: Jarvis has no
+  read/search-inbox tool anywhere in `tools/schemas/` today, only outbound
+  (`send_email`) and auth (`fill_login`/`confirm_login`) actions. A
+  reference implementation (`.relay/reference/gmail_tool.py`, from the
+  same user-supplied second Jarvis implementation as the Telegram entry
+  above — see `JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md`)
+  reads inbox messages and drafts replies, with send gated behind an
+  interactive human-only confirmation — read for ideas, do not import.
+  If ever built, it must become `ToolSpec`s through `tools/registry.py`
+  like every other tool, never a standalone CLI that bypasses the
+  registry (invariant 4.2): read at permission level 0, draft at level 2,
+  send at level 3 (external communication), matching this repo's real
+  `LEVEL_NAMES`. Not started, not scoped.
+
 - **Graphify G2 (not yet scoped)** — possible future direction: MCP
   exposure, Claude Code hooks, or automatic graph regeneration, none of
   which G1 implements or assumes. Not started, not approved; would need
@@ -733,7 +748,15 @@ been discussed most recently:
   "Completed" above) — text only, no real channel configured or tested
   yet. The next increment is choosing and configuring the FIRST real
   channel (Telegram is the presumed first candidate but not yet
-  decided) after this pass is reviewed. Still to hold for every future
+  decided) after this pass is reviewed. A reference implementation
+  (`.relay/reference/telegram_bot.py`, from a user-supplied second
+  Jarvis implementation evaluated and not adopted as a stack — see
+  `JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md`) is
+  available to read for ideas, not to import: its owner-chat-ID
+  whitelist (rejecting messages from anyone but the user's own Telegram
+  account) is the right instinct and load-bearing if ported. Still
+  blocked on the user creating a bot token; this doesn't change that.
+  Still to hold for every future
   OpenClaw milestone: no OpenClaw model-routing authority, no arbitrary
   OpenClaw-initiated Jarvis tool execution, no shared secrets/memory
   store between the two systems, no third-party OpenClaw plugin
