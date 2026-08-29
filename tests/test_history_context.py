@@ -59,12 +59,15 @@ class TestDisabledByDefault(IsolatedHistoryContextTestCase):
         self.assertEqual(context.retrieved, [])
         self.assertEqual(context.prompt_text, "")
 
-    def test_default_setting_value_is_false(self):
-        # Confirms the real, unpatched default -- setUp above turns it on
-        # for the rest of this file, so this checks the class attribute
-        # directly rather than the live (test-patched) instance.
+    def test_default_setting_value_is_true(self):
+        # Confirms the real, unpatched default -- setUp above already
+        # turns it on for the rest of this file, so this checks the
+        # class attribute directly rather than the live (test-patched)
+        # instance. Was False at ship time (ROADMAP.md's Phase 9/M4.4
+        # entry); flipped to True once the real-use evidence-gathering
+        # period itself needed to begin.
         from config.settings import Settings
-        self.assertFalse(Settings.proactive_history_enabled)
+        self.assertTrue(Settings.proactive_history_enabled)
 
 
 class TestEmptyInput(IsolatedHistoryContextTestCase):

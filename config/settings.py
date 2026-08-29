@@ -410,13 +410,17 @@ class Settings:
     openclaw_allowed_targets: str = ""
 
     # --- Proactive history retrieval (Phase 9 M4.4 foundation) ---
-    # Off by default until proven in real use (same posture as
-    # openclaw_messaging_enabled above) -- surfaces relevant past
-    # conversation excerpts into the system prompt automatically,
-    # touching real user data and adding real per-request token cost, so
-    # it doesn't turn on for anyone until it's actually been used and
-    # tuned. agent/history_context.py is the only reader.
-    proactive_history_enabled: bool = False
+    # Turned on (was off by default pending real-use evidence -- see
+    # ROADMAP.md's Phase 9/M4.4 "Next" entry for the reasoning: the
+    # evidence needed to validate these defaults is real
+    # history_retrieved log volume/relevance from actually running with
+    # this on, which can only start accumulating once it's on). Surfaces
+    # relevant past conversation excerpts into the system prompt
+    # automatically, touching real user data and adding real per-request
+    # token cost -- agent/history_context.py is the only reader. The
+    # three budget/timeout/max-results settings below remain unvalidated
+    # starting values; revisit once real usage data exists.
+    proactive_history_enabled: bool = True
     # Hard ceiling on injected history text, in tokens (word-count
     # approximation, not a real tokenizer -- see agent/history_context.py).
     # Hits are accumulated in rank order and the remainder is dropped

@@ -4,13 +4,14 @@ durable conversation history store (agent/history_store.py, M4.1),
 surfacing a small number of relevant past exchanges automatically rather
 than only on explicit search (M4.3's search_conversation_history tool).
 
-INERT BY DEFAULT, TWICE OVER: build_history_context() is not called from
-anywhere in the real request path yet -- agent/brain.py and
-agent/executor.py are untouched by this module, and even once wired in,
-nothing here runs unless settings.proactive_history_enabled is True
-(default False). Wiring this in is a deliberate, separate, later step so
-that if anything here is wrong it cannot affect a real conversation
-before it has been reviewed.
+Wired into the real request path: agent/brain.py's build_system_prompt()
+calls build_history_context() directly. Nothing here runs unless
+settings.proactive_history_enabled is True -- shipped off by default
+pending real-use evidence, then turned on once that evidence-gathering
+period itself needed to begin (see ROADMAP.md's Phase 9/M4.4 entry for
+exactly when and why). The function still no-ops immediately (empty
+prompt_text, no store touched) when the setting is off, so a deployment
+that never turns it on is completely unaffected either way.
 
 Mirrors agent/context.py's module boundary and shape deliberately: a
 dedicated module per store (history here, memory there), a small

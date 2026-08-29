@@ -255,11 +255,13 @@ def build_system_prompt(user_input="", request_id=None, state=None):
             "it:\n" + patterns
         )
 
-    # Phase 9 M4.4: off by default (settings.proactive_history_enabled).
-    # build_history_context() already no-ops immediately when the
-    # feature is off or there's nothing relevant, and its own
-    # prompt_text includes its full section header -- unlike
-    # profiles/patterns above, nothing is added here beyond the
+    # Phase 9 M4.4: on by default as of this writing
+    # (settings.proactive_history_enabled -- see ROADMAP.md's Phase
+    # 9/M4.4 entry for when/why this flipped). build_history_context()
+    # already no-ops immediately when the feature is off or there's
+    # nothing relevant, and its own prompt_text includes its full
+    # section header -- unlike profiles/patterns above, nothing is
+    # added here beyond the
     # separator, to avoid building the header twice.
     history = build_history_context(user_input, request_id=request_id, state=state).prompt_text
     if history:
