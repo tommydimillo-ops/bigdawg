@@ -157,6 +157,7 @@ def _install_store_redirects(root: str) -> None:
     import agent.skills.loader as skills_loader
     import agent.tts_control as tts_control
     import agent.usage as usage
+    import agent.memory.access_log as memory_access_log
     import database.memory as database_memory
     import tools.computer_use as computer_use
     import tools.browser as browser
@@ -182,6 +183,10 @@ def _install_store_redirects(root: str) -> None:
         "agent.observability.MENUBAR_LOG_FILE",
     )
     _set(database_memory, "MEMORY_FILE", os.path.join(root, "memory.json"), "database.memory.MEMORY_FILE")
+    _set(
+        memory_access_log, "ACCESS_LOG_FILE", os.path.join(root, "memory_access_log.json"),
+        "agent.memory.access_log.ACCESS_LOG_FILE",
+    )
     _set(credential_store, "CONFIG_DIR", root, "tools.credential_store.CONFIG_DIR")
     _set(credential_store, "LOGINS_FILE", os.path.join(root, "logins.json"), "tools.credential_store.LOGINS_FILE")
     # Keychain service-name seam: production default is untouched

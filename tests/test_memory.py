@@ -2,9 +2,11 @@
 filtering, structured storage + legacy-data migration, and the manager's
 remember/recall/search/update/forget/list_all/summarize interface.
 
-Every test class isolates database.memory.MEMORY_FILE to a temp file for
-its duration (setUp/tearDown), so none of this ever touches the real
-~/Library/Application Support/CampusPilot/memory.json.
+Every test class isolates database.memory.MEMORY_FILE and
+agent.memory.access_log.ACCESS_LOG_FILE (AUTHORITY.md §2's last_accessed
+sidecar) to a temp file for its duration (setUp/tearDown), so none of
+this ever touches the real
+~/Library/Application Support/CampusPilot/memory.json or its sidecar.
 
 Run with: python -m unittest tests.test_memory -v
 """
@@ -13,17 +15,23 @@ import tempfile
 import time
 import unittest
 
+import agent.memory.access_log as access_log
 import database.memory as dbmem
 
 
 class _IsolatedMemoryFile(unittest.TestCase):
-    """Base class: points database.memory.MEMORY_FILE at a fresh temp file
-    for each test, and restores the real path afterward."""
+    """Base class: points database.memory.MEMORY_FILE and
+    agent.memory.access_log.ACCESS_LOG_FILE at fresh temp files for each
+    test, and restores the real paths afterward."""
 
     def setUp(self):
         self._real_memory_file = dbmem.MEMORY_FILE
         self._temp_file = tempfile.mktemp(suffix=".json")
         dbmem.MEMORY_FILE = self._temp_file
+
+        self._real_access_log_file = access_log.ACCESS_LOG_FILE
+        self._temp_access_log_file = tempfile.mktemp(suffix=".json")
+        access_log.ACCESS_LOG_FILE = self._temp_access_log_file
 
     def tearDown(self):
         dbmem.MEMORY_FILE = self._real_memory_file
@@ -32,6 +40,11 @@ class _IsolatedMemoryFile(unittest.TestCase):
         tmp = f"{self._temp_file}.tmp"
         if os.path.exists(tmp):
             os.remove(tmp)
+
+        access_log.ACCESS_LOG_FILE = self._real_access_log_file
+        for path in (self._temp_access_log_file, f"{self._temp_access_log_file}.lock"):
+            if os.path.exists(path):
+                os.remove(path)
 
 
 class TestMemoryModel(unittest.TestCase):
@@ -252,6 +265,69 @@ class TestMemoryManagerBasics(_IsolatedMemoryFile):
 
         recalled = recall(memory.id)
         self.assertIsNotNone(recalled.last_accessed)
+
+    def test_recall_does_not_rewrite_the_durable_memory_store(self):
+        # AUTHORITY.md §2: recall()'s last_accessed update must go to the
+        # access_log sidecar only -- memory.json itself must not be
+        # touched by a read. Confirmed at the real filesystem level, not
+        # by mocking store.save_all -- if this rewrote memory.json, its
+        # mtime would change.
+        from agent.memory.manager import recall, remember
+        from agent.memory.models import MemoryType
+
+        memory, _ = remember("something", type=MemoryType.FACT)
+        mtime_before = os.path.getmtime(dbmem.MEMORY_FILE)
+
+        recalled = recall(memory.id)
+
+        self.assertEqual(os.path.getmtime(dbmem.MEMORY_FILE), mtime_before)
+        self.assertEqual(access_log.get_all().get(memory.id), recalled.last_accessed)
+
+    def test_search_scored_does_not_rewrite_the_durable_memory_store(self):
+        # Same fix, the other real call site: search_scored() used to
+        # rewrite the entire memory.json on every search that returned
+        # at least one result.
+        from agent.memory.manager import remember, search_scored
+        from agent.memory.models import MemoryType
+
+        remember("I like jazz music", type=MemoryType.FACT)
+        mtime_before = os.path.getmtime(dbmem.MEMORY_FILE)
+
+        results = search_scored("jazz", type=MemoryType.FACT)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(os.path.getmtime(dbmem.MEMORY_FILE), mtime_before)
+        memory_id = results[0][0].id
+        self.assertIn(memory_id, access_log.get_all())
+
+    def test_search_scored_result_reflects_the_fresh_access_time(self):
+        # The returned object itself still shows an updated value
+        # immediately, even though nothing was persisted to memory.json
+        # -- a caller of search_scored() sees the same observable
+        # behavior as before this fix, just without the write
+        # amplification behind it.
+        from agent.memory.manager import remember, search_scored
+        from agent.memory.models import MemoryType
+
+        memory, _ = remember("I like jazz music", type=MemoryType.FACT)
+        self.assertIsNone(memory.last_accessed)
+
+        results = search_scored("jazz", type=MemoryType.FACT)
+
+        self.assertIsNotNone(results[0][0].last_accessed)
+
+    def test_a_later_load_all_reflects_the_access_log_sidecar(self):
+        # store.load_all()'s own merge -- a genuinely separate call, not
+        # the same in-memory objects search_scored() already touched.
+        from agent.memory import store
+        from agent.memory.manager import remember, search_scored
+        from agent.memory.models import MemoryType
+
+        memory, _ = remember("I like jazz music", type=MemoryType.FACT)
+        search_scored("jazz", type=MemoryType.FACT)
+
+        reloaded = [m for m in store.load_all() if m.id == memory.id][0]
+        self.assertIsNotNone(reloaded.last_accessed)
 
     def test_update_changes_content(self):
         from agent.memory.manager import list_all, remember, update

@@ -20,7 +20,7 @@ import re
 import time
 from typing import List, Optional, Tuple
 
-from agent.memory import store
+from agent.memory import access_log, store
 from agent.memory.models import Confidence, Importance, Memory, MemoryType
 from agent.memory.safety import is_safe_to_remember
 
@@ -121,8 +121,14 @@ def recall(memory_id: str) -> Optional[Memory]:
     memories = store.load_all()
     for memory in memories:
         if memory.id == memory_id:
-            memory.last_accessed = time.time()
-            store.save_all(memories)
+            # AUTHORITY.md §2: no more store.save_all() here -- recall()'s
+            # entire mutation used to be this one timestamp, so this now
+            # writes nothing to the durable store at all. Still updated
+            # on the returned object itself so a caller sees a fresh
+            # value immediately, not just on the next load_all().
+            now = time.time()
+            memory.last_accessed = now
+            access_log.record_access(memory_id, now)
             return memory
     return None
 
@@ -177,11 +183,19 @@ def search_scored(
 
     touched_ids = {m.id for m, _ in results}
     if touched_ids:
+        # AUTHORITY.md §2: no more store.save_all() here -- that used to
+        # rewrite the ENTIRE durable memory.json on every search that
+        # returned at least one result, a read that mutates the durable
+        # store on every ordinary retrieval. Now writes only to the
+        # access_log sidecar; store.load_all() merges it back in on the
+        # next real load. Still updated on the returned objects
+        # themselves (results and memories share the same Memory
+        # instances -- these are the same objects, not copies) so a
+        # caller sees a fresh value immediately.
         now = time.time()
-        for m in memories:
-            if m.id in touched_ids:
-                m.last_accessed = now
-        store.save_all(memories)
+        for m, _ in results:
+            m.last_accessed = now
+        access_log.record_accesses(touched_ids, now)
 
     return results
 

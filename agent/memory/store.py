@@ -13,6 +13,7 @@ nothing is deleted, this only ever adds the new "memories" key.
 """
 from typing import List
 
+import agent.memory.access_log as access_log
 from database.memory import get_memory, save_memory
 from agent.memory.models import Confidence, Importance, Memory, MemoryType
 
@@ -60,10 +61,25 @@ def _migrate_legacy_data() -> None:
 
 
 def load_all() -> List[Memory]:
+    """AUTHORITY.md §2: last_accessed is no longer written into memory.json
+    itself (agent.memory.manager.search_scored()/recall() write only to
+    the agent.memory.access_log sidecar now) -- merged in here instead,
+    sidecar value winning when present. A memory never touched since
+    this fix shipped still shows whatever last_accessed value it already
+    had in memory.json (nothing deletes that); once it's accessed again,
+    the sidecar takes over for it. See agent/memory/access_log.py's own
+    module docstring for the full reasoning."""
     _migrate_legacy_data()
     memory = get_memory()
     raw = memory.get(MEMORIES_KEY, [])
-    return [Memory.from_dict(d) for d in raw]
+    memories = [Memory.from_dict(d) for d in raw]
+
+    access_times = access_log.get_all()
+    for m in memories:
+        if m.id in access_times:
+            m.last_accessed = access_times[m.id]
+
+    return memories
 
 
 def save_all(memories: List[Memory]) -> None:
