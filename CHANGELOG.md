@@ -7,6 +7,61 @@ needed.
 
 ---
 
+## 2026-08-29 — AUTHORITY.md §2: memory `last_accessed` moved to a sidecar
+
+`agent/memory/manager.py`'s `search_scored()` and `recall()` used to
+update a memory's `last_accessed` field by calling
+`store.save_all(memories)` -- rewriting the ENTIRE durable `memory.json`
+document on every read that touched at least one memory. Since
+`agent.brain.build_system_prompt()` calls `search_scored()`
+unconditionally on every real request, this meant every ordinary
+conversation turn rewrote the whole memory store just to update a few
+timestamps -- a read that mutates the durable store, the exact
+read/write contention class Phase 9 Reliability S1.1 spent a whole
+milestone fixing for `agent/history_store.py`. Found during the Phase 9
+reliability audit, reconfirmed during S1, deliberately left as an open
+design question in both -- `.relay/AUTHORITY.md` §2 settled it this
+session: move the signal to a sidecar, don't keep persisting it into
+memory content.
+
+New `agent/memory/access_log.py`: `record_access()`/`record_accesses()`
+write to a small, separate file keyed by memory id, best-effort -- any
+write failure here is swallowed, never raised, since the actual
+search/recall result must never fail because this secondary signal
+couldn't be written. Locked via a dedicated `.lock` file, not the data
+file itself opened in append mode -- matches
+`agent/execution_history.py`'s own `_persist()` convention exactly,
+which sidesteps a real Python gotcha (every `write()` on a file opened
+`"a+"` jumps to EOF regardless of any prior `seek()`) that an earlier
+draft of this fix ran into and caught before it became a real bug. The
+data file itself is a plain tmp-file-then-`os.replace()` atomic write,
+matching `database/memory.py`'s own pattern.
+
+`agent/memory/store.py`'s `load_all()` merges the sidecar's values onto
+each loaded `Memory.last_accessed` -- sidecar wins when present,
+otherwise whatever `memory.json` itself already had (a memory never
+touched since this fix shipped keeps its old value; nothing deletes it).
+`pages/1_Dashboard.py`'s existing sort (by whichever is more recent,
+access or update) needed zero changes as a result.
+`search_scored()`/`recall()` still update the *returned* Memory objects'
+`last_accessed` in memory before returning them, so a caller sees a
+fresh value immediately -- only the durable-store write is gone, the
+observable return-value behavior is unchanged.
+
+15 new tests: `tests/test_memory_access_log.py` (11, the sidecar module
+itself -- recording, batching, corrupt-file/unwritable-directory failure
+isolation) plus 4 new regression tests in `tests/test_memory.py`
+confirming `memory.json`'s own mtime is genuinely unchanged by a
+`recall()`/`search_scored()` call that used to rewrite it (checked at
+the real filesystem level, not by mocking `store.save_all`), plus one
+confirming a later, separate `load_all()` call picks up the sidecar's
+value. `tests/_safety.py`'s central redirect list and
+`tests/test_memory.py`'s own `_IsolatedMemoryFile` base class both now
+also redirect `agent.memory.access_log.ACCESS_LOG_FILE`. Full suite
+green (1636/1636) before commit. `coding_agent_enabled` untouched.
+
+---
+
 ## 2026-08-29 — M4.5: evidence read-back for M4.4 (`.relay/plan-b4.md`)
 
 Chosen by Cowork (`.relay/AUTHORITY.md`'s "Next milestone decided" section,

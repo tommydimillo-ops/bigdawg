@@ -440,9 +440,9 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   follow-up, deliberately NOT fixed in this pass**: this audit
   (re-)confirmed `agent/memory/manager.py::search_scored()` silently
   persists a `last_accessed` timestamp on every memory retrieval,
-  including read-only ones — a real production-quality question (should
-  this remain persisted, be batched, become optional, or become
-  non-persistent?) still undecided; see "Next" below.
+  including read-only ones — a real production-quality question, left
+  undecided at the time. **Since fixed** — see the dedicated
+  "AUTHORITY.md §2" entry under "Completed" below.
 
 - **Phase 9 Reliability S1.1 — History Store Concurrent Initialization
   Determinism** (`d38e794`) ✅: root-caused and fixed the exact flaky
@@ -558,6 +558,30 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   (`tests/test_observability.py`'s `TestEventsSince`,
   `tests/test_history_context.py`'s `TestRetrievalEvidenceSummary`,
   `tests/test_phase6_security.py`'s `TestMenuBarHistoryRetrievalStats`).
+- **AUTHORITY.md §2 — memory `last_accessed` moved to a sidecar** ✅:
+  `agent/memory/manager.py`'s `search_scored()`/`recall()` used to
+  rewrite the ENTIRE durable `memory.json` on every read that touched at
+  least one memory — a read that mutates the durable store, on every
+  real request (`agent.brain.build_system_prompt()` calls it
+  unconditionally), the exact contention class Phase 9 Reliability
+  S1.1 spent a whole milestone fixing for `agent/history_store.py`.
+  New `agent/memory/access_log.py` — a small sidecar file keyed by
+  memory id, written best-effort (a write failure here must never break
+  the actual search/recall result), locked via a separate `.lock` file
+  rather than the data file itself (matches
+  `agent/execution_history.py`'s own `_persist()` convention exactly,
+  sidestepping append-mode's "every write() jumps to EOF" surprise
+  entirely). `agent/memory/store.py`'s `load_all()` merges the sidecar's
+  values onto each `Memory.last_accessed` at load time, so
+  `pages/1_Dashboard.py`'s existing sort (by whichever is more recent,
+  access or update) needed zero changes. `search_scored()`/`recall()`
+  still update the *returned* objects' `last_accessed` in memory, so a
+  caller sees a fresh value immediately — only the durable-store write
+  is gone, not the observable behavior. 15 new tests
+  (`tests/test_memory_access_log.py`, plus regression tests in
+  `tests/test_memory.py` confirming `memory.json`'s own mtime is
+  unchanged by a `recall()`/`search_scored()` call that used to rewrite
+  it). Full suite green (1636/1636). `coding_agent_enabled` untouched.
 
 ## In progress
 
@@ -802,10 +826,14 @@ been discussed most recently:
   send at level 3 (external communication), matching this repo's real
   `LEVEL_NAMES`. Not started, not scoped.
 
-- **Graphify G2 (not yet scoped)** — possible future direction: MCP
-  exposure, Claude Code hooks, or automatic graph regeneration, none of
-  which G1 implements or assumes. Not started, not approved; would need
-  its own explicit scoping the same way G0 → G1 each did.
+- ~~Graphify G2~~ — **closed, no further work** (`.relay/AUTHORITY.md`
+  §3). Was: possible future direction (MCP exposure, Claude Code hooks,
+  automatic graph regeneration), none of which G1 implements or assumes.
+  Decided closed rather than left dangling as an open question forever:
+  `CLAUDE.md` already says direct source is authoritative and Graphify
+  is `authoritative:false` — wiring a non-authoritative dev tool deeper
+  into the runtime adds surface for no gain. Clean-full regeneration
+  after structural changes stays a manual step; that's fine as-is.
 - **Provider admin-key cost reconciliation** — link real OpenAI/Anthropic
   Admin API keys (checked live, confirmed the project's regular keys
   can't reach either provider's usage/billing endpoint) to reconcile
@@ -832,22 +860,6 @@ been discussed most recently:
   dependency (OpenClaw plugins execute with full host privileges, no
   sandboxing — confirmed in the M0 audit), no `node.invoke`/device
   capabilities.
-- **Memory `last_accessed` write-back on read** — `agent/memory/
-  manager.py::search_scored()` silently persists an updated
-  `last_accessed` timestamp (via `store.save_all(memories)`) on every
-  call that returns at least one result, including calls that are
-  conceptually read-only. This runs on every real request, since
-  `agent.brain.build_system_prompt()` → `agent.context.
-  build_profile_context()` calls it unconditionally. Found during the
-  Phase 9 reliability audit and reconfirmed during the S1 implementation
-  pass; deliberately **not** changed in either — this is a real,
-  standalone production-quality question, not a test-isolation issue
-  (S1's store redirection means canonical tests no longer touch the real
-  `memory.json` because of it, so it's no longer a test-safety risk,
-  just a design question). Still undecided: should `last_accessed`
-  remain persisted on every read, be batched/debounced, become optional,
-  or become non-persistent entirely? Needs a deliberate decision, not a
-  reflexive fix.
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring

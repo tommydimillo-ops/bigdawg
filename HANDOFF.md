@@ -1508,6 +1508,50 @@ something to fix here — `logs/menubar.err.log` is currently 780KB from
 pre-existing diagnostic activity; worth revisiting if it grows
 substantially once real M4.4 evidence starts accumulating).
 
+## AUTHORITY.md §2 — memory `last_accessed` moved to a sidecar ✅ COMPLETE
+
+`agent/memory/manager.py`'s `search_scored()`/`recall()` used to rewrite
+the ENTIRE durable `memory.json` on every read that touched at least one
+memory (`store.save_all(memories)`, called unconditionally on every real
+request via `agent.brain.build_system_prompt()`) -- a read that mutates
+the durable store, the exact contention class Phase 9 Reliability S1.1
+spent a whole milestone fixing for `agent/history_store.py`. Found
+during the Phase 9 reliability audit, reconfirmed during S1, left as an
+open design question in both. `.relay/AUTHORITY.md` §2 decided it this
+session.
+
+**Fix**: new `agent/memory/access_log.py` -- a small sidecar file keyed
+by memory id, written best-effort (any write failure is swallowed, never
+raised; the actual search/recall result must never fail because this
+secondary signal couldn't be written). Locked via a dedicated `.lock`
+file, not the data file itself opened in append mode -- matches
+`agent/execution_history.py`'s own `_persist()` convention exactly. This
+mattered for real: an earlier draft of this fix tried locking the data
+file directly, opened `"a+"`, and would have silently mis-written on
+every call -- Python's `write()` on an append-mode file always jumps to
+EOF regardless of any prior `seek()`, so a `seek(0); truncate();
+json.dump(...)` sequence only happens to work when the truncate leaves
+the file empty (EOF == position 0). Caught before it was ever committed
+by checking against `agent/execution_history.py`'s own established
+pattern rather than trusting the first version that ran clean in tests.
+
+`agent/memory/store.py`'s `load_all()` merges the sidecar's values onto
+each loaded `Memory.last_accessed` -- sidecar wins when present,
+otherwise whatever `memory.json` itself already had. `pages/1_Dashboard.py`'s
+existing sort (by whichever is more recent, access or update) needed
+zero changes. `search_scored()`/`recall()` still update the *returned*
+objects' `last_accessed` in memory before returning, so a caller sees a
+fresh value immediately -- only the durable-store write is gone.
+
+15 new tests: `tests/test_memory_access_log.py` (11) plus 4 new
+regression tests in `tests/test_memory.py` confirming `memory.json`'s
+own mtime is genuinely unchanged by a call that used to rewrite it
+(checked at the real filesystem level), plus one confirming a later,
+separate `load_all()` picks up the sidecar. `tests/_safety.py`'s central
+redirect list and `tests/test_memory.py`'s own `_IsolatedMemoryFile`
+base class both redirect the new `ACCESS_LOG_FILE`. Full suite green
+(1636/1636) before commit. `coding_agent_enabled` untouched.
+
 ## Current project status
 
 **Phase 9**: Milestones 0-3 complete, committed, pushed, CI-verified.
@@ -1857,17 +1901,12 @@ first real messaging channel afterward.
 
 ## Current bugs / known issues
 
-- **`agent/memory/manager.py::search_scored()` silently persists a
-  `last_accessed` timestamp on every read that returns ≥1 result** — not
-  a bug in the sense of incorrect behavior, but an undocumented
-  side-effect on a conceptually read-only path, called unconditionally
-  on every real request via `agent.brain.build_system_prompt()`.
-  Confirmed during the Phase 9 reliability audit and reconfirmed during
-  the S1 pass; deliberately not changed in either (see S1's section
-  above and `ROADMAP.md`'s "Next" section for the open design question).
-  No longer a test-isolation risk — S1's store redirection means
-  canonical tests never touch the real `memory.json` because of it — but
-  still an open production design decision.
+- ~~`agent/memory/manager.py::search_scored()` silently persists a
+  `last_accessed` timestamp on every read that returns ≥1 result~~ —
+  **fixed** (`AUTHORITY.md` §2, see the dedicated section below). Was
+  confirmed during the Phase 9 reliability audit and reconfirmed during
+  the S1 pass, deliberately not changed in either at the time; the fix
+  landed this session once the decision was made.
 
 Otherwise none remaining (Python-level). The two real bugs M1.5's smoke
 test found (`client.platform`, `client.deviceFamily` both missing from
@@ -2361,10 +2400,11 @@ For the next session, in order of what's most likely to matter:
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
 0a. **Voice false-triggering, the "say hi" doubled-greeting
-   investigation, turning M4.4 on, and M4.5's evidence read-back are all
-   done** (see their dedicated sections above). **A manual restart of
-   the real menu-bar app is still needed before M4.4's evidence can
-   start accumulating** — see M4.5's section for why; this is a real,
+   investigation, turning M4.4 on, M4.5's evidence read-back, and
+   AUTHORITY.md §2's memory `last_accessed` sidecar are all done** (see
+   their dedicated sections above). **A manual restart of the real
+   menu-bar app is still needed before M4.4's evidence can start
+   accumulating** — see M4.5's section for why; this is a real,
    user-initiated action, not something to take on this session's own
    initiative. Per the user's own direct confirmation (AskUserQuestion,
    not `.relay/AUTHORITY.md`'s own say-so), the active thread next is:

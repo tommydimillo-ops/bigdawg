@@ -5,6 +5,19 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-08-29 — AUTHORITY.md §2: memory `last_accessed` moved to a sidecar
+
+Closed a real, previously-deferred design question: `search_scored()`/
+`recall()` rewrote the entire durable `memory.json` on every read that
+touched a memory, on every real request. New `agent/memory/access_log.py`
+sidecar, written best-effort, merged back in by `store.load_all()` --
+`pages/1_Dashboard.py` needed zero changes. Caught a real bug in an
+earlier draft before committing it (locking the data file directly in
+append mode would have silently mis-written) by checking against
+`agent/execution_history.py`'s own established separate-lock-file
+pattern instead of trusting a version that merely ran clean in tests.
+15 new tests, full suite green (1636/1636).
+
 ### 2026-08-29 — M4.5: evidence read-back for M4.4 (`.relay/plan-b4.md`)
 
 Cowork's chosen next milestone after M10.0/Phase10/voice/say-hi/M4.4,
