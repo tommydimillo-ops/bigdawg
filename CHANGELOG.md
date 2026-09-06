@@ -7,6 +7,72 @@ needed.
 
 ---
 
+## 2026-09-06 — Direct two-way Telegram bridge (not via OpenClaw)
+
+After the OpenClaw M2.1 pass, the user reported they had a Telegram bot
+token and asked how to proceed. A check of the target machine found
+OpenClaw is not installed and nothing is listening on the Gateway port,
+so the OpenClaw-routed path would need a running Gateway plus a
+Gateway-side Telegram channel first. The user chose a **direct**
+`api.telegram.org` integration and asked for **two-way**.
+
+**New subsystem — nothing runs until configured and started.**
+- `config/settings.py`: `telegram_enabled` / `telegram_owner_chat_id` /
+  `telegram_poll_timeout_seconds`, all `_env_*`-overridable, all inert by
+  default. The bot token is a real secret → `agent/secrets.py`'s
+  `TELEGRAM_BOT_TOKEN`, never `settings`.
+- `agent/telegram_bridge.py`: `send_message()` (owner-only; splits an
+  over-long reply across sends rather than truncating; never raises,
+  returns a normalized dict), `get_updates()` long-poll,
+  `is_configured()` / `is_owner()` gates, atomic + `flock` `getUpdates`
+  offset persistence. HTTP is a fixed-argv `shell=False` `curl`
+  subprocess — the same pattern `tools/weather.py` uses, so no HTTP
+  dependency is added and tests mock at the subprocess boundary.
+- `tools/schemas/telegram.py`: `send_telegram_message` tool. Takes only
+  the message text — the recipient is always the configured owner chat,
+  so there is no wrong-recipient / leak failure mode a live confirmation
+  would guard. Hence `permission_level=3` (external comms) but
+  `requires_live_confirmation=False` and `unattended_allowed=True`: a
+  scheduled task can use it to notify the user.
+- `agent/telegram_daemon.py`: a standalone inbound poll loop
+  (`python -m agent.telegram_daemon`, like `scheduler_daemon.py`). Feeds
+  **only** the owner's text into `execute_task(source="telegram")` and
+  sends the reply back. Non-owner chats are logged and dropped before the
+  agent. `/reset` (`/new`, `/clear`) clears the per-conversation history.
+  A per-turn agent exception is contained — the daemon stays up, the user
+  gets a short apology, and the dangling user turn is rolled back. A
+  `getUpdates` failure backs off rather than spinning.
+- `agent/telegram_lock.py`: an `fcntl` single-instance lifetime lock so
+  two daemons can't race `getUpdates` (Telegram gives each update to
+  whichever poll arrives first).
+
+**`source="telegram"` is now a first-class source**: added to
+`agent/history_store.py`'s `_VALID_SOURCES` and `agent/history_capture.py`
+(one process-lifetime session, like `chat`/`voice`);
+`search_conversation_history`'s `source` enum updated to match. It is
+**not** added to `agent/autonomy.py`'s voice-misfire always-confirm set —
+a typed message from the allowlisted chat is a deliberate instruction,
+not ambient noise. A confirmation-required tool asks in one message and
+acts on the owner's "yes" in the next (the daemon keeps history for
+exactly this).
+
+**Docs**: new `docs/TELEGRAM.md` (setup runbook), `ARCHITECTURE.md` §2 /
+§14 (new entry point, new "Telegram bridge" subsection).
+
+**Touched**: new `agent/telegram_bridge.py` / `telegram_daemon.py` /
+`telegram_lock.py` / `tools/schemas/telegram.py` / `docs/TELEGRAM.md`;
+modified `config/settings.py`, `agent/history_store.py`,
+`agent/history_capture.py`, `tools/schemas/__init__.py`,
+`tools/schemas/history.py`, `tests/_safety.py` (+ two redirected
+constants). Tests: `tests/test_telegram_bridge.py` (24),
+`tests/test_telegram_daemon.py` (7), `tests/test_telegram_lock.py` (3),
+plus additions to `test_test_safety` / `test_history_capture` /
+`test_history_store`. The one external boundary (the `curl` subprocess)
+is mocked; owner-gate rejection, chunking, `/reset`, non-text, and
+contained-exception paths are covered. Full canonical suite: **1697
+passed, 0 failed**. No bot token, real chat, or real message anywhere in
+the tests. `coding_agent_enabled` untouched (`False`).
+
 ## 2026-09-06 — OpenClaw M2.1: read-only messaging-config summary for first-channel setup
 
 `ROADMAP.md`'s "OpenClaw M2 follow-up" is configuring the first real

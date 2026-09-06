@@ -583,6 +583,36 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   unchanged by a `recall()`/`search_scored()` call that used to rewrite
   it). Full suite green (1636/1636). `coding_agent_enabled` untouched.
 
+- **"Say hi" structural fix** ✅ (2026-09-06): the `ROADMAP.md` "Say hi"
+  item's named-but-unbuilt structural fix. New `agent/greeting.py`
+  (strict, deterministic bare-greeting detection);
+  `execute_task_stream()` pre-runs `get_system_status` + `get_weather`
+  before the first model completion for a detected greeting and
+  `build_system_prompt()` injects the results, so the greeting is one
+  completion instead of a narrate-then-tool-call round trip. Best-effort;
+  any failure restores the old path. 24 new tests. See `CHANGELOG.md`.
+
+- **OpenClaw M2.1 — messaging-config summary** ✅ (2026-09-06):
+  `messaging_config_summary()` (pure, no-network) merged into
+  `openclaw_status` so outbound-messaging config can be verified without
+  a live send. Finding: the M2 bridge is channel-agnostic by design, so
+  no Telegram-specific code belongs on the Jarvis side. Runbook:
+  `docs/OPENCLAW_TELEGRAM.md`. See `CHANGELOG.md`.
+
+- **Direct two-way Telegram bridge** ✅ (2026-09-06): the user had a bot
+  token and OpenClaw wasn't installed, so a **direct** `api.telegram.org`
+  integration was built instead of the OpenClaw-routed path. New
+  `agent/telegram_bridge.py` (owner-only send/poll),
+  `agent/telegram_daemon.py` (`python -m agent.telegram_daemon` — inbound
+  loop, owner-gated, feeds `execute_task(source="telegram")`),
+  `agent/telegram_lock.py` (single-instance), `send_telegram_message`
+  tool (level 3, self-only recipient, no live-confirm, unattended-allowed
+  for notifications). `source="telegram"` is a first-class source.
+  Setup: `docs/TELEGRAM.md`. 34 new tests, suite 1697/1697. This
+  supersedes the "OpenClaw M2 follow-up — a real messaging channel" and
+  "Inbound Gmail read/draft tool" items below **for Telegram
+  specifically** — a two-way remote text channel now exists.
+
 ## In progress
 
 **Phase 10 increment 1 — real CodingAgent + checkpoint/rollback.** Built,

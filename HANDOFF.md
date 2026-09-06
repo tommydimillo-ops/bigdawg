@@ -675,6 +675,38 @@ the full runbook.
 - 9 new tests, full suite 1664/1664, CI-verified. Code and docs
   committed separately.
 
+## Direct two-way Telegram bridge ✅ (2026-09-06)
+
+The user had a Telegram bot token and asked how to proceed. OpenClaw is
+**not installed** on this machine (nothing on the Gateway port), so the
+OpenClaw-routed path was a dead end without significant setup. The user
+chose a **direct** `api.telegram.org` integration, **two-way**.
+
+New standalone subsystem, all inert by default:
+- `agent/telegram_bridge.py` — `send_message()` (owner-only, splits long
+  replies, never raises), `get_updates()` long-poll, `is_configured()` /
+  `is_owner()`, atomic+`flock` offset. HTTP via a `curl` subprocess (like
+  `tools/weather.py`), no new dependency.
+- `agent/telegram_daemon.py` — `python -m agent.telegram_daemon`. Inbound
+  poll loop; feeds **only** the owner's text into
+  `execute_task(source="telegram")`; non-owner chats dropped; `/reset`
+  clears history; a per-turn agent exception is contained.
+- `agent/telegram_lock.py` — `fcntl` single-instance lock.
+- `tools/schemas/telegram.py` — `send_telegram_message` (level 3,
+  self-only recipient, **not** live-confirm, **is** unattended_allowed
+  for notifications).
+- `source="telegram"` added to `agent/history_store.py`'s `_VALID_SOURCES`
+  and `agent/history_capture.py` (one process-lifetime session);
+  `search_conversation_history` source enum updated to match.
+
+**Setup runbook**: `docs/TELEGRAM.md`. **What the user still does**: get
+their numeric chat ID (`getUpdates`), store `TELEGRAM_BOT_TOKEN` as a
+secret, set `TELEGRAM_ENABLED=true` + `TELEGRAM_OWNER_CHAT_ID`, run
+`python -m agent.telegram_daemon`.
+
+34 new tests, full suite **1697/1697**. `coding_agent_enabled` untouched.
+Code and docs committed separately.
+
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
 - **Commit**: `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local

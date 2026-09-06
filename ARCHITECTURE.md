@@ -21,15 +21,16 @@ Perplexity/Apple frameworks (xAI/Perplexity optional, Phase 9 Milestone 2
 — see §5).
 
 ```
-┌─────────────┐   ┌──────────────────┐   ┌───────────────────────┐
-│ app.py       │   │ ui/menu_bar.py   │   │ agent/scheduler_daemon│
-│ (Streamlit   │   │ (native macOS    │   │ .py (standalone cron, │
-│  chat UI)    │   │  menu-bar app,   │   │  redundant with menu- │
-│              │   │  voice-first)    │   │  bar's own scheduler) │
-└──────┬───────┘   └────────┬─────────┘   └───────────┬───────────┘
-       │                    │                          │
-       └────────────────────┼──────────────────────────┘
-                             ▼
+┌────────────┐ ┌────────────────┐ ┌────────────────────┐ ┌──────────────────────┐
+│ app.py     │ │ ui/menu_bar.py │ │ agent/scheduler_   │ │ agent/telegram_      │
+│ (Streamlit │ │ (native macOS  │ │ daemon.py          │ │ daemon.py            │
+│  chat UI)  │ │  menu-bar app, │ │ (standalone cron,  │ │ (standalone inbound  │
+│            │ │  voice-first)  │ │  redundant w/ menu-│ │  Telegram poll loop, │
+│            │ │                │ │  bar's scheduler)  │ │  owner-only)         │
+└─────┬──────┘ └───────┬────────┘ └─────────┬──────────┘ └──────────┬───────────┘
+      │                │                     │                       │
+      └────────────────┴──────────┬──────────┴───────────────────────┘
+                                   ▼
               agent/executor.py: execute_task_stream()
                   (the one orchestrator, all entry
                    points call this and nothing else)
@@ -37,7 +38,7 @@ Perplexity/Apple frameworks (xAI/Perplexity optional, Phase 9 Milestone 2
         ┌────────────────────┼────────────────────────┐
         ▼                    ▼                         ▼
   agent/model_router   tools/registry.py         agent/agents/
-  (task-aware, cost-   (64 tools, permission     manager.py
+  (task-aware, cost-   (65 tools, permission     manager.py
    ranked, 4 providers: levels, dispatch)         (coworker agents,
    Anthropic/OpenAI/                               subprocess-isolated)
    xAI/Perplexity)
@@ -73,7 +74,8 @@ exist and may now run together safely.
 
 ## 2. Main application flow
 
-All four entry points converge on one function:
+All five entry points (Streamlit chat, menu-bar voice/typed, scheduler
+daemon, and the Telegram daemon — §14) converge on one function:
 
 ```
 execute_task_stream(request, history, source)
@@ -498,13 +500,14 @@ that path fix was removed in a repository cleanup pass (see
 **`tools/registry.py`** is the single source of truth for every tool: name,
 description, JSON schema, `permission_level` (0-5), and four gating flags
 (`requires_live_confirmation`, `unattended_allowed`, `side_effect`,
-`parallel_safe`). 64 tools as of Graphify G1 (re-verify with
+`parallel_safe`). 65 tools as of the direct Telegram bridge
+(`send_telegram_message`) — re-verify with
 `len(tools.registry.all_names())` rather than trusting this number
-blindly — it drifts every time a tool is added), grouped by theme into
+blindly, it drifts every time a tool is added — grouped by theme into
 `tools/schemas/*.py` (`agents`, `browsing`, `computer_use`,
-`execution_control`, `graphify`, `logins_and_email`,
+`execution_control`, `graphify`, `history`, `logins_and_email`,
 `memory_and_learning`, `obsidian`, `openclaw`, `productivity`,
-`reasoning`, `scheduling`, `skills`, `system`) — each calls
+`reasoning`, `scheduling`, `skills`, `system`, `telegram`) — each calls
 `register(ToolSpec(...))` at import time.
 `agent/brain.py`'s `TOOLS` list, `agent/permissions.py`'s lookups, and
 `agent/executor.py`'s dispatch are all *derived* from this registry, not
@@ -607,8 +610,9 @@ Three separate processes, all calling the same orchestrator:
 ## 11. Backend
 
 The backend *is* `agent/`, `tools/`, `voice/`, `config/`, `database/` —
-there is no separate backend service; the three UI processes each embed
-the same backend code directly (import, not RPC).
+there is no separate backend service; every entry-point process (the
+Streamlit app, the menu-bar app, the scheduler daemon, and the Telegram
+daemon) embeds the same backend code directly (import, not RPC).
 
 ## 12. Database / storage
 
@@ -1270,6 +1274,10 @@ suite).
 - **OpenClaw Gateway** (`agent/openclaw_gateway.py`, OpenClaw M1) —
   optional, disabled by default, a local WebSocket RPC service (not a
   model provider) — see "OpenClaw bridge" below for its own subsection.
+- **Telegram Bot API** (`agent/telegram_bridge.py`) — optional, disabled
+  by default, direct `api.telegram.org` calls (a fixed-argv `curl`
+  subprocess, same as `tools/weather.py` — no HTTP dependency added),
+  **not** routed through OpenClaw — see "Telegram bridge" below.
 
 Both Anthropic's and OpenAI's *usage/billing* APIs were checked live and
 found inaccessible with the project's regular (non-admin) API keys — both
@@ -1628,6 +1636,54 @@ confuse which identity's pairing is pending.
 configuration/login, media/attachments/voice/polls, `node.invoke`,
 device capabilities, OpenClaw agent/session execution, OpenClaw
 model-routing authority.
+
+### Telegram bridge (optional, direct, two-way — not via OpenClaw)
+
+`agent/telegram_bridge.py` talks straight to `api.telegram.org` with a
+bot token (`agent/secrets.py`'s `TELEGRAM_BOT_TOKEN`). Chosen over the
+OpenClaw-routed path because OpenClaw isn't installed on the target
+machine and the routed path would need a running Gateway plus a
+Gateway-side Telegram channel. Setup: `docs/TELEGRAM.md`.
+
+```
+Telegram (owner's chat only)
+ ↕  api.telegram.org  (fixed-argv `curl` subprocess — no HTTP dependency)
+agent/telegram_bridge.py   send_message() / get_updates() / is_owner()
+ ↑ outbound                                    ↓ inbound
+tools/schemas/telegram.py            agent/telegram_daemon.py
+ send_telegram_message                (standalone poll loop,
+ (perm 3, no live-confirm,             single-instance flock —
+  unattended_allowed —                 agent/telegram_lock.py)
+  self-only recipient)                       ↓
+                                      execute_task_stream(source="telegram")
+```
+
+Key properties:
+- **Owner-only, both directions.** `settings.telegram_owner_chat_id` is
+  the one chat this bridge sends to or accepts from. Inbound from any
+  other chat id is logged and dropped before the agent. Outbound rejects
+  any non-owner id. A bot token is effectively public, so this allowlist
+  is load-bearing.
+- **`source="telegram"`** is a first-class source: added to
+  `agent/history_store.py`'s `_VALID_SOURCES` and
+  `agent/history_capture.py` (one process-lifetime session, like
+  chat/voice). It is *not* in `agent/autonomy.py`'s voice-misfire
+  always-confirm set — a typed message from the allowlisted chat is a
+  deliberate instruction. A confirmation-required tool asks in one
+  message and acts on "yes" in the next (the daemon keeps
+  per-conversation history).
+- **`send_telegram_message`** takes only the text — the recipient is
+  always the owner, so there is no wrong-recipient/leak failure mode a
+  live confirmation would guard; hence `permission_level=3` but
+  `requires_live_confirmation=False` and `unattended_allowed=True` (a
+  scheduled task can notify you).
+- **Daemon resilience**: a per-turn agent exception is contained (daemon
+  stays up, user gets an apology, the dangling user turn is rolled
+  back); a `getUpdates` failure backs off rather than spinning; the
+  `getUpdates` offset is persisted atomically so a restart neither
+  reprocesses nor skips.
+- **Not built**: voice-note transcription, media in/out, multiple/group
+  chats, menu-bar integration.
 
 ## 15. Inter-agent communication
 

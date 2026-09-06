@@ -5,6 +5,23 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-06 — Direct two-way Telegram bridge
+
+User had a Telegram bot token and asked what to do. Found OpenClaw isn't
+installed on this machine (nothing on the Gateway port), so the
+OpenClaw-routed path was a dead end without heavy setup. User chose a
+direct `api.telegram.org` integration, two-way. Built a new standalone
+subsystem: `agent/telegram_bridge.py` (owner-only send/poll, `curl`
+subprocess, atomic offset), `agent/telegram_daemon.py` (`python -m
+agent.telegram_daemon`, feeds owner text into
+`execute_task(source="telegram")`, non-owner dropped, contained
+per-turn errors), `agent/telegram_lock.py` (single-instance),
+`send_telegram_message` tool (level 3, self-only recipient so no live
+confirm, unattended-allowed for notifications). `source="telegram"`
+threaded through history store/capture. `docs/TELEGRAM.md` is the setup
+runbook. 34 new tests, suite 1697/1697. Code and docs committed
+separately.
+
 ### 2026-09-06 — OpenClaw M2.1: messaging-config summary for first-channel setup
 
 User picked "OpenClaw M2 real channel" as the next thread. Per
