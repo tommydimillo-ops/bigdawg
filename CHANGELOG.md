@@ -7,6 +7,61 @@ needed.
 
 ---
 
+## 2026-09-06 — "Say hi" structural fix: pre-fetch time/weather before the greeting turn
+
+`ROADMAP.md`'s "Say hi" entry documented an honest partial fix and named
+the real one. A bare greeting ("hi", "hey", "wake up", ...) makes the
+routed model narrate a lead-in sentence ("I'll get the time and weather
+for you") in its first completion, *before* calling
+`get_system_status`/`get_weather`, then produce the full templated
+greeting in a second completion once results come back — the user sees
+two separate messages and the turn costs two provider round-trips. Two
+live-tested prompt-only attempts (`agent/brain.py`'s greeting
+instruction) did not reliably suppress the narration; the entry itself
+concluded the fix needs a structural change to the executor's
+request-shaping, not another prompt tweak.
+
+**What changed.** New `agent/greeting.py`: deterministic bare-greeting
+detection (strict exact-match against a known phrase set after light
+normalization — never a model call, same principle as `agent/autonomy.py`
+/ `agent/delegation.py`; strict on purpose, since a false positive
+pre-runs `get_weather` for a message that only looked like a greeting)
+plus the system-prompt block that carries the prefetched results and the
+`get_weather`-usable predicate. `agent/executor.py`'s
+`execute_task_stream()` now, for a detected bare greeting and never for
+`source="scheduled"`, pre-runs `get_system_status` + `get_weather` via
+`_run_tool` — the ordinary gated dispatch path, no special-casing —
+before the first model completion, and stashes the formatted block on the
+new `ExecutionState.greeting_context` field.
+`agent.brain.build_system_prompt()` appends it right after the proactive
+history block, using the same `getattr(state, ...)` lookup pattern as
+`selected_skill`. The model then replies once, with the data already in
+hand.
+
+**Best-effort, non-invasive.** Any tool exception, mid-prefetch
+cancellation, or an unusable `get_weather` result (that function catches
+its own failures and returns a plain string with no `Location:` line)
+leaves `greeting_context` `None` and the ordinary path — model calls the
+tools itself — completely unchanged. The loop's shape is untouched; this
+is a request-shaping step added ahead of it, in the same additive spirit
+as the M4.2 history-capture call. New observability events:
+`greeting_prefetched`, `greeting_prefetch_failed`,
+`greeting_prefetch_skipped`. No new settings.
+
+**Not claimed.** This removes the *structural* cause of the second round
+trip (the model no longer has a reason to call the two tools, because
+their output is already in the prompt). It does not, and cannot, prove
+the model will never still emit a stray lead-in sentence — that residual
+was always a model-behavior question, and prompt text alone was already
+shown not to settle it. The win here is one completion instead of two in
+the normal case, verified structurally.
+
+**Touched**: new `agent/greeting.py`, `tests/test_greeting.py` (16),
+`tests/test_executor_greeting.py` (5); modified `agent/executor.py`,
+`agent/execution_state.py`, `agent/brain.py`, `tests/test_brain.py` (3
+new). Full canonical suite: **1656 passed, 0 failed**.
+`coding_agent_enabled` untouched (`False`).
+
 ## 2026-08-29 — AUTHORITY.md §2: memory `last_accessed` moved to a sidecar
 
 `agent/memory/manager.py`'s `search_scored()` and `recall()` used to

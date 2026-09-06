@@ -5,6 +5,24 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-06 — "Say hi" structural fix: server-side greeting pre-fetch
+
+Picked up the next unblocked item on `.relay/AUTHORITY.md`'s priority
+list (voice false-triggering and "turn M4.4 on" already done): the
+"Say hi" doubled-greeting / two-provider-calls item, whose `ROADMAP.md`
+entry named the exact structural fix. New `agent/greeting.py`
+(deterministic bare-greeting detection + the prefetch-context block).
+`execute_task_stream()` now pre-runs `get_system_status` + `get_weather`
+through `_run_tool` for a detected bare greeting, before the first model
+completion, and `build_system_prompt()` injects the results — so the
+greeting is one completion with the data in hand, not a
+narrate-then-tool-call round trip. Fully best-effort: any failure
+restores the old path byte-for-byte. Deterministic detection is
+deliberately strict (exact phrase match after normalization) so a
+false positive can't pre-run `get_weather` for a real request.
+24 new tests, full suite green (1656/1656). `coding_agent_enabled`
+untouched. Code and docs committed separately, per `AUTHORITY.md` §4.
+
 ### 2026-08-29 — AUTHORITY.md §2: memory `last_accessed` moved to a sidecar
 
 Closed a real, previously-deferred design question: `search_scored()`/

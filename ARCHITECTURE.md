@@ -96,6 +96,16 @@ execute_task_stream(request, history, source)
      Anthropic/OpenAI configured (the original, still-default state)
      this returns exactly [anthropic, openai], so behavior is unchanged
      from the pre-Milestone-2 hardcoded cascade in that common case
+  5b. agent.greeting.is_bare_greeting()   -- "Say hi" structural fix:
+     for a bare wake-up greeting only ("hi", "hey", "wake up", ...),
+     and never for source="scheduled", pre-run get_system_status +
+     get_weather here (through _run_tool, the ordinary gated path)
+     before the first provider call, and stash the formatted block on
+     state.greeting_context for build_system_prompt() to inject. So the
+     model replies once with the data in hand instead of narrating a
+     "let me check" lead-in and then calling the tools (two visible
+     messages, two round-trips). Deterministic detection, never a model
+     call; fully best-effort -- any failure restores the ordinary path
   6. for each candidate in the chain, in order (never simultaneously):
        anthropic  -> _run_claude_loop_stream()
        perplexity -> _run_perplexity_agent_loop_stream() (single-shot,
@@ -140,15 +150,22 @@ model's own judgment. Since Phase 9 M4.2, it's also the single point that
 calls into `agent/history_capture.py` (§12b) — a user-turn capture near
 the top of `execute_task_stream()`, an assistant-turn capture at every
 terminal path — deterministic application infrastructure, not something
-any tool call or model decision controls.
+any tool call or model decision controls. The same is true of the
+greeting pre-fetch (`agent/greeting.py`, step 5b above): a deterministic
+`is_bare_greeting()` check, and if it matches, `get_system_status` +
+`get_weather` run through `_run_tool` *before* the first provider call so
+their results are already in the system prompt — a request-shaping step,
+not a model choice, added additively without changing the loop's shape.
 
 **`agent/brain.py`** builds the system prompt (`BASE_SYSTEM_PROMPT` — a
 large, hand-tuned block of tool-usage guidance, tone rules, and behavioral
 requirements) and derives the `TOOLS` list from `tools/registry.py` at
 import time. Also assembles per-request context: user profile
 (`agent/context.py`'s `build_profile_context`), relevance-ranked pattern
-memories, always-included standing rules (`agent/lessons.py`), and an
-attached skill's instructions if one matched.
+memories, proactive history excerpts (§12d), the pre-fetched time/weather
+block for a detected greeting (`state.greeting_context`, step 5b above),
+always-included standing rules (`agent/lessons.py`), and an attached
+skill's instructions if one matched.
 
 ## 4. Agents (coworker agents — Phase 7/8)
 

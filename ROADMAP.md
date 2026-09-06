@@ -735,48 +735,39 @@ planned without a separate, explicit design pass) are both still open
 for whichever milestone ends up needing them, not yet scheduled to a
 specific one.
 
-- **"Say hi" → doubled greeting text, investigated, partially fixed.**
-  Found during M4.3's live E2E proof (`.relay/report-2.md`): a bare
-  one-word greeting led the model to call `get_system_status` and
-  `get_weather` before replying (two provider round-trips, ~$0.0017 for
-  that exchange — genuinely trivial as a cost question on its own) and
-  produced a doubled "Hello, master." in the streamed reply: the model
-  narrated a lead-in sentence in the first completion, then produced the
-  ENTIRE templated greeting (including "Hello, master." again) fresh in
-  the second completion once tool results came back — two separate
-  visible replies from the user's perspective, not a capture bug (M4.2
-  faithfully recorded exactly what was streamed).
-  - **Root cause, confirmed live** (two real `execute_task("say hi",
-    source="chat")` calls, ~$0.0034 total): the assistant narrates
-    before a tool call by default; the greeting instruction's rigid
-    template ("respond with a greeting in this shape: ...") is what the
-    model re-applies fresh in the tool-result completion, without
-    remembering its own first-completion text already said something.
-  - **Fixed**: `agent/brain.py`'s greeting instruction now explicitly
-    forbids narration before the tool calls and forbids saying "Hello,
-    master" until the single final reply. **Confirmed this eliminates
-    the literal doubled phrase** — neither live retest said "Hello,
-    master" twice. **Did NOT fully eliminate a lead-in sentence** — even
-    after strengthening the instruction to be maximally explicit ("ZERO
-    text before them... no matter how short"), `claude-haiku-4-5`
-    (this task type's routed model) still narrated once each time
-    ("I'll get the real time and weather for you." / "I need to get the
-    current time and weather for you first.") before calling the tools.
-    Two real, live-tested attempts is where this stopped — a prompt
-    instruction alone does not reliably suppress this model's narration
-    tendency, and a third blind retry with real API spend wasn't a good
-    trade for marginal, unverified improvement.
-  - **Open remainder, if it's ever worth closing further**: a genuinely
-    reliable fix likely needs a structural change, not another prompt
-    tweak — e.g. gathering `get_system_status`/`get_weather` server-side
-    before the model's first completion for a detected greeting, so the
-    model only ever produces ONE completion with the data already in
-    hand, never a narrate-then-tool-call round trip. That is a real
-    change to the executor's request-shaping, not a "reflexive prompt
-    tweak," and is exactly why this stops here as a documented, honest
-    partial fix rather than an unscoped attempt at a bigger rewrite.
-    `tests/test_brain.py`'s `TestGreetingInstructionForbidsNarrationBeforeToolCalls`
-    pins the current instruction text so it can't silently regress.
+- **"Say hi" → doubled greeting / two provider calls — structural fix
+  landed (2026-09-06).** Found during M4.3's live E2E proof
+  (`.relay/report-2.md`): a bare one-word greeting led the model to
+  narrate a lead-in sentence, then call `get_system_status`/`get_weather`,
+  then produce the full templated greeting fresh in a second completion —
+  two visible replies, two provider round-trips.
+  - **Pass 1 (prompt-only, partial)**: `agent/brain.py`'s greeting
+    instruction was strengthened to forbid text before the tool calls and
+    forbid "Hello, master" until the single final reply. Confirmed live
+    to eliminate the literal doubled phrase; did **not** eliminate a
+    one-sentence lead-in — `claude-haiku-4-5` still narrated once each of
+    two real retests. A prompt instruction alone doesn't reliably
+    suppress this model's narration tendency.
+    `tests/test_brain.py::TestGreetingInstructionForbidsNarrationBeforeToolCalls`
+    pins that text against regression.
+  - **Pass 2 (structural — done)**: new `agent/greeting.py`
+    (`is_bare_greeting()` — strict, deterministic, never a model call).
+    `agent/executor.py`'s `execute_task_stream()` now pre-runs
+    `get_system_status` + `get_weather` through `_run_tool` for a detected
+    bare greeting (never `source="scheduled"`), before the first model
+    completion, and stashes the result block on
+    `ExecutionState.greeting_context`; `build_system_prompt()` injects it.
+    The model then produces one completion with the data in hand.
+    Best-effort — any failure/cancellation/unusable-weather result
+    restores the old path. New events `greeting_prefetched` /
+    `greeting_prefetch_failed` / `greeting_prefetch_skipped`. 24 new
+    tests, suite 1656/1656. See `CHANGELOG.md`'s 2026-09-06 entry and
+    `ARCHITECTURE.md` §3 step 5b.
+  - **Residual (not a blocker)**: this removes the structural cause of the
+    second round trip; it can't guarantee the model never emits a stray
+    lead-in sentence anyway. A cheap live "say hi" retest to watch the
+    single-completion behavior end to end is a reasonable next check —
+    not yet run.
 
 Other candidates raised but not yet started, roughly in order of what's
 been discussed most recently:

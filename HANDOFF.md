@@ -1383,37 +1383,53 @@ false-trigger shape described above. `coding_agent_enabled` untouched
 ephemeral — this section and `CHANGELOG.md`'s entry are the durable
 record).
 
-## "Say hi" doubled greeting — investigated, partially fixed ⚠️ HONEST PARTIAL
+## "Say hi" — structural fix landed ✅ (2026-09-06)
 
-`ROADMAP.md`'s open "say hi → two provider calls" item, actually
-investigated with real evidence rather than left as a guess. Root cause,
-confirmed with two real `execute_task("say hi", source="chat")` calls
-(~$0.0034 total, not mocked): the model narrates a short lead-in
-sentence before calling `get_system_status`/`get_weather`, then
-re-applies the greeting instruction's rigid template fresh in the
-tool-result completion — that's what produced the literal doubled
-"Hello, master." the user would have seen/heard.
+The `ROADMAP.md` "Say hi" item, in three passes:
 
-`agent/brain.py`'s greeting instruction now explicitly forbids any text
-before the tool calls and forbids saying "Hello, master" until the
-single final reply. **What's actually fixed, confirmed live**: the
-literal "Hello, master." duplication is gone — neither retest produced
-it. **What isn't fixed**: a one-sentence narration lead-in
-("I'll get the real time and weather for you." / "I need to get the
-current time and weather for you first.") still appeared both times,
-even after strengthening the instruction to be maximally explicit ("ZERO
-text before them... no matter how short"). Stopped at two real,
-evidence-based attempts rather than keep spending real API calls on a
-third blind retry — a prompt instruction alone isn't reliably
-suppressing this specific model's (`claude-haiku-4-5`, this task type's
-routed model) narration tendency. A genuinely complete fix would need a
-structural change (gathering the greeting's data server-side before the
-model's first completion, so there's only ever one completion, not a
-narrate-then-tool-call round trip) — real executor request-shaping work,
-not another prompt tweak, and explicitly not attempted this round. See
-`ROADMAP.md`'s updated entry for the full, honest accounting.
+**Pass 1 (prompt-only, honest partial).** Root cause confirmed with two
+real `execute_task("say hi", source="chat")` calls (~$0.0034 total, not
+mocked): the model narrates a short lead-in sentence before calling
+`get_system_status`/`get_weather`, then re-applies the greeting
+instruction's rigid template fresh in the tool-result completion — that
+produced the literal doubled "Hello, master." the user would have
+seen/heard. `agent/brain.py`'s greeting instruction was strengthened to
+forbid text before the tool calls and forbid "Hello, master" until the
+single final reply. That eliminated the literal duplication (confirmed
+live) but a one-sentence narration lead-in still appeared both times even
+with maximally explicit wording. Stopped there rather than spend more API
+calls on a third blind prompt retry — the entry itself concluded the real
+fix is structural.
 `tests/test_brain.py::TestGreetingInstructionForbidsNarrationBeforeToolCalls`
-pins the current instruction text against silent regression.
+still pins that instruction text against silent regression.
+
+**Pass 2 (the structural fix — this session).** New `agent/greeting.py`:
+deterministic `is_bare_greeting()` (strict exact-match against a known
+phrase set after normalization — never a model call; strict so a false
+positive can't pre-run `get_weather` for a real request), plus
+`format_greeting_context()` and a `get_weather`-usable predicate.
+`agent/executor.py`'s `execute_task_stream()` now, for a detected bare
+greeting and never for `source="scheduled"`, pre-runs `get_system_status`
++ `get_weather` through `_run_tool` (the ordinary gated path) *before* the
+first model completion and stashes the formatted block on the new
+`ExecutionState.greeting_context`; `build_system_prompt()` appends it
+after the proactive-history block. So the model produces one completion
+with the data already in hand. Best-effort: any exception, mid-prefetch
+cancellation, or an unusable `get_weather` result leaves
+`greeting_context` `None` and the ordinary path unchanged. New events:
+`greeting_prefetched` / `greeting_prefetch_failed` /
+`greeting_prefetch_skipped`. 24 new tests (`tests/test_greeting.py` 16,
+`tests/test_executor_greeting.py` 5, `tests/test_brain.py` +3). Full
+suite 1656/1656.
+
+**What is NOT claimed**: this removes the structural cause of the second
+round trip (the model has no reason to call the two tools when their
+output is already in the prompt); it cannot guarantee the model never
+emits a stray lead-in sentence anyway — that residual was always a
+model-behavior question. Not verified against a live model call this
+session (the structural change is covered by mocked-boundary tests; a
+real "say hi" retest to observe the single-completion behavior end to end
+is a reasonable, cheap next check but wasn't run here).
 
 ## M4.4 turned on by default ✅ COMPLETE
 
@@ -2399,14 +2415,16 @@ For the next session, in order of what's most likely to matter:
    increment 1 and M10.0 are both committed and CI-verified as of this
    session — see their dedicated sections above; `coding_agent_enabled`
    remains `False`.
-0a. **Voice false-triggering, the "say hi" doubled-greeting
-   investigation, turning M4.4 on, M4.5's evidence read-back, and
-   AUTHORITY.md §2's memory `last_accessed` sidecar are all done** (see
-   their dedicated sections above). **A manual restart of the real
-   menu-bar app is still needed before M4.4's evidence can start
-   accumulating** — see M4.5's section for why; this is a real,
-   user-initiated action, not something to take on this session's own
-   initiative. Per the user's own direct confirmation (AskUserQuestion,
+0a. **Voice false-triggering, the "say hi" fix (now including the
+   structural server-side pre-fetch — see its dedicated section), turning
+   M4.4 on, M4.5's evidence read-back, and AUTHORITY.md §2's memory
+   `last_accessed` sidecar are all done** (see their dedicated sections
+   above). **A manual restart of the real menu-bar app is still needed
+   before M4.4's evidence can start accumulating** — see M4.5's section
+   for why; this is a real, user-initiated action, not something to take
+   on this session's own initiative. A cheap live "say hi" retest to
+   watch the new single-completion greeting behavior end to end is a
+   reasonable next check, also not yet run. Per the user's own direct confirmation (AskUserQuestion,
    not `.relay/AUTHORITY.md`'s own say-so), the active thread next is:
    continue down `ROADMAP.md`'s "Next"/"Other candidates" sections
    without further check-ins, using the same engineering discipline
