@@ -659,5 +659,80 @@ class TestExecutorVerificationIntegration(unittest.TestCase):
         self.assertEqual(payload["delivery_status"], "confirmed")
 
 
+class TestMessagingConfigSummary(unittest.TestCase):
+    """OpenClaw M2.1: the read-only, no-network view of outbound-messaging
+    config used to set up and verify a first real channel (Telegram)
+    without a live send -- see docs/OPENCLAW_TELEGRAM.md."""
+
+    def setUp(self):
+        self._orig = {
+            "e": settings.openclaw_messaging_enabled,
+            "c": settings.openclaw_allowed_channels,
+            "t": settings.openclaw_allowed_targets,
+        }
+        # No credential unless a test says so.
+        self._get_secret = patch("agent.openclaw_messaging.get_secret", return_value=None)
+        self._get_secret.start()
+
+    def tearDown(self):
+        self._get_secret.stop()
+        object.__setattr__(settings, "openclaw_messaging_enabled", self._orig["e"])
+        object.__setattr__(settings, "openclaw_allowed_channels", self._orig["c"])
+        object.__setattr__(settings, "openclaw_allowed_targets", self._orig["t"])
+
+    def _set(self, enabled, channels, targets):
+        object.__setattr__(settings, "openclaw_messaging_enabled", enabled)
+        object.__setattr__(settings, "openclaw_allowed_channels", channels)
+        object.__setattr__(settings, "openclaw_allowed_targets", targets)
+
+    def test_disabled_by_default_reports_not_complete_with_no_blocking_noise(self):
+        self._set(False, "", "")
+        summary = om.messaging_config_summary()
+        self.assertFalse(summary["enabled"])
+        self.assertFalse(summary["config_complete"])
+        # blocking is only meaningful once the operator has opted in.
+        self.assertEqual(summary["blocking"], [])
+
+    def test_enabled_but_no_channels_is_blocked(self):
+        self._set(True, "", "")
+        summary = om.messaging_config_summary()
+        self.assertTrue(summary["enabled"])
+        self.assertFalse(summary["config_complete"])
+        self.assertTrue(any("openclaw_allowed_channels is empty" in b for b in summary["blocking"]))
+
+    def test_enabled_channel_without_a_target_is_blocked(self):
+        self._set(True, "telegram", "")
+        summary = om.messaging_config_summary()
+        self.assertFalse(summary["config_complete"])
+        self.assertTrue(any("telegram" in b for b in summary["blocking"]))
+
+    def test_enabled_channel_and_target_but_no_credential_is_blocked(self):
+        self._set(True, "telegram", "telegram:123456789")
+        summary = om.messaging_config_summary()
+        self.assertFalse(summary["config_complete"])
+        self.assertTrue(any("credential" in b for b in summary["blocking"]))
+
+    def test_fully_configured_is_complete(self):
+        self._set(True, "telegram", "telegram:123456789")
+        with patch("agent.openclaw_messaging.get_secret", side_effect=lambda name: "tok" if name == "OPENCLAW_GATEWAY_TOKEN" else None):
+            summary = om.messaging_config_summary()
+        self.assertTrue(summary["config_complete"])
+        self.assertEqual(summary["blocking"], [])
+        self.assertEqual(summary["allowed_channels"], ["telegram"])
+        self.assertEqual(summary["targets_per_channel"], {"telegram": 1})
+        self.assertTrue(summary["bootstrap_token_present"])
+
+    def test_raw_target_ids_are_never_emitted_only_counts(self):
+        self._set(True, "telegram", "telegram:987654321")
+        summary = om.messaging_config_summary()
+        self.assertNotIn("987654321", json.dumps(summary))
+
+    def test_summary_makes_no_network_call(self):
+        self._set(True, "telegram", "telegram:123456789")
+        with patch("agent.openclaw_messaging._send_raw") as mock_send:
+            om.messaging_config_summary()
+        mock_send.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

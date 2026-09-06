@@ -74,9 +74,12 @@ from agent.openclaw_gateway import (
     OpenClawError,
     OpenClawPairingRequired,
     OpenClawUncertainDelivery,
+    _BOOTSTRAP_TOKEN_SECRET,
+    _MESSAGE_PROFILE,
     _send_raw,
 )
 from agent.request_context import get_current_request_id
+from agent.secrets import get_secret
 from config.settings import settings
 
 # Conservative, channel-neutral cap -- not any specific channel's real
@@ -120,6 +123,50 @@ def _parse_allowed_targets() -> frozenset:
         if channel and target:
             pairs.add((channel, target))
     return frozenset(pairs)
+
+
+def messaging_config_summary() -> dict:
+    """Read-only, no network, no side effect: what the operator has (and
+    has not) configured for outbound messaging, so a FIRST real channel
+    (Telegram is the intended first -- see docs/OPENCLAW_TELEGRAM.md) can
+    be set up and its config verified WITHOUT a live send. Deliberately
+    does not probe the Gateway or the pairing state -- those are exercised
+    by an actual `send` (or M1's openclaw_status). Safe fields only:
+    channel NAMES and target COUNTS, never a raw target ID, never any
+    token or key material -- only booleans for credential presence."""
+    channels = sorted(_parse_allowed_channels())
+    targets_per_channel: dict = {}
+    for channel, _target in _parse_allowed_targets():
+        targets_per_channel[channel] = targets_per_channel.get(channel, 0) + 1
+
+    enabled = bool(settings.openclaw_messaging_enabled)
+    device_token_present = bool(get_secret(_MESSAGE_PROFILE.device_token_secret))
+    bootstrap_token_present = bool(get_secret(_BOOTSTRAP_TOKEN_SECRET))
+
+    blocking = []
+    if enabled:
+        if not channels:
+            blocking.append("openclaw_allowed_channels is empty")
+        channels_without_targets = [c for c in channels if targets_per_channel.get(c, 0) == 0]
+        if channels_without_targets:
+            blocking.append(
+                "no allowlisted target for channel(s): " + ", ".join(channels_without_targets)
+            )
+        if not bootstrap_token_present and not device_token_present:
+            blocking.append(
+                "no OpenClaw messaging credential (OPENCLAW_GATEWAY_TOKEN for first "
+                "pairing, or an already-issued OPENCLAW_MESSAGE_DEVICE_TOKEN)"
+            )
+
+    return {
+        "enabled": enabled,
+        "allowed_channels": channels,
+        "targets_per_channel": targets_per_channel,
+        "message_device_token_present": device_token_present,
+        "bootstrap_token_present": bootstrap_token_present,
+        "config_complete": enabled and not blocking,
+        "blocking": blocking,
+    }
 
 
 def _validate(channel: Optional[str], target: Optional[str], message: Optional[str]) -> None:

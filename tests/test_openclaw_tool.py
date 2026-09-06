@@ -128,6 +128,18 @@ class TestOpenClawStatusTool(unittest.TestCase):
         self.assertEqual(parsed["detail"]["runtime"], "running")
 
     @patch("tools.schemas.openclaw.get_status")
+    def test_output_includes_the_read_only_messaging_config_view(self, mock_get_status):
+        # M2.1: openclaw_status now also carries a no-network summary of
+        # what outbound-messaging config is set up, so a first channel can
+        # be verified without a live send.
+        mock_get_status.return_value = {"configured": False, "available": False, "detail": "x"}
+        parsed = json.loads(registry.dispatch("openclaw_status", {}))
+        self.assertIn("messaging", parsed)
+        self.assertIn("enabled", parsed["messaging"])
+        self.assertIn("config_complete", parsed["messaging"])
+        self.assertIn("blocking", parsed["messaging"])
+
+    @patch("tools.schemas.openclaw.get_status")
     def test_never_raises_even_if_get_status_would_somehow_raise(self, mock_get_status):
         # get_status() itself is documented to never raise (see
         # tests/test_openclaw_gateway.py), but the tool handler is

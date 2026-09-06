@@ -30,12 +30,19 @@ side_effect=True, requires_live_confirmation=True.
 import json
 
 from agent.openclaw_gateway import get_node_list, get_status
-from agent.openclaw_messaging import send_message
+from agent.openclaw_messaging import messaging_config_summary, send_message
 from tools.registry import ToolSpec, register
 
 
 def _openclaw_status(tool_input: dict) -> str:
-    return json.dumps(get_status())
+    # M1's Gateway-reachability summary, plus M2's read-only,
+    # no-network view of what outbound-messaging config the operator has
+    # set up (see agent/openclaw_messaging.py's messaging_config_summary
+    # and docs/OPENCLAW_TELEGRAM.md) -- so a first real channel can be
+    # verified without attempting a live send.
+    status = get_status()
+    status["messaging"] = messaging_config_summary()
+    return json.dumps(status)
 
 
 def _openclaw_list_nodes(tool_input: dict) -> str:
@@ -55,9 +62,13 @@ register(ToolSpec(
     name="openclaw_status",
     description=(
         "Check whether the optional OpenClaw Gateway bridge is configured "
-        "and reachable, and its basic status. Read-only -- never modifies "
-        "anything, never used for Jarvis's own model routing or "
-        "permission decisions."
+        "and reachable, its basic status, and (under 'messaging') a "
+        "read-only view of what outbound-messaging config is set up -- "
+        "whether messaging is enabled, which channels/how many recipients "
+        "are allowlisted, whether a credential is present, and what (if "
+        "anything) is still blocking a first send. Read-only -- never "
+        "modifies anything, never sends a message, never used for "
+        "Jarvis's own model routing or permission decisions."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     permission_level=0,
