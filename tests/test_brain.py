@@ -167,5 +167,38 @@ class TestRetrievalFailureCannotBreakAPrompt(IsolatedHistoryContextSettingsTestC
         self._assert_prompt_still_built(history_store.HistoryUnsupportedRuntime("x"))
 
 
+class _FakeState:
+    """Minimal stand-in -- build_system_prompt only ever does
+    getattr(state, "...", None) on it (selected_skill, greeting_context)."""
+
+    def __init__(self, greeting_context=None):
+        self.greeting_context = greeting_context
+
+
+class TestGreetingContextBlock(unittest.TestCase):
+    """The "Say hi" structural fix (ROADMAP.md's "Say hi" entry): when
+    agent.executor has pre-run get_system_status/get_weather for a bare
+    greeting it stashes the formatted block on state.greeting_context, and
+    build_system_prompt() appends it verbatim after a separator."""
+
+    def test_no_state_means_no_block(self):
+        prompt = build_system_prompt("hi", request_id="g-1", state=None)
+        self.assertNotIn("GREETING —", prompt)
+
+    def test_state_without_a_greeting_context_means_no_block(self):
+        prompt = build_system_prompt("hi", request_id="g-2", state=_FakeState())
+        self.assertNotIn("GREETING —", prompt)
+
+    def test_greeting_context_is_appended_verbatim(self):
+        block = (
+            "GREETING — the user greeted you. ...\n\n"
+            "get_system_status:\nBattery: 82%\n\n"
+            "get_weather:\nLocation: Tampa, Florida"
+        )
+        prompt = build_system_prompt("hi", request_id="g-3", state=_FakeState(block))
+        # Appended after a bare "\n\n" separator (the block owns its header).
+        self.assertIn("\n\n" + block, prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

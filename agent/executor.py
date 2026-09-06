@@ -15,6 +15,7 @@ from agent.chat import openai_client, xai_client
 from agent.execution_state import ExecutionState, ExecutionStatus, register_active, unregister_active
 from agent.cancellation import cancellation_requested, clear_cancellation
 from agent.delegation import decide as decide_delegation
+from agent.greeting import format_greeting_context, is_bare_greeting, weather_result_looks_usable
 from agent import history_capture
 from agent import provider_health
 from agent.model_router import build_fallback_chain, select as select_model
@@ -241,6 +242,46 @@ def _run_tool_batch(tool_calls, source="chat", context=None, state=None):
         results[call["id"]] = _run_tool(call["name"], call["input"], source, context, state)
 
     return results
+
+
+def _prefetch_greeting_context(source, context, state):
+    """"Say hi" structural fix (ROADMAP.md's "Say hi" entry): pre-run the
+    two read-only tools a wake-up greeting reply always needs
+    (get_system_status, get_weather), before the first model completion,
+    so the model produces one reply with the data in hand instead of
+    narrating a "let me check the time and weather" lead-in and then
+    calling the tools -- which the user sees as two separate messages and
+    which costs two provider round-trips.
+
+    Goes through _run_tool like any other tool call (permission/autonomy
+    gate, observability, audit log -- no special-cased dispatch path).
+    Fully best-effort: any failure, cancellation, or unusable result
+    returns None, and the ordinary path (the model calls the tools
+    itself) is completely unchanged."""
+    request_id = context.request_id if context else None
+    try:
+        status_result = _run_tool("get_system_status", {}, source, context, state)
+        if _is_cancelled(state):
+            return None
+        weather_result = _run_tool("get_weather", {}, source, context, state)
+    except Exception as error:
+        log_event(
+            "greeting_prefetch_failed", request_id=request_id, component="executor",
+            level="warning", error_type=type(error).__name__,
+        )
+        return None
+
+    if _is_cancelled(state):
+        return None
+    if not status_result or not weather_result_looks_usable(weather_result):
+        log_event(
+            "greeting_prefetch_skipped", request_id=request_id, component="executor",
+            reason="unusable_tool_result",
+        )
+        return None
+
+    log_event("greeting_prefetched", request_id=request_id, component="executor")
+    return format_greeting_context(status_result, weather_result)
 
 
 def _run_claude_loop_stream(messages, source="chat", context=None, state=None, model_choice=None, task_type=None, fallback_position=0):
@@ -763,6 +804,17 @@ def execute_task_stream(request, history=None, source="chat", on_state_created=N
         ExecutionStatus.THINKING, active_request_id=context.request_id,
         current_task=preview(request), plan_progress=_plan_progress(state),
     )
+
+    # "Say hi" structural fix (ROADMAP.md's "Say hi" entry): for a bare
+    # wake-up greeting, pre-run get_system_status + get_weather here, once,
+    # before the first model completion, so the greeting is a single reply
+    # with the data already in hand rather than a narrate-then-tool-call
+    # round trip. Deterministic detection, never a model call. Skipped for
+    # scheduled runs (a scheduled "hi" is meaningless), and best-effort --
+    # a failure leaves state.greeting_context None and the ordinary path
+    # unchanged. build_system_prompt() reads state.greeting_context.
+    if source != "scheduled" and is_bare_greeting(request):
+        state.greeting_context = _prefetch_greeting_context(source, context, state)
 
     messages = (
         _bounded_model_history(history)

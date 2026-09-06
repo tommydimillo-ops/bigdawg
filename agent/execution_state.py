@@ -138,6 +138,13 @@ class ExecutionState:
     # memory content.
     selected_skill: Optional[str] = None
     delegation_destination: Optional[str] = None
+    # "Say hi" structural fix (see agent/greeting.py): when the request is
+    # a bare wake-up greeting, agent.executor pre-runs get_system_status/
+    # get_weather before the first model completion and stashes the
+    # formatted system-prompt block here for agent.brain.
+    # build_system_prompt to pick up -- same name-on-state ->
+    # looked-up-in-brain pattern as selected_skill above.
+    greeting_context: Optional[str] = None
     # Phase 7: which coworker agent (see agent/agents/) this request was
     # routed to, if any -- distinct axis from delegation_destination the
     # same way agent.agents.router is distinct from agent.delegation

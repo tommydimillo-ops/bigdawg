@@ -267,6 +267,16 @@ def build_system_prompt(user_input="", request_id=None, state=None):
     if history:
         prompt += "\n\n" + history
 
+    # "Say hi" structural fix: agent.executor.execute_task_stream may have
+    # pre-run get_system_status/get_weather for a detected bare greeting
+    # and stashed the formatted block on state (same lookup-by-attr
+    # pattern as selected_skill below). format_greeting_context() bakes in
+    # its own header, so -- like the history block above -- only the
+    # separator is added here.
+    greeting = getattr(state, "greeting_context", None) if state is not None else None
+    if greeting:
+        prompt += "\n\n" + greeting
+
     lessons = lessons_as_prompt_text()
     if lessons:
         prompt += (
