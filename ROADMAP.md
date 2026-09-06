@@ -831,26 +831,40 @@ been discussed most recently:
   `agent/usage.py`'s *estimated* costs against actual billed amounts.
   Explicitly deferred by the user pending them generating the admin keys
   themselves ("it's okay for now").
-- **OpenClaw M2 follow-up — a real messaging channel.** M2's own
-  outbound-send implementation is complete and under review (see
-  "Completed" above) — text only, no real channel configured or tested
-  yet. The next increment is choosing and configuring the FIRST real
-  channel (Telegram is the presumed first candidate but not yet
-  decided) after this pass is reviewed. A reference implementation
-  (`.relay/reference/telegram_bot.py`, from a user-supplied second
-  Jarvis implementation evaluated and not adopted as a stack — see
-  `JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md`) is
-  available to read for ideas, not to import: its owner-chat-ID
-  whitelist (rejecting messages from anyone but the user's own Telegram
-  account) is the right instinct and load-bearing if ported. Still
-  blocked on the user creating a bot token; this doesn't change that.
-  Still to hold for every future
-  OpenClaw milestone: no OpenClaw model-routing authority, no arbitrary
-  OpenClaw-initiated Jarvis tool execution, no shared secrets/memory
-  store between the two systems, no third-party OpenClaw plugin
-  dependency (OpenClaw plugins execute with full host privileges, no
-  sandboxing — confirmed in the M0 audit), no `node.invoke`/device
-  capabilities.
+- **OpenClaw M2 follow-up — a real messaging channel (Telegram).**
+  Still blocked on the user: a Telegram bot token + owner chat ID (only
+  they can create it) and an OpenClaw-side Telegram channel they must
+  stand up and verify — including whether OpenClaw's Telegram support is
+  a third-party plugin, which the standing "no third-party OpenClaw
+  plugin" rule does not automatically waive.
+  - **M2.1 (done, 2026-09-06)** — "prepare everything else" per
+    `.relay/AUTHORITY.md`. Finding: the M2 bridge is channel-agnostic by
+    design, so there is no Telegram-specific *code* to add on the Jarvis
+    side (adding target-format validation would break ~20 tests and the
+    module's stated design for no security gain). New
+    `agent.openclaw_messaging.messaging_config_summary()` — pure,
+    no-network — reports enabled / allowlisted channels / recipient
+    counts / credential presence / a `config_complete` boolean / a
+    plain-language `blocking` list, merged into `openclaw_status` under a
+    `messaging` key so setup can be verified without a live send. Full
+    runbook: `docs/OPENCLAW_TELEGRAM.md`.
+  - **Still to do (needs the user)**: create the credential, stand up the
+    OpenClaw Telegram channel, set the four env vars +
+    `docs/OPENCLAW_TELEGRAM.md`'s pairing step, then do the first
+    confirmed send.
+  - A reference implementation (`.relay/reference/telegram_bot.py`, from a
+    not-adopted second Jarvis implementation — see
+    `JarvisVault/Knowledge/Decisions/Second-Jarvis-Zip-Rejection.md`) is
+    read-for-ideas only: its owner-chat-ID whitelist is the one
+    load-bearing instinct, already reflected in the exact-target
+    allowlist. It is a standalone direct-Telegram bot (also does
+    inbound), a different architecture from the OpenClaw-Gateway path.
+  - Still to hold for every future OpenClaw milestone: no OpenClaw
+    model-routing authority, no arbitrary OpenClaw-initiated Jarvis tool
+    execution, no shared secrets/memory store between the two systems, no
+    third-party OpenClaw plugin dependency (OpenClaw plugins execute with
+    full host privileges, no sandboxing — confirmed in the M0 audit), no
+    `node.invoke`/device capabilities.
 - **Menu-bar cost readout, Option A** (always-visible title, e.g.
   `🤖 $0.02 today`) — considered alongside Option B (the dropdown item,
   now built — see "Completed"), not chosen: it would need a recurring

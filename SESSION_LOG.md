@@ -5,6 +5,22 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-06 — OpenClaw M2.1: messaging-config summary for first-channel setup
+
+User picked "OpenClaw M2 real channel" as the next thread. Per
+`.relay/AUTHORITY.md` it's credential-blocked ("prepare everything
+else"). Investigated and found the honest answer: the M2 bridge is
+channel-agnostic by design, so there is no Telegram-specific code to
+write on the Jarvis side, and adding per-channel target validation would
+break ~20 tests and the module's stated design for no gain. Built the
+one genuinely missing piece — `messaging_config_summary()` (pure,
+no-network: enabled / allowlisted channels / recipient counts /
+credential presence / `config_complete` / `blocking` list), merged into
+`openclaw_status` so config can be verified without a live send — plus
+`docs/OPENCLAW_TELEGRAM.md`, the full setup runbook naming the single
+credential and the unresolved OpenClaw-side plugin question. 9 new
+tests, suite 1664/1664. Code and docs committed separately.
+
 ### 2026-09-06 — "Say hi" structural fix: server-side greeting pre-fetch
 
 Picked up the next unblocked item on `.relay/AUTHORITY.md`'s priority

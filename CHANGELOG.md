@@ -7,6 +7,53 @@ needed.
 
 ---
 
+## 2026-09-06 — OpenClaw M2.1: read-only messaging-config summary for first-channel setup
+
+`ROADMAP.md`'s "OpenClaw M2 follow-up" is configuring the first real
+messaging channel (Telegram). Per `.relay/AUTHORITY.md` that step is
+blocked on a credential only the user can create (a Telegram bot token +
+owner chat ID) and an OpenClaw-side Telegram channel the user must stand
+up — the instruction there is "prepare everything else."
+
+**Finding, recorded honestly rather than papered over with busywork**:
+the M2 bridge is channel-agnostic by deliberate design
+(`agent/openclaw_messaging.py`'s docstring: "EXACT CHANNEL + EXACT TARGET
+ONLY", no per-channel branching). There is **no Telegram-specific code to
+add on the Jarvis side** — a channel is just an allowlisted name, a
+recipient just an allowlisted exact string. Adding Telegram
+target-format validation would break ~20 existing tests and the module's
+stated design for no security gain, since the exact-target allowlist
+already constrains recipients. What was genuinely missing is a way to
+verify the whole config chain **without a live send**.
+
+**What changed.** New `agent.openclaw_messaging.messaging_config_summary()`
+— pure, no network, no side effect. Reports whether messaging is enabled,
+which channels / how many recipients are allowlisted (channel *names* and
+target *counts* only — never a raw target ID, never token/key material,
+only presence booleans), whether a credential is present, a single
+`config_complete` boolean, and a plain-language `blocking` list of what
+is still missing once the operator has opted in.
+`tools/schemas/openclaw.py`'s `openclaw_status` (the read-only M1 tool,
+`permission_level=0`) now merges this under a `messaging` key — one place
+to check setup progress, no new model-visible tool, no path to a send.
+Reuses `agent.openclaw_gateway`'s own `_MESSAGE_PROFILE` /
+`_BOOTSTRAP_TOKEN_SECRET` constants as the single source of truth for
+secret names.
+
+**New**: `docs/OPENCLAW_TELEGRAM.md` — the full setup runbook: the one
+credential to create, the OpenClaw-side prerequisites (including the
+unresolved "is Telegram support a third-party plugin?" question the
+no-plugin rule does not auto-waive), the four Jarvis env vars, the
+messaging-device pairing step, how to verify config without sending, and
+what is explicitly not built (inbound, media, `account_id`/`thread_id`).
+
+**Touched**: `agent/openclaw_messaging.py`, `tools/schemas/openclaw.py`,
+`tests/test_openclaw_messaging.py` (+8), `tests/test_openclaw_tool.py`
+(+1), new `docs/OPENCLAW_TELEGRAM.md`. Full canonical suite: **1664
+passed, 0 failed**. No real channel, token, or outbound message anywhere
+— fake creds / local fake Gateway only, as with every prior OpenClaw
+pass. `coding_agent_enabled` untouched (`False`).
+
 ## 2026-09-06 — "Say hi" structural fix: pre-fetch time/weather before the greeting turn
 
 `ROADMAP.md`'s "Say hi" entry documented an honest partial fix and named

@@ -649,8 +649,31 @@ no OpenClaw installation persists on this machine).
   Signal/iMessage/...) configured or logged into, no real outbound
   message ever sent — every automated test uses the same
   local-fake-Gateway-server pattern as M1/M1.5, never a real channel.
-  Choosing/configuring the first real channel is a separate, not-yet-
-  started future step (see ROADMAP.md's "Next" section).
+
+### OpenClaw M2.1 — first-channel (Telegram) preparation ✅ (2026-09-06)
+
+The user chose "OpenClaw M2 real channel" as the next thread; per
+`.relay/AUTHORITY.md` it is credential-blocked, so the task was "prepare
+everything else." **Finding**: the M2 bridge is channel-agnostic by
+design — there is no Telegram-specific code to add on the Jarvis side,
+and adding target-format validation would break ~20 existing tests and
+the module's stated design for no security gain (the exact-target
+allowlist already constrains recipients). Built the one genuinely
+missing piece: `agent.openclaw_messaging.messaging_config_summary()`
+(pure, no-network — enabled / allowlisted channels / recipient counts /
+credential presence / `config_complete` / plain-language `blocking`
+list), merged into `openclaw_status` under a `messaging` key so setup
+can be verified without a live send. New `docs/OPENCLAW_TELEGRAM.md` is
+the full runbook.
+- **Still needs the user**: create a Telegram bot token + owner chat ID;
+  stand up an OpenClaw-side Telegram channel (and decide whether its
+  Telegram support is a third-party plugin — the no-plugin rule is not
+  auto-waived); set `OPENCLAW_ENABLED` / `OPENCLAW_MESSAGING_ENABLED` /
+  `OPENCLAW_ALLOWED_CHANNELS=telegram` /
+  `OPENCLAW_ALLOWED_TARGETS=telegram:<chat id>`; approve the messaging
+  device pairing; then do the first confirmed send.
+- 9 new tests, full suite 1664/1664, CI-verified. Code and docs
+  committed separately.
 
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
