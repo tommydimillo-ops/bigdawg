@@ -230,11 +230,18 @@ class TestIdempotency(IsolatedHistoryCaptureTestCase):
 
 class TestSourceValidation(IsolatedHistoryCaptureTestCase):
 
-    def test_chat_voice_scheduled_all_accepted(self):
-        for i, source in enumerate(("chat", "voice", "scheduled")):
+    def test_chat_voice_scheduled_telegram_all_accepted(self):
+        for i, source in enumerate(("chat", "voice", "scheduled", "telegram")):
             history_capture.capture_user_turn(source, f"req-{i}", "hi")
         sessions, _ = self._rows()
-        self.assertEqual(len(sessions), 3)
+        self.assertEqual(len(sessions), 4)
+
+    def test_telegram_turns_reuse_one_process_local_session(self):
+        history_capture.capture_user_turn("telegram", "req-a", "first")
+        history_capture.capture_user_turn("telegram", "req-b", "second")
+        sessions, _ = self._rows()
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0][1], "telegram")
 
     def test_unsupported_source_does_not_raise(self):
         try:

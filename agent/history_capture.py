@@ -65,8 +65,12 @@ from typing import Dict, Optional
 import agent.history_store as history_store
 from agent.observability import log_event
 
-_VALID_SOURCES = frozenset({"chat", "voice", "scheduled"})
-_PROCESS_SESSION_SOURCES = frozenset({"chat", "voice"})
+# "telegram" is the inbound direct-Telegram daemon (agent/telegram_
+# daemon.py) -- a single long-lived process holding one continuous
+# owner conversation, so it caches one process-lifetime session exactly
+# like chat/voice.
+_VALID_SOURCES = frozenset({"chat", "voice", "scheduled", "telegram"})
+_PROCESS_SESSION_SOURCES = frozenset({"chat", "voice", "telegram"})
 
 _session_lock = threading.Lock()
 # source -> session_id, only ever populated for chat/voice (see module

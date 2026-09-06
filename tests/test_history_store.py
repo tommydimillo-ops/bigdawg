@@ -269,10 +269,10 @@ class TestCreateSession(IsolatedHistoryDbTestCase):
             create_session("not-a-real-source", db_path=self.db_path)
 
     def test_real_source_values_all_accepted(self):
-        # These three are the exact real values agent.executor's callers
-        # pass -- verified directly against app.py / voice_session.py /
-        # scheduler_daemon.py, not assumed.
-        for source in ("chat", "voice", "scheduled"):
+        # The exact real values agent.executor's callers pass -- verified
+        # directly against app.py / voice_session.py / scheduler_daemon.py
+        # / telegram_daemon.py, not assumed.
+        for source in ("chat", "voice", "scheduled", "telegram"):
             record = create_session(source, db_path=self.db_path)
             self.assertEqual(record.source, source)
 

@@ -143,7 +143,7 @@ register(ToolSpec(
         "conversations and actions -- what was actually said/done, not "
         "distilled facts (see memory tools for that). Returns bounded, "
         "provenance-complete hits: which turn/session/request, what "
-        "source (chat/voice/scheduled) and role (user/assistant), when, "
+        "source (chat/voice/scheduled/telegram) and role (user/assistant), when, "
         "and a short snippet -- never the full raw turn. Plain natural-"
         "language query only; FTS operators/wildcards are not "
         "interpreted specially. Optionally filter by source, role, or a "
@@ -160,7 +160,7 @@ register(ToolSpec(
             },
             "source": {
                 "type": "string",
-                "enum": ["chat", "voice", "scheduled"],
+                "enum": ["chat", "voice", "scheduled", "telegram"],
                 "description": "Optional: restrict to one source.",
             },
             "role": {

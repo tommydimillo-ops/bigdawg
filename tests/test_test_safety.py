@@ -187,6 +187,22 @@ class TestStoreRedirection(unittest.TestCase):
             os.path.expanduser("~/Library/Application Support/CampusPilot/usage_history.json"),
         )
 
+    def test_telegram_offset_file(self):
+        import agent.telegram_bridge as telegram_bridge
+        self._assert_redirected(
+            telegram_bridge.OFFSET_FILE,
+            "agent.telegram_bridge.OFFSET_FILE",
+            os.path.expanduser("~/Library/Application Support/CampusPilot/telegram_offset.json"),
+        )
+
+    def test_telegram_lock_file(self):
+        import agent.telegram_lock as telegram_lock
+        self._assert_redirected(
+            telegram_lock.TELEGRAM_LOCK_FILE,
+            "agent.telegram_lock.TELEGRAM_LOCK_FILE",
+            os.path.expanduser("~/Library/Application Support/CampusPilot/telegram_daemon.lock"),
+        )
+
     def test_memory_file(self):
         self._assert_redirected(
             database_memory.MEMORY_FILE,

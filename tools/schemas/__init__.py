@@ -18,6 +18,7 @@ from tools.schemas import (
     scheduling,
     skills,
     system,
+    telegram,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "scheduling",
     "skills",
     "system",
+    "telegram",
 ]

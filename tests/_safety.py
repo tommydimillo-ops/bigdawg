@@ -154,6 +154,8 @@ def _install_store_redirects(root: str) -> None:
     import agent.quiet_mode as quiet_mode
     import agent.scheduled_tasks as scheduled_tasks
     import agent.scheduler_lock as scheduler_lock
+    import agent.telegram_bridge as telegram_bridge
+    import agent.telegram_lock as telegram_lock
     import agent.skills.loader as skills_loader
     import agent.tts_control as tts_control
     import agent.usage as usage
@@ -177,6 +179,8 @@ def _install_store_redirects(root: str) -> None:
     _set(personal_context, "CATALOG_FILE", os.path.join(root, "personal_context.json"), "agent.personal_context.CATALOG_FILE")
     _set(execution_history, "HISTORY_FILE", os.path.join(root, "execution_history.json"), "agent.execution_history.HISTORY_FILE")
     _set(scheduler_lock, "SCHEDULER_LOCK_FILE", os.path.join(root, "scheduler.lock"), "agent.scheduler_lock.SCHEDULER_LOCK_FILE")
+    _set(telegram_bridge, "OFFSET_FILE", os.path.join(root, "telegram_offset.json"), "agent.telegram_bridge.OFFSET_FILE")
+    _set(telegram_lock, "TELEGRAM_LOCK_FILE", os.path.join(root, "telegram_daemon.lock"), "agent.telegram_lock.TELEGRAM_LOCK_FILE")
     _set(usage, "USAGE_FILE", os.path.join(root, "usage_history.json"), "agent.usage.USAGE_FILE")
     _set(
         observability, "MENUBAR_LOG_FILE", os.path.join(root, "menubar.err.log"),

@@ -409,6 +409,29 @@ class Settings:
     # channel-side directory lookups.
     openclaw_allowed_targets: str = ""
 
+    # --- Telegram bridge (optional, direct api.telegram.org, two-way) ---
+    # A standalone bridge, NOT routed through OpenClaw: agent/telegram_
+    # bridge.py talks straight to api.telegram.org with a bot token
+    # (agent/secrets.py's TELEGRAM_BOT_TOKEN -- a real secret, never
+    # here). Disabled by default; a fresh install with no token and no
+    # owner chat id set must run identically to one that never heard of
+    # Telegram. Both the outbound tool (send_telegram_message) and the
+    # inbound daemon (agent/telegram_daemon.py) fail closed unless
+    # telegram_enabled is True AND telegram_owner_chat_id is set.
+    telegram_enabled: bool = False
+    # The ONE Telegram chat this bridge will ever send to or accept a
+    # message from -- your own numeric chat id (see docs/TELEGRAM.md).
+    # A bot token is effectively public (anyone who finds the bot can
+    # message it), so this owner-only allowlist is load-bearing, not
+    # optional -- inbound messages from any other chat id are logged and
+    # dropped before they ever reach the agent. Empty = the bridge is
+    # off regardless of telegram_enabled.
+    telegram_owner_chat_id: str = ""
+    # getUpdates long-poll timeout. Telegram holds the request open this
+    # long waiting for an update before returning empty, so the inbound
+    # loop is near-idle between messages rather than hammering the API.
+    telegram_poll_timeout_seconds: int = 50
+
     # --- Proactive history retrieval (Phase 9 M4.4 foundation) ---
     # Turned on (was off by default pending real-use evidence -- see
     # ROADMAP.md's Phase 9/M4.4 "Next" entry for the reasoning: the
@@ -539,6 +562,11 @@ class Settings:
             openclaw_messaging_enabled=_env_bool("OPENCLAW_MESSAGING_ENABLED", cls.openclaw_messaging_enabled),
             openclaw_allowed_channels=_env_str("OPENCLAW_ALLOWED_CHANNELS", cls.openclaw_allowed_channels),
             openclaw_allowed_targets=_env_str("OPENCLAW_ALLOWED_TARGETS", cls.openclaw_allowed_targets),
+            telegram_enabled=_env_bool("TELEGRAM_ENABLED", cls.telegram_enabled),
+            telegram_owner_chat_id=_env_str("TELEGRAM_OWNER_CHAT_ID", cls.telegram_owner_chat_id),
+            telegram_poll_timeout_seconds=_env_int(
+                "TELEGRAM_POLL_TIMEOUT_SECONDS", cls.telegram_poll_timeout_seconds,
+            ),
             proactive_history_enabled=_env_bool("PROACTIVE_HISTORY_ENABLED", cls.proactive_history_enabled),
             history_context_budget_tokens=_env_int(
                 "HISTORY_CONTEXT_BUDGET_TOKENS", cls.history_context_budget_tokens,

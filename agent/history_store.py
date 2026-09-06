@@ -98,10 +98,11 @@ MAX_ID_LENGTH = 128
 MAX_SOURCE_LENGTH = 32
 
 _VALID_ROLES = frozenset({"user", "assistant"})
-# The exact three source values real callers pass to
+# The source values real callers pass to
 # agent.executor.execute_task_stream today (verified directly against
-# app.py/agent/voice_session.py/agent/scheduler_daemon.py, not assumed).
-_VALID_SOURCES = frozenset({"chat", "voice", "scheduled"})
+# app.py/agent/voice_session.py/agent/scheduler_daemon.py/
+# agent/telegram_daemon.py, not assumed).
+_VALID_SOURCES = frozenset({"chat", "voice", "scheduled", "telegram"})
 
 _BUSY_TIMEOUT_MS = 5000
 _CONNECT_TIMEOUT_SECONDS = 5
