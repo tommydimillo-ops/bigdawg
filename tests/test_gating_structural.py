@@ -28,19 +28,37 @@ already uses for every registered tool). This test proves that routing
 actually took: if _write_file's gate call were ever removed, this test
 would immediately re-classify it as a new, undocumented bypass and fail.
 
+MemoryAgent's execute() is ALSO deliberately NOT in the accepted set, as
+of the "MemoryAgent bypass audit" ROADMAP.md item this file's own
+docstring used to point to as unresolved -- see agent/agents/memory.py's
+execute(), which now gates its remember() call the same way, through the
+same should_request_confirmation chokepoint, with an explicit
+permission_level=1 override matching remember_fact's own registered
+level (not write_file's 2 -- a memory write is a "safe local action,"
+not a file/code modification). recall() (read-only) is deliberately
+UNCHANGED and stays ungated in the source, same reasoning as
+CodingAgent's _read_file -- but unlike _read_file/_write_file (two
+separate functions in coding.py, so the scanner can track each one
+independently), remember() and recall() both live inside this same
+execute() function. The scan below is function-granular, not
+branch-granular: once execute() contains any call to
+should_request_confirmation, the whole function -- recall() branch
+included -- stops being flagged as an ungated call site. That is an
+honest limit of this test's coverage, not a claim that recall() is
+separately re-verified as accepted going forward; if that precision is
+ever needed, split recall() into its own function the way coding.py
+did.
+
 Everything else found by the same audit that produced this file's own
 accepted set stays exactly as it already was -- reads (CodingAgent's
 _read_file), test-suite spawns (CodingAgent's _run_test_suite/
 _collected_test_count, QAAgent's _run_test_suite), and ResearchAgent's
 own pre-existing, CLAUDE.md-documented exception are all still ungated,
-by explicit choice this round, not by oversight -- this file is that
-explicit choice, in writing. MemoryAgent's bypass is the one genuinely
-new finding here: identical in shape to ResearchAgent's already-
-documented exception, but never itself named as accepted anywhere before
-this. See CLAUDE.md's "Important coding conventions" section (the
-ResearchAgent-exception rule, now joined by this one) and ROADMAP.md's
-"MemoryAgent bypass audit" entry for the follow-up this file does not
-attempt to resolve.
+by explicit choice, not by oversight -- this file is that explicit
+choice, in writing. See CLAUDE.md's "Important coding conventions"
+section (the ResearchAgent-exception rule) and ROADMAP.md's "MemoryAgent
+bypass audit" entry (now resolved -- gated as of this pass) for the full
+history.
 
 Run with: python -m unittest tests.test_gating_structural -v
 """
@@ -101,10 +119,13 @@ class AcceptedException:
 #     round actually gates (see module docstring).
 #   - Reads and test-suite spawns stay ungated this round: the blast
 #     radius this milestone targets is writes specifically.
-#   - MemoryAgent's is the genuinely new finding: shaped identically to
-#     ResearchAgent's already-documented exception, never itself named
-#     as accepted before this file. Also added to CLAUDE.md rule 3 and
-#     opened as its own ROADMAP.md item -- not fixed here.
+#   - agent/agents/memory.py's execute() WAS here (shaped identically to
+#     ResearchAgent's exception below, but never itself named as
+#     accepted before M10.0 found it) -- resolved by the "MemoryAgent
+#     bypass audit" ROADMAP.md item: execute() now gates its remember()
+#     call, so it no longer appears in this set. See this file's own
+#     module docstring for why recall() isn't tracked as a separate
+#     entry either, rather than silently dropping out unexplained.
 ACCEPTED_UNGATED_CALL_SITES = frozenset({
     AcceptedException(
         file="agent/agents/coding.py", function="_read_file",
@@ -130,16 +151,6 @@ ACCEPTED_UNGATED_CALL_SITES = frozenset({
         reason="Real browser/network navigation and real local file reads, both "
                "read-only. CLAUDE.md rule 3's own explicit, deliberate, pre-existing "
                "exception -- predates this session, not something M10.0 changed.",
-    ),
-    AcceptedException(
-        file="agent/agents/memory.py", function="execute",
-        reason="Real memory-store writes AND reads, shaped identically to ResearchAgent's "
-               "documented exception above but never itself named as accepted anywhere "
-               "before this file. agent.memory.safety's content filter still applies "
-               "(it's inside agent.memory.remember itself, a layer below the registry) "
-               "-- but that is a content filter, not a permission gate, and the registry/ "
-               "autonomy gate IS bypassed. Deliberately NOT fixed this round -- see "
-               "CLAUDE.md rule 3 and ROADMAP.md's 'MemoryAgent bypass audit' item.",
     ),
 })
 

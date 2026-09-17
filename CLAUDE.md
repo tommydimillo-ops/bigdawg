@@ -264,25 +264,26 @@ CI, uses its own service namespace and synthetic credentials only).
    - `agent/research_agent.py`'s own tiny internal loop (`open_browser`/
      `read_document`, both read-only) — documented, deliberate, narrow,
      audited.
-   - `agent/agents/memory.py`'s `execute()` (`remember`/`recall`, real
-     memory-store writes and reads) — shaped identically to
-     ResearchAgent's exception above, but **found only during Phase 10's
-     M10.0 pass and never itself audited before that** — it predates
-     M10.0 by phases. `agent/memory/safety.py`'s content filter still
-     applies (it's inside `agent.memory.remember` itself, a layer below
-     the registry) — that is a content filter, not a permission gate,
-     and the registry/autonomy gate is genuinely bypassed. Not fixed as
-     of this writing; see `ROADMAP.md`'s "MemoryAgent bypass audit" item.
+   - `agent/agents/memory.py`'s `execute()`, `recall()` call only (read-
+     only) — shaped identically to ResearchAgent's exception above.
+     `remember()` used to be bypassed here too (found during Phase 10's
+     M10.0 pass, predating M10.0 by phases, never itself audited before
+     that) but no longer is — see the `write_file` paragraph below; this
+     entry now covers only the read path, the same reasoning
+     CodingAgent's `_read_file` was left ungated for.
    
-   `agent/agents/coding.py`'s `write_file` — the higher-stakes case
-   Phase 10 actually added — is explicitly **not** a third exception:
-   M10.0 routed it through `agent.autonomy.should_request_confirmation`
-   directly, the same decision engine `_run_tool` uses for every
-   registered tool, via an explicit `permission_level` override rather
-   than requiring it to become a model-callable registered tool. Reads
-   and test-suite spawns inside the same coworker agents (CodingAgent's
-   `_read_file`/`_run_test_suite`, QAAgent's `_run_test_suite`) remain
-   ungated by deliberate, documented choice — writes were M10.0's
+   `agent/agents/coding.py`'s `write_file`, and — as of the "MemoryAgent
+   bypass audit" ROADMAP.md item — `agent/agents/memory.py`'s `remember()`
+   call, are explicitly **not** exceptions on this list: both route
+   through `agent.autonomy.should_request_confirmation` directly, the
+   same decision engine `_run_tool` uses for every registered tool, via
+   an explicit `permission_level` override (2 for `write_file`, matching
+   `run_python`'s registered level; 1 for `remember`, matching
+   `remember_fact`'s) rather than requiring either to become a model-
+   callable registered tool. Reads and test-suite spawns inside the same
+   coworker agents (CodingAgent's `_read_file`/`_run_test_suite`,
+   QAAgent's `_run_test_suite`, MemoryAgent's `recall()`) remain ungated
+   by deliberate, documented choice — writes were, and remain, the
    stated blast radius, not reads.
 4. **New coworker-agent capability**: real execution must go through
    `agent/agents/manager.py`'s `execute_agent()` (subprocess-isolated),
