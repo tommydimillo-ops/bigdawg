@@ -58,6 +58,18 @@ class TestMemoryAgent(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("RuntimeError", result.error)
 
+    @patch("agent.agents.memory.remember")
+    def test_a_safety_filter_refusal_is_reported_as_a_failure(self, mock_remember):
+        # Regression: remember()'s refusal string used to be wrapped in
+        # AgentResult(success=True) unconditionally -- a memory the
+        # content-safety filter (agent/memory/safety.py) refused to store
+        # was reported as a successful agent run.
+        mock_remember.return_value = "Didn't save that: looks like it contains a credential or secret, which is never stored as a memory"
+        result = self.agent.execute("Remember that api_key: sk-abcdefghijklmnopqrstuvwxyz123456", self.context)
+        self.assertFalse(result.success)
+        self.assertIn("Didn't save that", result.error)
+        self.assertEqual(result.result, "")
+
 
 if __name__ == "__main__":
     unittest.main()

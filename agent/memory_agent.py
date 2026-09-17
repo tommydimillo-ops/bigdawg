@@ -12,9 +12,20 @@ dark mode" and later "I prefer light mode now" now correctly replaces the
 old fact. remember() can also now refuse content that fails the memory
 safety filter (a credential, or something that reads as an injected
 instruction) -- previously it always accepted whatever text it was given.
+
+remember()'s return value is a single display string on purpose (see
+tests/test_memory_legacy_wrappers.py's test_remember_return_format_
+unchanged -- a pinned, intentional contract, not incidental), so a
+refusal is distinguished from a real success by REFUSAL_PREFIX rather
+than a second return value/exception -- any caller that needs to tell
+the two apart (agent/agents/memory.py's execute(), which must not report
+a refused memory as a successful agent run) checks
+answer.startswith(REFUSAL_PREFIX) instead of matching the message text.
 """
 from agent.memory import Confidence, MemoryType, list_all
 from agent.memory import remember as _remember_memory
+
+REFUSAL_PREFIX = "Didn't save that: "
 
 
 def remember(key, value):
@@ -22,7 +33,7 @@ def remember(key, value):
         value, type=MemoryType.FACT, confidence=Confidence.USER_EXPLICIT, tags=[key],
     )
     if error:
-        return f"Didn't save that: {error}"
+        return f"{REFUSAL_PREFIX}{error}"
     return f"I'll remember that {value}"
 
 

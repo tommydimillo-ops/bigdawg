@@ -16,7 +16,7 @@ import time
 
 from agent.agents.base import Agent, AgentMetadata
 from agent.agents.models import AgentResult
-from agent.memory_agent import recall, remember
+from agent.memory_agent import REFUSAL_PREFIX, recall, remember
 from agent.request_context import RequestContext
 
 _NOTES_KEY = "notes"
@@ -64,6 +64,18 @@ class MemoryAgent(Agent):
                 answer = recall(_NOTES_KEY)
             else:
                 answer = remember(_NOTES_KEY, _strip_remember_prefix(task))
+                if answer.startswith(REFUSAL_PREFIX):
+                    # remember()'s content-safety filter (agent/memory/
+                    # safety.py) refused this write -- a refusal is a
+                    # real failure of this agent's own task, not a
+                    # successful run that happens to say so in its result
+                    # text. Same class of bug as the Phase 10 truncated-
+                    # response gap: a string that LOOKS like a normal
+                    # result was being treated as a clean success.
+                    return AgentResult(
+                        success=False, agent_name=self.metadata.name, request_id=context.request_id,
+                        result="", error=answer, duration_seconds=time.time() - start,
+                    )
         except Exception as error:
             return AgentResult(
                 success=False, agent_name=self.metadata.name, request_id=context.request_id,
