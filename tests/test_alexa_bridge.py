@@ -7,11 +7,29 @@ Run with: python -m unittest tests.test_alexa_bridge -v
 """
 import json
 import os
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 import agent.alexa_bridge as ab
+
+
+def _wait_for_alexa_task(timeout=10.0):
+    """Deterministically wait for start_task()'s background worker to
+    finish -- joins the real thread by name (a real CI runner can be
+    materially slower than a quiet local machine, a class of flake this
+    project has hit before; see .github/workflows/tests.yml's own
+    timeout-raise comment), falling back to a bounded is_busy() poll only
+    for the race where the thread already finished and was reaped before
+    this could enumerate it."""
+    deadline = time.time() + timeout
+    for thread in threading.enumerate():
+        if thread.name == "alexa-task":
+            thread.join(timeout=max(0.0, deadline - time.time()))
+            break
+    while ab.is_busy() and time.time() < deadline:
+        time.sleep(0.02)
 
 
 class TestTokenConfig(unittest.TestCase):
@@ -179,6 +197,11 @@ class TestRunTask(unittest.TestCase):
 class TestStartTask(unittest.TestCase):
 
     def tearDown(self):
+        # Join first (bounded): forcibly releasing a lock a still-running
+        # worker thread believes it owns would let the NEXT test's
+        # start_task() succeed while that stray thread is still using
+        # THIS test's now-closed mock patches.
+        _wait_for_alexa_task(timeout=10.0)
         if ab._run_lock.locked():
             ab._run_lock.release()
         for path in (ab.LAST_RESULT_FILE, f"{ab.LAST_RESULT_FILE}.tmp"):
@@ -190,11 +213,8 @@ class TestStartTask(unittest.TestCase):
              patch("agent.telegram_bridge.is_configured", return_value=False):
             accepted = ab.start_task("do the thing")
             self.assertTrue(accepted)
-            for _ in range(50):
-                if not ab.is_busy():
-                    break
-                time.sleep(0.02)
-            self.assertFalse(ab.is_busy())
+            _wait_for_alexa_task(timeout=10.0)
+            self.assertFalse(ab.is_busy(), "background task did not finish within the wait budget")
         self.assertEqual(ab.load_last_result()["result"], "done")
 
     def test_refuses_a_second_task_while_one_is_running(self):

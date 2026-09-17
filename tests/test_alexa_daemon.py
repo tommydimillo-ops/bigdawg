@@ -21,6 +21,23 @@ import agent.alexa_daemon as ad
 FAKE_TOKEN = "test-bridge-token-xyz"
 
 
+def _wait_for_alexa_task(timeout=10.0):
+    """Deterministically wait for start_task()'s background worker to
+    finish -- joins the real thread by name (a real CI runner can be
+    materially slower than a quiet local machine, a class of flake this
+    project has hit before; see .github/workflows/tests.yml's own
+    timeout-raise comment), falling back to a bounded is_busy() poll only
+    for the race where the thread already finished and was reaped before
+    this could enumerate it."""
+    deadline = time.time() + timeout
+    for thread in threading.enumerate():
+        if thread.name == "alexa-task":
+            thread.join(timeout=max(0.0, deadline - time.time()))
+            break
+    while ab.is_busy() and time.time() < deadline:
+        time.sleep(0.02)
+
+
 class _RealDaemonTestCase(unittest.TestCase):
     """Starts a real ThreadingHTTPServer bound to an OS-assigned loopback
     port, running the real _Handler, for the duration of each test."""
@@ -36,7 +53,12 @@ class _RealDaemonTestCase(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
-        self.thread.join(timeout=2)
+        self.thread.join(timeout=5)
+        # Join before force-releasing: a still-running worker thread that
+        # believes it owns the lock must not have it yanked out from
+        # under it, or a later test's start_task() could succeed while
+        # this stray thread is still using this test's now-closed mocks.
+        _wait_for_alexa_task(timeout=10.0)
         self._secret_patch.stop()
         if ab._run_lock.locked():
             ab._run_lock.release()
@@ -109,10 +131,7 @@ class TestTaskSubmission(_RealDaemonTestCase):
             self.assertEqual(status, 202)
             self.assertTrue(payload["accepted"])
 
-            for _ in range(50):
-                if not ab.is_busy():
-                    break
-                time.sleep(0.02)
+            _wait_for_alexa_task(timeout=10.0)
 
         last = ab.load_last_result()
         self.assertEqual(last["task"], "check my calendar")
@@ -183,10 +202,7 @@ class TestLastEndpoint(_RealDaemonTestCase):
         with patch("agent.executor.execute_task", return_value="the answer"), \
              patch("agent.telegram_bridge.is_configured", return_value=False):
             self._request("POST", "/task", body={"task": "what's 2+2"})
-            for _ in range(50):
-                if not ab.is_busy():
-                    break
-                time.sleep(0.02)
+            _wait_for_alexa_task(timeout=10.0)
 
         status, payload, _ = self._request("GET", "/last")
         self.assertEqual(status, 200)
