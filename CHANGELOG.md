@@ -7,6 +7,42 @@ needed.
 
 ---
 
+## 2026-09-17 — Real CI failure on the Alexa bridge push, root-caused and fixed
+
+The Alexa bridge push (`175832b`) failed its first CI attempt for real
+(GitHub Actions run `35217687149`, the `python -m unittest discover -s
+tests -t . -v` step) after the identical code had just run clean locally
+(1748/1748). Could not pull the raw job log (`403 Must have admin rights
+to Repository`, no `gh` CLI available in this environment), so
+root-caused from the failure's shape and this project's own precedent
+instead of guessing blindly: three new Alexa tests spawn a REAL
+background thread (`agent.alexa_bridge.start_task()`) and only waited up
+to ~1 second (a 50×0.02s sleep-poll) for it to finish before asserting.
+`.github/workflows/tests.yml`'s own comment already documents this exact
+class of flake — `timeout-minutes` was raised 15→30 after a real,
+evidenced CI-runner-slower-than-local timeout on byte-identical code.
+
+**Fix**: replaced the short sleep-poll in all three sites
+(`tests/test_alexa_bridge.py::TestStartTask`,
+`tests/test_alexa_daemon.py::TestTaskSubmission`/`TestLastEndpoint`)
+with a shared `_wait_for_alexa_task()` helper that joins the actual
+`"alexa-task"` thread by name with a 10s budget — a deterministic
+wake-up as soon as the thread finishes, not a fixed sleep, so normal
+runs aren't slowed down (confirmed: the two Alexa test files still ran
+in ~8s locally, unchanged). Also hardened both `tearDown` methods that
+used to force-release `_run_lock` unconditionally — they now join first,
+since forcibly releasing a lock a still-running worker thread believes
+it owns would let the *next* test's `start_task()` succeed while that
+stray thread keeps running against the closed test's now-stale mocks — a
+real cross-test contamination risk, closed regardless of whether it was
+the exact cause of this specific failure.
+
+**Honestly**: the failure was not reproduced locally (local timing never
+came close to the old 1s budget), so this is the most defensible fix
+available without the raw log, not a confirmed root cause. **Verified
+fixed**: pushed as `627c560`, **CI green on this second attempt**
+(GitHub Actions, `head_sha` `627c560`, `conclusion: success`).
+
 ## 2026-09-17 — Alexa bridge: Echo Dot as a fifth entry point
 
 Found real, unfinished, uncommitted work already sitting in the working

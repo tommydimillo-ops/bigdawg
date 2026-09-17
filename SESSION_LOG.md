@@ -5,6 +5,18 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-17 — Real CI failure on the Alexa push, root-caused and fixed
+
+First CI failure of the session, taken seriously rather than blindly
+retried: the Alexa bridge push failed its one test step after passing
+locally. No raw-log access available (403, no `gh` CLI), so root-caused
+from the failure shape — three new tests waited only ~1s for a real
+background thread to finish, and this project has hit CI-slower-than-
+local flakes exactly like this before. Replaced the sleep-polls with a
+thread-join helper and hardened two `tearDown`s against a real cross-test
+lock-contamination risk the sleep-poll pattern could cause. Pushed as a
+fix commit; CI green on the very next attempt.
+
 ### 2026-09-17 — Alexa bridge: finished real uncommitted work, closed two safety gaps
 
 Session opened with real, unfinished, high-quality Alexa-bridge work

@@ -759,6 +759,18 @@ bridge.py` 24, `test_alexa_daemon.py` 18 — the daemon exercised against a
 **1748/1748**. `coding_agent_enabled` untouched. Code+tests and docs
 committed separately.
 
+**A real CI failure, root-caused and fixed the same session**: the first
+push (`175832b`) failed CI's one test step (GitHub Actions run
+`35217687149`) despite passing locally — three of the new tests only
+waited ~1s for a real background thread to finish, a class of
+CI-slower-than-local flake this project has hit before (see
+`.github/workflows/tests.yml`'s own 15→30min timeout-raise comment). No
+raw-log access was available to confirm the exact cause; fixed by
+replacing the sleep-polls with a thread-join helper and hardening two
+`tearDown`s against a related cross-test lock-contamination risk, pushed
+as `627c560`, **CI green on that next attempt**. Full account:
+`CHANGELOG.md`'s dedicated 2026-09-17 entry.
+
 **Found, not actioned**: `.relay/plan-b5.md` (2026-09-06) is a real,
 unexecuted relay plan — no `report-b5.md` exists. Four items: audit
 whether `agent/coding_checkpoint.py`'s git-ref approach actually holds up
