@@ -62,6 +62,13 @@ CONFIRMATION_WINDOW_SECONDS = 120
 # didn't come from deliberate keystrokes the way typed chat did.
 _VOICE_ALWAYS_CONFIRMS = frozenset({"add_reminder", "open_browser", "consult_coworker_agent"})
 
+# Sources that are ambient transcribed speech rather than deliberate
+# keystrokes, and so carry the misfire risk _VOICE_ALWAYS_CONFIRMS
+# exists for. "alexa" is an Echo device: strictly more exposed than the
+# menu-bar mic, because it is always listening to a whole room and will
+# happily transcribe the television.
+_AMBIENT_VOICE_SOURCES = frozenset({"voice", "alexa"})
+
 _AUTONOMY_THRESHOLDS = {
     0: -1,
     1: 0,
@@ -80,7 +87,7 @@ _MAX_DEFINED_LEVEL = max(_AUTONOMY_THRESHOLDS)
 # "pause and ask" must mean DENY here too, for the same reason it
 # already does for "scheduled" -- silently hanging forever, or (worse)
 # silently proceeding, are the two wrong answers to "can't be asked."
-_NON_INTERACTIVE_SOURCES = frozenset({"scheduled", "agent_worker"})
+_NON_INTERACTIVE_SOURCES = frozenset({"scheduled", "agent_worker", "alexa"})
 
 
 class Decision(str, Enum):
@@ -140,10 +147,13 @@ def should_request_confirmation(
         if permission_level is None:
             # Unregistered tool -- be conservative, never auto-allow
             # something the permission system doesn't even know about.
-            return Decision.CONFIRM
+            # Still routed through _confirm_or_deny: a non-interactive
+            # source cannot answer a CONFIRM here any more than it can
+            # below, and returning one directly was a silent-hang path.
+            return _confirm_or_deny(execution_context.source)
 
-    if execution_context.source == "voice" and tool_name in _VOICE_ALWAYS_CONFIRMS:
-        return Decision.CONFIRM
+    if execution_context.source in _AMBIENT_VOICE_SOURCES and tool_name in _VOICE_ALWAYS_CONFIRMS:
+        return _confirm_or_deny(execution_context.source)
 
     threshold = _AUTONOMY_THRESHOLDS.get(
         autonomy_level, _AUTONOMY_THRESHOLDS[_MAX_DEFINED_LEVEL]
@@ -152,12 +162,18 @@ def should_request_confirmation(
     if permission_level <= threshold:
         return Decision.ALLOW
 
-    if execution_context.source in _NON_INTERACTIVE_SOURCES:
-        # No live person to confirm with -- a CONFIRM verdict here could
-        # never actually be answered, so it must be a hard no instead of
-        # silently hanging or (worse) silently proceeding.
-        return Decision.DENY
+    return _confirm_or_deny(execution_context.source)
 
+
+def _confirm_or_deny(source: str) -> Decision:
+    """CONFIRM, unless nobody can answer it -- then DENY.
+
+    Every path that would ask the user goes through here. For a
+    non-interactive source there is no live person to confirm with, so a
+    CONFIRM verdict could never actually be answered: it must be a hard
+    no instead of silently hanging or (worse) silently proceeding."""
+    if source in _NON_INTERACTIVE_SOURCES:
+        return Decision.DENY
     return Decision.CONFIRM
 
 

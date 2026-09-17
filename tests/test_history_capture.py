@@ -230,11 +230,11 @@ class TestIdempotency(IsolatedHistoryCaptureTestCase):
 
 class TestSourceValidation(IsolatedHistoryCaptureTestCase):
 
-    def test_chat_voice_scheduled_telegram_all_accepted(self):
-        for i, source in enumerate(("chat", "voice", "scheduled", "telegram")):
+    def test_chat_voice_scheduled_telegram_alexa_all_accepted(self):
+        for i, source in enumerate(("chat", "voice", "scheduled", "telegram", "alexa")):
             history_capture.capture_user_turn(source, f"req-{i}", "hi")
         sessions, _ = self._rows()
-        self.assertEqual(len(sessions), 4)
+        self.assertEqual(len(sessions), 5)
 
     def test_telegram_turns_reuse_one_process_local_session(self):
         history_capture.capture_user_turn("telegram", "req-a", "first")
@@ -242,6 +242,15 @@ class TestSourceValidation(IsolatedHistoryCaptureTestCase):
         sessions, _ = self._rows()
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0][1], "telegram")
+
+    def test_alexa_requests_each_get_a_distinct_session(self):
+        # Same reasoning as "scheduled": each Echo task is independent,
+        # never a continuation of a prior one.
+        history_capture.capture_user_turn("alexa", "req-a", "first task")
+        history_capture.capture_user_turn("alexa", "req-b", "second task")
+        sessions, _ = self._rows()
+        self.assertEqual(len(sessions), 2)
+        self.assertTrue(all(s[1] == "alexa" for s in sessions))
 
     def test_unsupported_source_does_not_raise(self):
         try:

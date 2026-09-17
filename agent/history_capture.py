@@ -24,9 +24,18 @@ SESSION LIFECYCLE (the M4A-approved initial model):
   reason -- both can run in the same process (see app.py's mic-input
   path, source="voice" from a process that also handles typed "chat"
   turns) without their history merging just because they share a PID.
+- telegram: a separate process-lifetime session, same reasoning as
+  voice -- agent/telegram_daemon.py is one long-lived process holding
+  one continuous owner conversation.
 - scheduled: no caching at all -- every scheduled top-level request gets
   its own brand-new session, one request/one session, deliberately not
   reusing a single "the scheduler" session across unrelated tasks.
+- alexa: no caching either, same reasoning as scheduled rather than
+  telegram/voice -- agent/alexa_bridge.py's run_task() calls
+  execute_task() with an empty history list every time (each Alexa task
+  is independent; there is no confirm/"yes" follow-up, since
+  agent/autonomy.py never returns CONFIRM for this source), so there is
+  no shared conversation to group under one session.
 No cross-process or cross-restart session continuation exists yet; that
 would be persistent UI identity/session-resume logic, explicitly out of
 scope for M4.2.
@@ -68,8 +77,12 @@ from agent.observability import log_event
 # "telegram" is the inbound direct-Telegram daemon (agent/telegram_
 # daemon.py) -- a single long-lived process holding one continuous
 # owner conversation, so it caches one process-lifetime session exactly
-# like chat/voice.
-_VALID_SOURCES = frozenset({"chat", "voice", "scheduled", "telegram"})
+# like chat/voice. "alexa" (agent/alexa_bridge.py) is deliberately NOT
+# in _PROCESS_SESSION_SOURCES -- each Echo task is independent, run with
+# an empty history list, same "unrelated one-off tasks" reasoning as
+# "scheduled" rather than the continuous-conversation reasoning for
+# chat/voice/telegram.
+_VALID_SOURCES = frozenset({"chat", "voice", "scheduled", "telegram", "alexa"})
 _PROCESS_SESSION_SOURCES = frozenset({"chat", "voice", "telegram"})
 
 _session_lock = threading.Lock()

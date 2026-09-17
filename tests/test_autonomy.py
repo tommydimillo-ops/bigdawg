@@ -203,5 +203,70 @@ class TestPendingConfirmationLedger(unittest.TestCase):
         self.assertFalse(is_confirmed("add_reminder", {"x": 1}))
 
 
+class TestAlexaSource(unittest.TestCase):
+    """An Echo device is ambient voice AND non-interactive at once: it
+    transcribes a whole room (including the television) and there is no
+    round trip back to the speaker mid-task. So it inherits both the
+    voice-misfire set and the can't-be-asked DENY rule."""
+
+    def test_alexa_denies_the_voice_misfire_tools(self):
+        ctx = ExecutionContext(source="alexa")
+        for tool in ("add_reminder", "open_browser", "consult_coworker_agent"):
+            with self.subTest(tool=tool):
+                self.assertEqual(should_request_confirmation(tool, 4, ctx), Decision.DENY)
+
+    def test_voice_still_only_confirms_those_tools(self):
+        # The menu-bar mic has a live person in front of it, so the same
+        # tools stay CONFIRM there -- generalizing the set to cover alexa
+        # must not escalate voice to DENY.
+        ctx = ExecutionContext(source="voice")
+        for tool in ("add_reminder", "open_browser", "consult_coworker_agent"):
+            with self.subTest(tool=tool):
+                self.assertEqual(should_request_confirmation(tool, 4, ctx), Decision.CONFIRM)
+
+    def test_alexa_denies_when_would_otherwise_confirm(self):
+        ctx = ExecutionContext(source="alexa")
+        self.assertEqual(should_request_confirmation("run_python", 1, ctx), Decision.DENY)
+
+    def test_alexa_still_allows_within_threshold(self):
+        ctx = ExecutionContext(source="alexa")
+        self.assertEqual(should_request_confirmation("get_weather", 1, ctx), Decision.ALLOW)
+
+    def test_alexa_never_returns_confirm_at_any_level(self):
+        # The load-bearing property: a CONFIRM verdict from Alexa could
+        # never be answered, so no (tool, autonomy level) pair may produce
+        # one -- otherwise the task silently hangs forever.
+        ctx = ExecutionContext(source="alexa")
+        for tool in ("get_weather", "add_reminder", "run_python",
+                     "open_browser", "consult_coworker_agent", "not_a_real_tool"):
+            for level in range(0, 5):
+                with self.subTest(tool=tool, level=level):
+                    self.assertNotEqual(
+                        should_request_confirmation(tool, level, ctx), Decision.CONFIRM
+                    )
+
+
+class TestUnregisteredToolRespectsNonInteractiveSources(unittest.TestCase):
+    """Regression: the unregistered-tool guard used to return CONFIRM
+    directly, before the non-interactive check ran -- handing scheduled
+    tasks and agent workers a verdict nobody could answer."""
+
+    def test_unregistered_tool_denies_for_non_interactive_sources(self):
+        for source in ("scheduled", "agent_worker", "alexa"):
+            with self.subTest(source=source):
+                ctx = ExecutionContext(source=source)
+                self.assertEqual(
+                    should_request_confirmation("not_a_real_tool", 4, ctx), Decision.DENY
+                )
+
+    def test_unregistered_tool_still_confirms_for_interactive_sources(self):
+        for source in ("chat", "voice", "telegram"):
+            with self.subTest(source=source):
+                ctx = ExecutionContext(source=source)
+                self.assertEqual(
+                    should_request_confirmation("not_a_real_tool", 4, ctx), Decision.CONFIRM
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

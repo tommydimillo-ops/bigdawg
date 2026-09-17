@@ -195,6 +195,14 @@ class TestStoreRedirection(unittest.TestCase):
             os.path.expanduser("~/Library/Application Support/CampusPilot/telegram_offset.json"),
         )
 
+    def test_alexa_last_result_file(self):
+        import agent.alexa_bridge as alexa_bridge
+        self._assert_redirected(
+            alexa_bridge.LAST_RESULT_FILE,
+            "agent.alexa_bridge.LAST_RESULT_FILE",
+            os.path.expanduser("~/Library/Application Support/CampusPilot/alexa_last_result.json"),
+        )
+
     def test_telegram_lock_file(self):
         import agent.telegram_lock as telegram_lock
         self._assert_redirected(
