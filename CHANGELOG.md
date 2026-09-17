@@ -7,6 +7,111 @@ needed.
 
 ---
 
+## 2026-09-17 — Alexa bridge: Echo Dot as a fifth entry point
+
+Found real, unfinished, uncommitted work already sitting in the working
+tree at the start of this session (`agent/autonomy.py`/
+`tests/test_autonomy.py` modified, plus new `agent/alexa_bridge.py`/
+`agent/alexa_daemon.py`/`docs/ALEXA_BRIDGE.md`/`start_alexa_bridge.sh`/
+`connect_telegram.sh`) — from a direct (non-relay) session during an
+11-day gap, not from the `com.jarvis.relay` `launchd` job (confirmed:
+that job has been hitting its run cap and exiting as a no-op every
+~60 seconds the whole time, per `.relay/runner.log`). The work was
+high-quality and matched this project's conventions closely, but had two
+real, closeable gaps rather than being ready to ship: `"alexa"` was not
+yet a valid `agent/history_store.py` source, and its new persistent-store
+file (`alexa_last_result.json`) had no `tests/_safety.py` redirect —
+exactly the class of gap this project has been bitten by for real before.
+Investigated and finished it rather than discarding or committing it
+half-done.
+
+**What it is.** Alexa gives an Alexa Skill roughly 8 seconds to answer
+before Amazon kills the request — far less than a real agent turn — so
+this is fire-and-forget: the skill `POST`s a task to a bridge, gets an
+immediate `202`, and the task runs to completion afterward with nobody
+waiting. The result is delivered over `agent/telegram_bridge.py` and is
+also readable back by voice via `GET /last`.
+
+**New**: `agent/alexa_bridge.py` (token auth via `hmac.compare_digest`,
+the last-result store — atomic + `flock`, same convention as
+`telegram_bridge`'s offset file — and `run_task()`/`start_task()`, one
+task at a time via a `threading.Lock`, a contained agent exception
+reported as a result rather than crashing the listener);
+`agent/alexa_daemon.py` (a stdlib `http.server` listener, `127.0.0.1`
+only — a tunnel is the intended sole ingress; every route but `/health`
+requires the bearer token, checked before the body is read; `/health` is
+deliberately unauthenticated and says nothing useful). No new HTTP
+dependency — outbound delivery reuses `telegram_bridge`.
+`start_alexa_bridge.sh` generates/reuses the token in the Keychain,
+fetches `cloudflared` if needed, starts the listener, waits for real
+health rather than a guessed sleep, opens a quick tunnel, and prints the
+URL/token pair for the Alexa skill's config (which lives outside this
+repo). `connect_telegram.sh` is a companion interactive setup script for
+last session's Telegram bridge (prompts for the bot token, walks the
+user through resolving their chat id via `getUpdates`, writes `.env`,
+starts `agent.telegram_daemon` in the background) — same origin session
+as the Alexa work.
+
+**The autonomy generalization, and a real bug it surfaced.**
+`source="alexa"` is deliberately in BOTH of `agent/autonomy.py`'s
+misfire categories at once: `_AMBIENT_VOICE_SOURCES` (new — a Dot hears
+a whole room, same reasoning `"voice"` already had) and
+`_NON_INTERACTIVE_SOURCES` (the skill hangs up immediately, same
+reasoning `"scheduled"` already had). Generalizing
+`_VOICE_ALWAYS_CONFIRMS`'s single-source (`"voice"`) check into
+`_AMBIENT_VOICE_SOURCES`, and routing every CONFIRM-returning path
+through one new `_confirm_or_deny()` helper, surfaced a real,
+**pre-existing** bug: `should_request_confirmation`'s unregistered-tool
+guard returned `Decision.CONFIRM` directly, *before* the non-interactive
+check ever ran — so a `"scheduled"` task or `"agent_worker"` calling an
+unregistered tool got a verdict nobody could answer. Both confirm paths
+now route through `_confirm_or_deny()`. New
+`tests/test_autonomy.py::TestUnregisteredToolRespectsNonInteractiveSources`
+pins the fix; `TestAlexaSource` proves the load-bearing property directly
+— no `(tool, autonomy level)` pair may return `CONFIRM` for
+`source="alexa"`, checked across every tool and every level.
+
+**History integration, finished this session.** `"alexa"` added to
+`agent/history_store.py`'s `_VALID_SOURCES` and
+`agent/history_capture.py` — deliberately **not** added to
+`_PROCESS_SESSION_SOURCES`: each Echo task runs with an empty history
+list and no confirm/"yes" follow-up is possible, so it gets a fresh
+session per call, the same reasoning already used for `"scheduled"`
+rather than the continuous-conversation reasoning for chat/voice/
+telegram. `search_conversation_history`'s `source` enum updated to
+match. `tests/_safety.py`: added `agent.alexa_bridge.LAST_RESULT_FILE`
+to the central redirect list.
+
+**Touched**: new `agent/alexa_bridge.py`, `agent/alexa_daemon.py`,
+`docs/ALEXA_BRIDGE.md`, `start_alexa_bridge.sh`, `connect_telegram.sh`;
+modified `agent/autonomy.py`, `agent/history_store.py`,
+`agent/history_capture.py`, `tools/schemas/history.py`,
+`tests/_safety.py`. Tests: `tests/test_alexa_bridge.py` (24),
+`tests/test_alexa_daemon.py` (18 — exercised against a **real** loopback
+`ThreadingHTTPServer`, never mocked, matching this project's "mock at
+the external boundary" rule: only `agent.executor.execute_task` and
+`agent.telegram_bridge` are mocked), plus additions to
+`test_autonomy`/`test_history_capture`/`test_history_store`/
+`test_test_safety`. Full canonical suite: **1748 passed, 0 failed**.
+`coding_agent_enabled` untouched (`False`). No real Alexa skill, tunnel,
+bridge token, or Telegram token anywhere in the tests.
+
+**Not built / out of scope**: the Alexa skill itself (`index.js`) lives
+outside this repo. No settings.py enable flag for the bridge — unlike
+`openclaw_enabled`/`telegram_enabled`, `is_configured()` gates purely on
+token presence, a deliberate difference since (unlike
+`send_telegram_message`) no Alexa-specific ToolSpec is ever registered
+into the always-loaded tool registry; the daemon must still be started
+manually, which is itself a strong gate. Not revisited this session —
+recorded as an accepted design choice, not an oversight.
+
+**Found, not actioned**: `.relay/plan-b5.md` (2026-09-06) is a real,
+unexecuted relay plan (checkpoint-mechanism audit, a `HANDOFF.md`
+internal-contradiction cleanup, MemoryAgent/ResearchAgent gating-gap
+scoping, relay-runner hygiene) — no `report-b5.md` exists. Left alone
+this session per the user's own direction to continue from
+`ROADMAP.md`; still open for a future session or explicit instruction.
+
 ## 2026-09-06 — Direct two-way Telegram bridge (not via OpenClaw)
 
 After the OpenClaw M2.1 pass, the user reported they had a Telegram bot

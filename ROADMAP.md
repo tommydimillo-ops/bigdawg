@@ -613,6 +613,29 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   "Inbound Gmail read/draft tool" items below **for Telegram
   specifically** — a two-way remote text channel now exists.
 
+- **Alexa bridge — a fifth entry point** ✅ (2026-09-17): an Echo Dot can
+  hand tasks to the executor via a `cloudflared` tunnel + a stdlib
+  `http.server` listener (`agent/alexa_daemon.py`/`agent/alexa_bridge.py`),
+  fire-and-forget (`202` immediately, since Alexa gives ~8s before killing
+  the request; the result is delivered afterward over
+  `agent/telegram_bridge.py` and readable back by voice via `GET /last`).
+  `source="alexa"` is in both of `agent/autonomy.py`'s misfire categories
+  at once (`_AMBIENT_VOICE_SOURCES` — new, generalized from the old
+  single-source `"voice"` check — and `_NON_INTERACTIVE_SOURCES`); no
+  `(tool, autonomy level)` pair can return `CONFIRM` for it. Generalizing
+  that check surfaced and fixed a real pre-existing bug: the
+  unregistered-tool guard returned `CONFIRM` before the non-interactive
+  check ran, affecting `"scheduled"`/`"agent_worker"` too. `"alexa"` is
+  now a first-class history-store source (fresh session per task, not
+  cached — same reasoning as `"scheduled"`). Setup: `docs/ALEXA_BRIDGE.md`.
+  42 new tests (18 against a real loopback HTTP server), suite
+  1748/1748. Found as real, high-quality, uncommitted work already in the
+  tree at session start (a direct session during an 11-day gap, not the
+  relay `launchd` job — confirmed that has been a no-op the whole time);
+  finished rather than discarded, closing two real gaps (missing history-
+  source validation, missing test-safety file redirect) before
+  committing.
+
 ## In progress
 
 **Phase 10 increment 1 — real CodingAgent + checkpoint/rollback.** Built,

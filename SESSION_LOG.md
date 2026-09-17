@@ -5,6 +5,22 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-17 — Alexa bridge: finished real uncommitted work, closed two safety gaps
+
+Session opened with real, unfinished, high-quality Alexa-bridge work
+already in the working tree from a direct session during an 11-day gap
+(confirmed NOT from the relay `launchd` job, which has been a no-op the
+whole time — it keeps hitting its run cap). Investigated rather than
+discarded: found `"alexa"` wasn't yet a valid history-store source and
+its new result file had no test-safety redirect. Closed both, wrote the
+missing tests (`tests/test_alexa_bridge.py`, `tests/test_alexa_daemon.py`
+— the daemon tested against a real loopback HTTP server), and committed.
+Confirmed `.relay/plan-b5.md` is a real, unexecuted, unrelated plan
+(checkpoint audit / HANDOFF cleanup / gating-gap scoping / relay
+hygiene) — left alone per the user's direction to continue from
+`ROADMAP.md`. 42 new tests, full suite 1748/1748. Code+tests and docs
+committed separately.
+
 ### 2026-09-06 — Direct two-way Telegram bridge
 
 User had a Telegram bot token and asked what to do. Found OpenClaw isn't

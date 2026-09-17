@@ -707,6 +707,74 @@ secret, set `TELEGRAM_ENABLED=true` + `TELEGRAM_OWNER_CHAT_ID`, run
 34 new tests, full suite **1697/1697**. `coding_agent_enabled` untouched.
 Code and docs committed separately.
 
+## Alexa bridge — a fifth entry point ✅ (2026-09-17)
+
+**Session-start finding, worth recording accurately**: real, high-quality,
+uncommitted Alexa-bridge work (plus a companion `connect_telegram.sh`
+setup script) was already sitting in the working tree when this session
+began — `agent/autonomy.py`/`tests/test_autonomy.py` modified, plus new
+`agent/alexa_bridge.py`/`agent/alexa_daemon.py`/`docs/ALEXA_BRIDGE.md`/
+`start_alexa_bridge.sh`. Confirmed this did **not** come from the
+`com.jarvis.relay` `launchd` job — `.relay/runner.log` shows it has been
+hitting its `MAX_RUNS=200` cap and exiting as a pure no-op roughly every
+60 seconds for the entire 11-day gap since the last commit — so it must
+have come from a direct (non-relay) Claude Code session during that gap.
+Investigated rather than assumed safe or discarded (per `CLAUDE.md`'s own
+"unfamiliar state" guidance): the work matched this project's security
+conventions closely, but had two real, closeable gaps — `"alexa"` was
+not yet a valid `agent/history_store.py`/`agent/history_capture.py`
+source, and its new persistent-store file (`alexa_last_result.json`) had
+no `tests/_safety.py` redirect, exactly the class of gap that bit this
+project for real before (see `CLAUDE.md`'s "How to test" section). Closed
+both, wrote the two missing test files, verified, and committed.
+
+**What it is**: Alexa gives a Skill ~8 seconds before Amazon kills the
+request — far less than a real agent turn — so this is fire-and-forget.
+The skill `POST /task`s, gets an immediate `202`, and the task runs to
+completion afterward with nobody waiting; the result is delivered over
+`agent/telegram_bridge.py` and readable back by voice via `GET /last`.
+`agent/alexa_daemon.py` binds `127.0.0.1` only (a `cloudflared` tunnel,
+via `start_alexa_bridge.sh`, is the intended sole ingress); every route
+but `/health` requires `ALEXA_BRIDGE_TOKEN`, checked before the body is
+read. One task at a time (`threading.Lock`); a second mid-task gets
+`409`. The Alexa skill itself (`index.js`) lives outside this repo.
+
+**The autonomy generalization, and a real bug it surfaced**:
+`source="alexa"` is in BOTH of `agent/autonomy.py`'s misfire categories
+at once — the new `_AMBIENT_VOICE_SOURCES` (generalized from the old
+single-source `"voice"` check) and `_NON_INTERACTIVE_SOURCES` (same
+reasoning as `"scheduled"`). Routing every CONFIRM-returning path through
+one new `_confirm_or_deny()` helper surfaced a real, **pre-existing**
+bug: the unregistered-tool guard returned `Decision.CONFIRM` directly
+before the non-interactive check ever ran, so `"scheduled"`/
+`"agent_worker"` calling an unregistered tool got a verdict nobody could
+answer. Fixed as part of this same change.
+`tests/test_autonomy.py::TestUnregisteredToolRespectsNonInteractiveSources`
+pins it; `TestAlexaSource` proves no `(tool, autonomy level)` pair can
+return `CONFIRM` for `source="alexa"`.
+
+**Setup runbook**: `docs/ALEXA_BRIDGE.md`. 42 new tests (`test_alexa_
+bridge.py` 24, `test_alexa_daemon.py` 18 — the daemon exercised against a
+**real** loopback `ThreadingHTTPServer`, never mocked), full suite
+**1748/1748**. `coding_agent_enabled` untouched. Code+tests and docs
+committed separately.
+
+**Found, not actioned**: `.relay/plan-b5.md` (2026-09-06) is a real,
+unexecuted relay plan — no `report-b5.md` exists. Four items: audit
+whether `agent/coding_checkpoint.py`'s git-ref approach actually holds up
+against the concerns the Phase 10 design docs raised (index contention,
+gitignored files, rollback when git itself is unhealthy); fix
+`HANDOFF.md`'s internal HEAD/commit-status contradictions (this file
+likely still has some — this session did not do a full audit pass,
+`plan-b5.md`'s item 2 is the authoritative description of exactly which
+passages); scope (don't yet fix) the MemoryAgent/ResearchAgent gating
+gap; and relay-runner hygiene (confirm `runner-state`/
+`last-executed-plan` are stale, without resuming automation). Left alone
+this session per the user's own direction to continue from `ROADMAP.md`
+instead — a future session should read `plan-b5.md` directly if this
+becomes the priority again, since it may itself be somewhat stale after
+11 more days of changes.
+
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
 - **Commit**: `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local

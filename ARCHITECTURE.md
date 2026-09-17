@@ -13,7 +13,7 @@ accurate, not duplicated here.
 ## 1. System architecture
 
 Jarvis is a single Python backend (`agent/`, `tools/`, `voice/`, `config/`,
-`database/`) driven by three separate front-end processes that all funnel
+`database/`) driven by five separate front-end processes that all funnel
 into the same core loop. There is no client/server split, no external
 database, and no message queue — everything is local processes talking to
 local JSON files plus outbound HTTPS calls to Anthropic/OpenAI/xAI/
@@ -21,15 +21,14 @@ Perplexity/Apple frameworks (xAI/Perplexity optional, Phase 9 Milestone 2
 — see §5).
 
 ```
-┌────────────┐ ┌────────────────┐ ┌────────────────────┐ ┌──────────────────────┐
-│ app.py     │ │ ui/menu_bar.py │ │ agent/scheduler_   │ │ agent/telegram_      │
-│ (Streamlit │ │ (native macOS  │ │ daemon.py          │ │ daemon.py            │
-│  chat UI)  │ │  menu-bar app, │ │ (standalone cron,  │ │ (standalone inbound  │
-│            │ │  voice-first)  │ │  redundant w/ menu-│ │  Telegram poll loop, │
-│            │ │                │ │  bar's scheduler)  │ │  owner-only)         │
-└─────┬──────┘ └───────┬────────┘ └─────────┬──────────┘ └──────────┬───────────┘
-      │                │                     │                       │
-      └────────────────┴──────────┬──────────┴───────────────────────┘
+app.py            ui/menu_bar.py     agent/scheduler_   agent/telegram_    agent/alexa_
+(Streamlit         (native macOS      daemon.py          daemon.py          daemon.py
+ chat UI)           menu-bar app,     (standalone cron,  (standalone        (HTTP listener
+                    voice-first)       redundant w/       inbound Telegram   behind a tunnel,
+                                       menu-bar's         poll loop,         fire-and-forget,
+                                       scheduler)         owner-only)        owner-token-only)
+     │                   │                  │                  │                  │
+     └───────────────────┴────────┬─────────┴──────────────────┴──────────────────┘
                                    ▼
               agent/executor.py: execute_task_stream()
                   (the one orchestrator, all entry
@@ -75,7 +74,8 @@ exist and may now run together safely.
 ## 2. Main application flow
 
 All five entry points (Streamlit chat, menu-bar voice/typed, scheduler
-daemon, and the Telegram daemon — §14) converge on one function:
+daemon, the Telegram daemon, and the Alexa bridge — §14) converge on one
+function:
 
 ```
 execute_task_stream(request, history, source)
@@ -611,8 +611,9 @@ Three separate processes, all calling the same orchestrator:
 
 The backend *is* `agent/`, `tools/`, `voice/`, `config/`, `database/` —
 there is no separate backend service; every entry-point process (the
-Streamlit app, the menu-bar app, the scheduler daemon, and the Telegram
-daemon) embeds the same backend code directly (import, not RPC).
+Streamlit app, the menu-bar app, the scheduler daemon, the Telegram
+daemon, and the Alexa bridge) embeds the same backend code directly
+(import, not RPC).
 
 ## 12. Database / storage
 
@@ -1278,6 +1279,10 @@ suite).
   by default, direct `api.telegram.org` calls (a fixed-argv `curl`
   subprocess, same as `tools/weather.py` — no HTTP dependency added),
   **not** routed through OpenClaw — see "Telegram bridge" below.
+- **Alexa** (`agent/alexa_bridge.py`/`agent/alexa_daemon.py`) — an Echo
+  Dot as a task source, via a cloudflared tunnel to a stdlib
+  `http.server` listener. Inert without a bridge token; see "Alexa
+  bridge" below.
 
 Both Anthropic's and OpenAI's *usage/billing* APIs were checked live and
 found inaccessible with the project's regular (non-admin) API keys — both
@@ -1684,6 +1689,57 @@ Key properties:
   reprocesses nor skips.
 - **Not built**: voice-note transcription, media in/out, multiple/group
   chats, menu-bar integration.
+
+### Alexa bridge (optional, one-way in, fire-and-forget, token-gated)
+
+An Echo Dot as a fifth entry point. Full detail, setup, and the exact
+security reasoning: `docs/ALEXA_BRIDGE.md`.
+
+```
+Echo Dot → Alexa skill (external, not in this repo) → cloudflared tunnel
+  → agent/alexa_daemon.py (127.0.0.1 http.server, bearer-token gated)
+  → agent/alexa_bridge.py: start_task() on a worker thread
+  → agent/executor.execute_task(task, [], source="alexa")
+  → result persisted (alexa_last_result.json) + delivered via
+    agent/telegram_bridge.py, readable back by voice via GET /last
+```
+
+Key properties, distinct from the Telegram bridge above:
+- **Fire-and-forget, not a live turn.** Alexa gives ~8 seconds before
+  Amazon kills the request — the listener answers `202` immediately and
+  the task runs to completion afterward with nobody waiting on the other
+  end. There is no confirm/"yes" round trip, ever, for this source.
+- **`source="alexa"` is in BOTH of `agent/autonomy.py`'s misfire
+  categories at once**: `_AMBIENT_VOICE_SOURCES` (a Dot hears a whole
+  room, same reasoning as `"voice"`) and `_NON_INTERACTIVE_SOURCES` (the
+  skill hangs up immediately, same reasoning as `"scheduled"`). This
+  generalized `_VOICE_ALWAYS_CONFIRMS`'s single-source check into
+  `_AMBIENT_VOICE_SOURCES` and introduced one shared `_confirm_or_deny()`
+  helper for every path that used to return `Decision.CONFIRM` directly
+  — which surfaced a real, pre-existing bug affecting `"scheduled"` and
+  `"agent_worker"` too: the unregistered-tool guard returned `CONFIRM`
+  before the non-interactive check ever ran. Fixed as part of this same
+  change. **The load-bearing property**: no `(tool, autonomy level)` pair
+  may return `CONFIRM` for `source="alexa"` — `tests/test_autonomy.py`
+  asserts this directly across every registered tool and every level.
+- **`source="alexa"` gets a fresh history-store session per task**
+  (`agent/history_store.py`/`agent/history_capture.py`), not a cached
+  process-lifetime one — each task runs with an empty history list and
+  is unrelated to the last, the same reasoning already used for
+  `"scheduled"` rather than the continuous-conversation reasoning for
+  chat/voice/telegram.
+- **Auth**: every route but `/health` requires `ALEXA_BRIDGE_TOKEN`
+  (Keychain), compared with `hmac.compare_digest`, checked before the
+  request body is ever read. `/health` is deliberately unauthenticated
+  and says nothing useful (liveness only), so an unauthenticated scanner
+  learns only that something is listening. The daemon refuses to start
+  at all without a configured token.
+- **Single ingress, single task**: binds `127.0.0.1` only — a tunnel
+  (`cloudflared`, via `start_alexa_bridge.sh`) is the intended sole way
+  in. One `threading.Lock` means only one task runs at a time; a second
+  arriving mid-task gets `409` rather than queueing or racing.
+- **The Alexa skill itself (`index.js`) lives outside this repo** — this
+  project owns the listener/bridge side only.
 
 ## 15. Inter-agent communication
 
