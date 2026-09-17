@@ -7,6 +7,93 @@ needed.
 
 ---
 
+## 2026-09-17 — MemoryAgent bypass audit: gate remember(), leave recall() ungated
+
+Resolved `ROADMAP.md`'s "MemoryAgent bypass audit" item. `agent/agents/
+memory.py`'s `execute()` calls `agent.memory_agent.remember()`/
+`recall()` directly, bypassing `tools.registry`/`agent.autonomy`
+entirely — found during Phase 10's M10.0 audit pass and structurally
+tracked since (`tests/test_gating_structural.py`'s
+`ACCEPTED_UNGATED_CALL_SITES`), but never itself resolved until now.
+
+**Audit, before any code changed**: the underlying registered-tool
+equivalents already carry a severity rating — `remember_fact` is
+`permission_level=1` ("safe local action"), `recall_facts` is
+`permission_level=0` (pure read). `remember()`'s blast radius is
+narrower than `write_file`'s by construction (one typed JSON memory
+store, tagged `"notes"`, subject-superseding — not arbitrary repo
+files) and already passes through `agent/memory/safety.py`'s dedicated
+content filter, which `write_file` has no equivalent of. At the actual
+default configuration (`autonomy_level=4`), gating changes nothing
+observable — the gap only bites a user who's deliberately lowered
+autonomy to 0 or 1, where MemoryAgent used to silently write/recall
+regardless. Recommendation: gate `remember()` the same way M10.0 gated
+`write_file`; leave `recall()` ungated, matching this project's own
+established precedent that reads inside a coworker agent's internal
+loop (`CodingAgent`'s `_read_file`, `ResearchAgent`'s reads) stay
+outside this kind of pass's blast radius.
+
+**Implementation**: `agent/agents/memory.py`'s `execute()` now calls
+`agent.autonomy.should_request_confirmation` directly before its
+`remember()` branch, with an explicit `permission_level=1` override
+(matching `remember_fact`'s own registered level, not `write_file`'s 2)
+— the same M10.0 pattern, not a second, independently-written copy of
+that decision logic. A denial returns a real `AgentResult(success=False,
+error="not permitted at the current autonomy level (...)")`, not a
+success-shaped result carrying an error string, since `execute()` has no
+internal tool loop to hand that string to the way `write_file`'s caller
+does — its own return IS the agent's final answer. The denial path
+calls `agent.audit.log_action`, mirroring `agent/executor.py::_run_tool`'s
+own `DENY` branch (the established precedent for logging exactly this
+kind of event); the allow path gained no new log line, matching
+`remember_fact`'s own logging happening one layer up in `_run_tool`, not
+inside the handler.
+
+`tests/test_gating_structural.py`'s `ACCEPTED_UNGATED_CALL_SITES` no
+longer lists `agent/agents/memory.py`'s `execute()`. Worth being precise
+about: the AST scanner is function-granular, not branch-granular, so
+gating the `remember()` branch drops the *whole* function out of
+"discovered," `recall()`'s branch included — the module's own docstring
+now says this plainly rather than implying `recall()` is still
+independently re-verified as accepted on every run. `CLAUDE.md` rule 3
+updated to match (`remember()` is no longer listed as a bypass
+exception; only `recall()` is, same reasoning as `_read_file`).
+
+4 new tests (`tests/test_agents_memory.py`'s `TestRememberPermissionGate`,
+mirroring `tests/test_agents_coding_enabled.py`'s
+`TestWriteFilePermissionGate`): default autonomy allows, low autonomy
+denies with the exact error shape, low autonomy never hangs
+(`source="agent_worker"` is non-interactive, so a would-be `CONFIRM`
+resolves straight to `DENY`), and `recall()` stays unaffected at the
+same low autonomy level. Gating commit: `c7c9ee8`. Full suite:
+1753/1753.
+
+## 2026-09-17 — Fixed alongside the audit: a refused memory write reported as a successful agent run
+
+Found while auditing MemoryAgent for the item above, independent of its
+permission-gating question — fixed in its own prior commit (`7d065af`)
+rather than folded into the gating change. `agent/memory_agent.py::
+remember()` returns a plain display string on success or refusal alike
+(`"I'll remember that X"` vs. `"Didn't save that: {error}"` — a
+deliberately preserved contract, see `tests/test_memory_legacy_
+wrappers.py`'s `test_remember_return_format_unchanged`).
+`agent/agents/memory.py`'s `MemoryAgent.execute()` wrapped whichever
+string came back in `AgentResult(success=True, ...)` unconditionally, so
+a memory `agent/memory/safety.py`'s content filter refused (a
+credential, an injected instruction) was reported as a **successful**
+agent run — same class of bug as the Phase 10 dogfooding finding where a
+truncated model response was mistaken for a clean finish: a string that
+looks like a normal result, treated as one without checking what it
+actually says.
+
+Fix: `agent/memory_agent.py` now exposes `REFUSAL_PREFIX` as a named
+constant (the exact literal the f-string already produced — not a
+behavior change; `test_remember_return_format_unchanged` and
+`test_remember_refuses_unsafe_content` both still pass unmodified).
+`agent/agents/memory.py` checks `answer.startswith(REFUSAL_PREFIX)` and
+returns `AgentResult(success=False, error=answer)` instead. One new
+regression test. Full suite: 1749/1749.
+
 ## 2026-09-17 — Real CI failure on the Alexa bridge push, root-caused and fixed
 
 The Alexa bridge push (`175832b`) failed its first CI attempt for real

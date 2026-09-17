@@ -5,6 +5,28 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-17 — MemoryAgent bypass audit: gated remember(), left recall() ungated
+
+New session, per `CLAUDE.md`'s own NEW SESSION PROTOCOL: read `ROADMAP.md`'s
+"Next" item, audited `agent/agents/memory.py`'s bypass of `tools.registry`/
+`agent.autonomy` before writing any code, and stated a recommendation
+(gate `remember()` like M10.0 gated `write_file`, `permission_level=1`;
+leave `recall()` ungated, matching the established read/write split) for
+approval first. On approval, three user amendments applied: a denial is
+`AgentResult(success=False, ...)`, not a success-shaped error string; the
+denial path logs via `agent.audit.log_action`; and a second, independent
+bug found during the same review (a content-filter-refused memory write
+being reported as a successful agent run) shipped in its own prior
+commit rather than folded into the gating change. `tests/test_gating_
+structural.py`'s accepted-bypass set updated to match — `memory.py`'s
+`execute()` no longer needs an entry. 4 new tests, two commits, full
+suite green after each. Also hit and recorded a real, unrelated
+mid-session stale `.git/index.lock` (a Cowork sandbox-mount artifact,
+not a live process) — diagnosed via `ps`/`lsof` before touching it, per
+`CLAUDE.md`'s "investigate before deleting" guidance, and cleared by the
+user directly since this session's own `Bash(rm:*)` deny rule is
+intentional.
+
 ### 2026-09-17 — Real CI failure on the Alexa push, root-caused and fixed
 
 First CI failure of the session, taken seriously rather than blindly

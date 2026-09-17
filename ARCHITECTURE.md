@@ -1230,8 +1230,15 @@ suite).
   has the identical property. ResearchAgent's and MemoryAgent's own
   pre-existing bypasses (browsing, and real memory-store writes/reads
   respectively) were deliberately **not** routed through this chokepoint
-  this round — see CLAUDE.md rule 3 and `ROADMAP.md`'s "MemoryAgent
-  bypass audit" item for the reasoning and what's still open.
+  this round — see CLAUDE.md rule 3. A later pass (`ROADMAP.md`'s
+  "MemoryAgent bypass audit," resolved) did route MemoryAgent's
+  `remember()` call through the same chokepoint, with an explicit
+  `permission_level=1` override matching `remember_fact`'s own
+  registered level, not `write_file`'s 2 — a memory write is a "safe
+  local action," not a file/code modification. `recall()` (and
+  ResearchAgent's own reads) remain deliberately ungated: reads, not
+  writes, are this project's consistent blast-radius line for what this
+  chokepoint targets.
   `should_request_confirmation` itself only **decides** — it has never
   enforced anything (the caller has always owned that), and this fix
   doesn't change that contract, only who else calls it. It now has two

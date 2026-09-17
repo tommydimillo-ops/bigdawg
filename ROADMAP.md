@@ -636,6 +636,48 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   source validation, missing test-safety file redirect) before
   committing.
 
+- **MemoryAgent bypass audit** ✅ (2026-09-17): resolves the "Next" item
+  of the same name. `agent/agents/memory.py`'s `execute()` called
+  `remember()`/`recall()` directly, bypassing `tools.registry`/
+  `agent.autonomy` entirely, since Phase 7 — found but never itself
+  audited until M10.0. Recommendation, stated before any code changed:
+  gate `remember()` the same way M10.0 gated `write_file` — through
+  `should_request_confirmation` with an explicit `permission_level`
+  override, not a registered tool — but leave `recall()` ungated,
+  matching this project's own established read/write split
+  (`CodingAgent`'s `_read_file`, `ResearchAgent`'s reads were already
+  left ungated; writes were, and remain, the stated blast radius).
+  `remember()` uses `permission_level=1`, matching `remember_fact`'s own
+  registered level (a memory write is a "safe local action," not
+  `write_file`'s file/code-modification level 2) — so at the default
+  autonomy level (4) this changes nothing observable; it only bites at
+  autonomy 0/1, where `remember()` now correctly denies
+  (`source="agent_worker"` is non-interactive, so a would-be `CONFIRM`
+  resolves to `DENY`, never a hang) instead of silently writing
+  regardless of the user's own "confirm everything" setting. A denial is
+  a real `AgentResult(success=False, error="not permitted at the current
+  autonomy level (...)")`, not a success-shaped result carrying an error
+  string — `execute()`'s own return IS the agent's final answer, unlike
+  `write_file`'s caller, which has an internal tool loop to hand an error
+  string to — and logs via `agent.audit.log_action`, mirroring
+  `_run_tool`'s own `DENY` branch (the allow path gained no new log
+  line, matching `remember_fact`'s own call-site logging happening one
+  layer up, not inside the handler). `tests/test_gating_structural.py`'s
+  `ACCEPTED_UNGATED_CALL_SITES` no longer lists `memory.py`'s `execute()`
+  — the AST scanner is function-granular, so gating the `remember()`
+  branch drops the whole function, `recall()`'s branch included; the
+  module docstring says so plainly rather than implying `recall()` is
+  still independently tracked. `CLAUDE.md` rule 3 updated to match. 4 new
+  tests (`TestRememberPermissionGate`, mirroring
+  `TestWriteFilePermissionGate`). Also fixed, in its own prior commit
+  (`7d065af`) since it was independent of the gating question: `agent/
+  memory_agent.py::remember()`'s refusal string (`"Didn't save that:
+  ..."`) was being wrapped in `AgentResult(success=True, ...)`
+  unconditionally — a memory the content-safety filter refused to store
+  was reported as a successful agent run, same class of bug as the
+  Phase 10 truncated-response gap. Gating itself: `c7c9ee8`. Two
+  commits, full suite 1753/1753 after both.
+
 ## In progress
 
 **Phase 10 increment 1 — real CodingAgent + checkpoint/rollback.** Built,
@@ -707,29 +749,6 @@ evidence-gathering period (see "Next" below) is the tracked follow-up,
 not in-progress work.
 
 ## Next
-
-- **MemoryAgent bypass audit (found by Phase 10's M10.0 pass, not yet
-  scoped or started)** — `agent/agents/memory.py`'s `execute()` calls
-  `remember()`/`recall()` directly, bypassing `tools.registry`/
-  `agent.autonomy` entirely, the same way `agent/research_agent.py`'s
-  own internal tool loop already does. Unlike ResearchAgent's version,
-  this one was never named or audited as a deliberate exception anywhere
-  before M10.0 found it while enumerating every coworker agent's real
-  side-effecting call sites — it predates Phase 10 by phases (Phase 7)
-  and has simply never been looked at as a permission question until
-  now. `agent/memory/safety.py`'s content filter still applies (it's
-  inside `agent.memory.remember` itself, a layer below the registry) —
-  but that is a content filter, not a permission gate, and the
-  registry/autonomy gate is genuinely bypassed. Now documented as an
-  accepted-but-unaudited exception in `CLAUDE.md` rule 3 and structurally
-  tracked by `tests/test_gating_structural.py`'s
-  `ACCEPTED_UNGATED_CALL_SITES` (so it can't silently disappear from
-  view again) — not fixed. Whether it needs the same
-  `should_request_confirmation` treatment `agent/agents/coding.py`'s
-  `write_file` just got, or is fine as-is given the content filter and
-  MemoryAgent's narrower blast radius (a fact recorded, not something
-  wiped), is an open question for a future pass, not a bug fix to
-  reflexively apply.
 
 **Phase 9 / M4A — Conversation & History Intelligence Architecture
 Audit is complete** (an audit-and-design-only pass, delivered as an

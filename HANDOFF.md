@@ -787,6 +787,72 @@ instead — a future session should read `plan-b5.md` directly if this
 becomes the priority again, since it may itself be somewhat stale after
 11 more days of changes.
 
+## MemoryAgent bypass audit ✅ (2026-09-17)
+
+Resolves `ROADMAP.md`'s "MemoryAgent bypass audit" item, and partially
+answers `.relay/plan-b5.md`'s item 3 ("scope, don't yet fix, the
+MemoryAgent/ResearchAgent gating gap") — MemoryAgent's is now actually
+fixed, not just scoped; ResearchAgent's is unchanged, deliberately (see
+below).
+
+**Audit first, no code until the recommendation was stated and
+approved** (the user's own explicit instruction for this task): `agent/
+agents/memory.py`'s `execute()` calls `agent.memory_agent.remember()`/
+`recall()` directly, bypassing `tools.registry`/`agent.autonomy`
+entirely — found during Phase 10's M10.0 pass, tracked since in
+`tests/test_gating_structural.py`'s `ACCEPTED_UNGATED_CALL_SITES`, never
+itself resolved until now. Recommendation: gate `remember()` the same
+way M10.0 gated `write_file` (`should_request_confirmation` with an
+explicit `permission_level` override); leave `recall()` ungated, matching
+this project's own established precedent that reads inside a coworker
+agent's internal loop (`CodingAgent`'s `_read_file`, `ResearchAgent`'s
+reads) stay outside this kind of pass's blast radius. `remember()` uses
+`permission_level=1` (matching `remember_fact`'s own registered level,
+not `write_file`'s 2 — a memory write is a "safe local action") — so at
+the actual default configuration (`autonomy_level=4`) this changes
+nothing observable; the fix only bites a user who's deliberately lowered
+autonomy to 0 or 1, where MemoryAgent used to silently write/recall
+regardless of the user's own "confirm everything" setting.
+
+**Three amendments the user added on approval, all applied**: (1) a
+denial is a real `AgentResult(success=False, error="not permitted at the
+current autonomy level (...)")`, not a success-shaped result carrying an
+error string — `execute()` has no internal tool loop to hand that to,
+unlike `write_file`'s caller; (2) the denial path calls `agent.audit.
+log_action`, mirroring `agent/executor.py::_run_tool`'s own `DENY`
+branch; the allow path gained no new log line; (3) a second, genuinely
+independent bug found during the same review — `agent/memory_agent.py::
+remember()`'s refusal string was being wrapped in `AgentResult(
+success=True, ...)` unconditionally by `execute()`, so a memory the
+content-safety filter refused was reported as a **successful** agent
+run — was shipped in its own prior commit (`7d065af`) rather than folded
+into the gating change, per the user's own "I lean split" call.
+
+`tests/test_gating_structural.py`'s `ACCEPTED_UNGATED_CALL_SITES` no
+longer lists `agent/agents/memory.py`'s `execute()`. Worth being precise
+about: its AST scanner is function-granular, so gating the `remember()`
+branch drops the *whole* function out of "discovered," `recall()`'s
+branch included — its own module docstring now says this plainly rather
+than implying `recall()` is still independently re-verified as accepted
+on every run. `CLAUDE.md` rule 3 updated to match. 4 new tests
+(`TestRememberPermissionGate`, mirroring `TestWriteFilePermissionGate`).
+Two commits: `7d065af` (the refusal-reporting bug), `c7c9ee8` (the
+gating itself). Full suite green after each (1749/1749, then 1753/1753).
+
+**A real, unrelated stale-lock incident mid-session, worth recording**:
+a Cowork session had run `git status` over a sandbox mount at 08:43:30
+that left a 0-byte `.git/index.lock` behind — not a live git process,
+not VS Code, and not clearable by this session's own Bash tool (a
+blanket, intentional `Bash(rm:*)` deny rule in `.claude/settings.local.
+json`). Diagnosed via `ps aux`/`lsof` before touching anything (per
+`CLAUDE.md`'s own "investigate before deleting" guidance) rather than
+guessing; the user cleared it manually from their own terminal (twice —
+the first clear didn't propagate through the sandbox mount this
+session's Bash tool sees, confirmed stale by identical inode/timestamp
+on a second check) before work resumed. No repo state was at risk at any
+point — `git status` was clean throughout except this session's own
+in-progress edits.
+
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
 - **Commit**: `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local
