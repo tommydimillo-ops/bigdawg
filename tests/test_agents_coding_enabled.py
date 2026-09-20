@@ -282,7 +282,7 @@ class TestWriteFileRefusesPathsNoCheckpointCanProtect(unittest.TestCase):
 
     def test_refuses_every_explicit_never_writable_location(self):
         for rel in (
-            ".env", ".env.local", ".env.production", ".env.example", "config/.env",
+            ".env", ".env.local", ".env.production", "config/.env",
             "JarvisVault/Knowledge/Decisions/note.md", "logs/menubar.err.log",
             "graphify-out/graph.json", ".relay/plan-b8.md", ".venv/lib/python3/site.py",
             ".gitignore", "sub/dir/.gitignore",
@@ -393,6 +393,90 @@ class TestWriteFileRefusesPathsNoCheckpointCanProtect(unittest.TestCase):
         self.assertIn("denylisted", result_for(".env"))
         self.assertIn("gitignored", result_for("key.secret"))
         self.assertIn("denylisted", result_for("agent/autonomy.py"))
+
+
+class TestExampleEnvFilesAreReadableAndWritable(unittest.TestCase):
+    """Plan-b8 item 2: `.env.example`/`.env.sample`/`.env.template` are
+    tracked template files that hold no secret. b7's write denylist refused
+    `.env.example` (it matched `.env.*`); refusing a harmless tracked file
+    only teaches people to route around the guard. The carve-out is one
+    shared list (agent.secret_paths.EXAMPLE_BASENAMES) used by both the
+    read and the write side, so they cannot drift apart."""
+
+    # Mirrors this repo's real ignore rules for env files.
+    REAL_STYLE_GITIGNORE = ".env\n.env.*\n!.env.example\n"
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="jarvis-example-env-test-")
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        _git(self.repo, "init", "-q")
+        self.context = RequestContext.create("test task", source="agent_worker")
+
+    def _gitignore(self, text):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write(text)
+
+    def test_the_write_denylist_no_longer_matches_the_example_files_at_any_depth(self):
+        for rel in (".env.example", ".env.sample", ".env.template", "config/.env.example", ".ENV.EXAMPLE"):
+            with self.subTest(rel=rel):
+                self.assertFalse(coding._is_never_writable(rel))
+
+    def test_the_rest_of_the_env_family_is_still_denied(self):
+        for rel in (".env", ".env.local", ".env.production", ".env.example.bak", ".env.examples", "config/.env"):
+            with self.subTest(rel=rel):
+                self.assertTrue(coding._is_never_writable(rel))
+
+    def test_example_file_is_both_writable_and_readable(self):
+        self._gitignore(self.REAL_STYLE_GITIGNORE)  # `.env.*` ignored, `!.env.example` un-ignored -- as in this repo
+        files_written = []
+        result = coding._write_file(self.repo, ".env.example", "API_KEY=changeme\n", files_written, self.context)
+        self.assertIn("Wrote", result)
+        self.assertEqual(files_written, [".env.example"])
+        self.assertEqual(coding._read_file(self.repo, ".env.example"), "API_KEY=changeme\n")
+
+    def test_sample_and_template_are_writable_and_readable_when_the_repo_un_ignores_them(self):
+        self._gitignore(self.REAL_STYLE_GITIGNORE + "!.env.sample\n!.env.template\n")
+        for rel in (".env.sample", ".env.template"):
+            with self.subTest(rel=rel):
+                files_written = []
+                result = coding._write_file(self.repo, rel, "API_KEY=changeme\n", files_written, self.context)
+                self.assertIn("Wrote", result)
+                self.assertEqual(coding._read_file(self.repo, rel), "API_KEY=changeme\n")
+
+    def test_sample_and_template_are_still_refused_by_the_gitignore_rule_when_the_repo_ignores_them(self):
+        # This repo's .gitignore un-ignores only .env.example. An IGNORED
+        # file cannot be checkpointed, so the generic write-side refusal
+        # still (correctly) stops these two -- by the gitignore rule, not
+        # the denylist. Un-ignoring them (`!.env.sample`) is what makes the
+        # carve-out effective for them.
+        self._gitignore(self.REAL_STYLE_GITIGNORE)
+        for rel in (".env.sample", ".env.template"):
+            with self.subTest(rel=rel):
+                files_written = []
+                result = coding._write_file(self.repo, rel, "x", files_written, self.context)
+                self.assertIn("Error: refusing to write", result)
+                self.assertIn("gitignored", result)
+                self.assertEqual(files_written, [])
+
+    def test_a_symlink_named_like_an_example_file_cannot_launder_a_write_to_the_real_env(self):
+        self._gitignore(self.REAL_STYLE_GITIGNORE)
+        env_path = os.path.join(self.repo, ".env")
+        with open(env_path, "w") as file:
+            file.write("SECRET=1\n")
+        os.symlink(".env", os.path.join(self.repo, ".env.example"))
+        files_written = []
+        result = coding._write_file(self.repo, ".env.example", "OVERWRITTEN", files_written, self.context)
+        self.assertIn("Error: refusing to write", result)
+        self.assertEqual(files_written, [])
+        with open(env_path) as file:
+            self.assertEqual(file.read(), "SECRET=1\n")
+
+    def test_the_example_carve_out_does_not_open_the_directory_denylist(self):
+        self._gitignore("")
+        files_written = []
+        result = coding._write_file(self.repo, "logs/.env.example", "x", files_written, self.context)
+        self.assertIn("Error: refusing to write", result)
+        self.assertEqual(files_written, [])
 
 
 class TestReadFileDirectly(unittest.TestCase):

@@ -74,7 +74,7 @@ from agent.coding_checkpoint import (
     restore_paths,
 )
 from agent.request_context import RequestContext
-from agent.secret_paths import refuse_secret_read
+from agent.secret_paths import EXAMPLE_BASENAMES, refuse_secret_read
 from agent.task_classifier import TaskType
 from agent.usage import check_request_limits, record_llm_usage
 from config.settings import settings
@@ -176,10 +176,18 @@ def _is_never_writable(rel: str) -> bool:
     existed. Found by review, not a live incident."""
     lowered = rel.lower()
     basename = os.path.basename(lowered)
+    # Tracked template files (.env.example/.sample/.template) hold no
+    # secret, so refusing to write them only teaches people to route around
+    # the guard -- the same carve-out the read side uses, from one shared
+    # list. `rel` is the RESOLVED path, so a symlink called .env.example
+    # that points at .env resolves to `.env` and is still denied. Only the
+    # basename rules are relaxed; the directory prefixes above still apply
+    # (a .env.example under logs/ is still refused).
+    is_example_file = basename in EXAMPLE_BASENAMES
     return (
         lowered in _NEVER_WRITABLE_PATHS_LOWER
-        or basename in _NEVER_WRITABLE_BASENAMES
-        or basename.startswith(_NEVER_WRITABLE_BASENAME_PREFIXES)
+        or (not is_example_file and basename in _NEVER_WRITABLE_BASENAMES)
+        or (not is_example_file and basename.startswith(_NEVER_WRITABLE_BASENAME_PREFIXES))
         or any(
             lowered.startswith(prefix) or lowered == prefix.rstrip("/")
             for prefix in _NEVER_WRITABLE_PREFIXES_LOWER

@@ -64,7 +64,9 @@ _SECRET_BASENAME_PATTERNS = (
 )
 
 # Committed template files, safe by construction. Exact basenames only.
-_EXAMPLE_BASENAMES = frozenset({".env.example", ".env.sample", ".env.template"})
+# Public because agent/agents/coding.py's WRITE denylist uses the same list:
+# one carve-out, so the read side and the write side cannot drift apart.
+EXAMPLE_BASENAMES = frozenset({".env.example", ".env.sample", ".env.template"})
 
 # macOS Keychain storage lives under ~/Library/Keychains; anything inside
 # it is refused regardless of its filename.
@@ -74,7 +76,7 @@ _KEYCHAIN_DIR_MARKER = "/library/keychains/"
 def _reason_for(candidate: str) -> Optional[str]:
     lowered = candidate.lower()
     basename = os.path.basename(lowered)
-    if basename in _EXAMPLE_BASENAMES:
+    if basename in EXAMPLE_BASENAMES:
         return None
     if _KEYCHAIN_DIR_MARKER in lowered.rstrip("/") + "/":
         return "it is inside a macOS Keychain directory"
