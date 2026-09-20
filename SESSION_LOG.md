@@ -5,6 +5,31 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-20 — Checkpoint audit (plan-b6) and hardening (plan-b7)
+
+Two relay plans executed interactively (`runner.sh` had started an unattended
+run of plan-b6; the user had it killed, it had made no changes). **plan-b6**:
+audited `agent/coding_checkpoint.py` against the concerns Phase 10's design
+docs raised — real git, throwaway repos, transcripts kept in
+`.relay/audit-b6/` — and found real gaps, the severe one being that
+gitignored files (`.env`, `JarvisVault/`, `logs/`, `graphify-out/`) are in no
+snapshot yet were writable by CodingAgent. Also reconciled HANDOFF.md's
+stale current-state claims against `git log` (HEAD had been described as
+`2bed0b2`, 32 commits ago). **plan-b7**: closed four of the five proposed
+fixes as three separate code commits (`cd1c38c` write refusal, `ce57c76`
+restore refusal, `4ebf446` optional-locks + rollback catch), each green on
+the suite and on CI before the next, per the standing preference for
+security changes; fix (c) deliberately deferred. Mutation-checked every new
+test against the old behavior. Two things caught along the way: my first
+end-to-end test for the rollback catch exercised the wrong path (a new file
+is removed by `os.remove` and never reaches `git restore`), and the plan's
+"can the manifest tell absent-from-snapshot from created-by-the-agent?" turned
+out to be answerable via ignore status — but only because the agent is also
+denied writes to `.gitignore`, which the plan did not list and which I added.
+`coding_agent_enabled` untouched. Suite 1790 → 1807.
+
+---
+
 ### 2026-09-20 — Low-disk warning
 
 New session per `CLAUDE.md`'s NEW SESSION PROTOCOL: read `HANDOFF.md`/

@@ -12,8 +12,8 @@ against `git log`; sections describing past work are unchanged).
 **Phase 9 / M4 (Conversation & History
 Intelligence) is fully complete — all four sub-milestones (M4.1
 through M4.4) are committed, on `main`, CI-verified.** `main` has taken
-32 commits since `2bed0b2` (the HEAD an older status block below used to
-claim), the last *code* commit being `5a93a2d`; docs commits follow it,
+37 commits since `2bed0b2` (the HEAD an older status block below used to
+claim), the last *code* commit being `4ebf446`; docs commits follow it,
 so run `git log -1` for the true HEAD rather than trusting a hash here.
 In order: `37fb078` (QAAgent's missing `-t .`, a live production safety
 fix), `f8c638a` (M10.0 — the general permission chokepoint), `df26bc0`
@@ -21,9 +21,10 @@ fix), `f8c638a` (M10.0 — the general permission chokepoint), `df26bc0`
 `coding_agent_enabled` still `False`), `923f8f5` (docs for both), then the
 voice false-triggering fix, the "say hi" fixes, M4.4 on by default, M4.5,
 AUTHORITY.md §2's memory sidecar, OpenClaw M2.1, the Telegram and Alexa
-bridges, the MemoryAgent bypass audit, the low-disk warning, and the
-checkpoint git-health characterization tests — see the dedicated section
-for each below. Suite: **1790 tests, 0 failures**. This is a correction of every earlier version of
+bridges, the MemoryAgent bypass audit, the low-disk warning, the
+checkpoint audit (plan-b6), and its four-fix hardening (plan-b7:
+`cd1c38c`, `ce57c76`, `4ebf446`) — see the dedicated section for each
+below. Suite: **1807 tests, 0 failures**. This is a correction of every earlier version of
 this paragraph, which described M4.3 as stuck on a feature branch and
 M4.4 as not started — both are done (see CLAUDE.md's NEW SESSION
 PROTOCOL — trust `git log` over this file when they disagree; that
@@ -1053,34 +1054,60 @@ directly on top of M10.0 (`f8c638a`, see below) — both CI-verified green
 on the first attempt. `coding_agent_enabled` remains `False`; committing
 this changed nothing about what runs by default.
 
-**2026-09-20 checkpoint audit (plan-b6 item 1) — conclusion: real gaps,
-none fixed yet.** Whether the git-ref mechanism actually withstands the
-concerns Phase 10's design docs raised against git-based checkpointing had
-never been tested. It has now, against throwaway repos with real git.
-Result: **gitignored files are a severe gap** (they are absent from the
-snapshot, so `restore_paths` *deletes* a pre-existing ignored file and
-reports success, and an agent's edit to one is invisible to
-`changed_paths_since` — and `.env`, `JarvisVault/`, `logs/`,
-`graphify-out/` are all gitignored *and not on CodingAgent's write
+**2026-09-20 checkpoint audit (plan-b6) and hardening (plan-b7) —
+audited, real gaps found, four of five fixes landed, (c) deferred,
+`coding_agent_enabled` NOT flipped.** Whether the git-ref mechanism
+withstands the concerns Phase 10's design docs raised against git-based
+checkpointing had never been tested; plan-b6 tested it against throwaway
+repos with real git (16 characterization tests, `5a93a2d`). Findings:
+**gitignored files were a severe gap** (in no snapshot, so `restore_paths`
+*deleted* a pre-existing ignored file and reported success, an agent edit
+to one was invisible to `changed_paths_since`, and `.env`, `JarvisVault/`,
+`logs/`, `graphify-out/` were gitignored *and not on CodingAgent's write
 denylist*); **a human edit made after the agent's write is silently
-discarded by rollback**; **`create_checkpoint`'s `git status` rewrites the
-real `.git/index`** (a concurrent `git add` failed 7 of 148 times in a
-stress run; `GIT_OPTIONAL_LOCKS=0` made it 0 of 132); and **rollback needs
-the real index to work** (a held or stale `index.lock`, or a corrupt
-index, blocks it — it fails cleanly and the checkpoint ref survives for
-manual recovery). Detached HEAD and a conflicted merge are handled
-correctly, and creation itself is safe against a held `index.lock`. The
-module is safe to leave in place while `coding_agent_enabled` is `False`
-(its only caller is gated by that flag); it must not be enabled before the
-gitignored gap is closed. Full findings, git-subcommand inventory, and the
-fix list are in the vault note
+discarded by rollback**; **`create_checkpoint`'s `git status` rewrote the
+real `.git/index`** (a concurrent `git add` failed 7 of 148 times, 0 of
+132 with `GIT_OPTIONAL_LOCKS=0`); and **rollback needs the real index to
+work** (a held/stale `index.lock` or corrupt index blocks it — it fails
+cleanly and the ref survives for manual recovery). Detached HEAD and a
+conflicted merge were fine.
+
+**Closed by plan-b7, three commits, each green on the suite and CI first
+time (`cd1c38c`, `ce57c76`, `4ebf446`):**
+- *(a)* `write_file` refuses paths no checkpoint can protect: an expanded
+  denylist on the resolved, case-insensitive path (`.env`/`.env.*` at any
+  depth, `JarvisVault/`, `logs/`, `graphify-out/`, `.relay/`, `.git/`,
+  `.venv/`, any `.gitignore`) plus *any* gitignored path (new
+  `coding_checkpoint.is_gitignored`, fails closed); every refusal is a
+  hard, audited error (`coding_agent_write_refused`).
+- *(b)* `restore_paths` refuses, naming the path and changing nothing, a
+  path that exists but is absent from the snapshot and gitignored; an
+  absent non-ignored path is still removed (the agent created it). No
+  manifest change was needed — ignore status discriminates, and is stable
+  because the agent cannot edit a `.gitignore` (this denylist entry was
+  not in the plan; it closes an un-ignore-then-overwrite bypass). Also
+  two-phase rollback, and snapshot membership from `git ls-tree` rather
+  than from `git cat-file` failing.
+- *(d)* `GIT_OPTIONAL_LOCKS=0` on every git call. *(e)* `_attempt_rollback`
+  catches `CheckpointError`, so a git-level rollback failure keeps its
+  `verification_status`/`rolled_back` metadata.
+
+**Still open.** *(c)* — recording the agent's own write so a later human
+edit to the same file is detectable — is **deliberately deferred** (real
+design in it, its own round); two `test_KNOWN_GAP_*` tests still pin it.
+Rollback still depends on the real index being usable (by design; fails
+cleanly). Residuals worth knowing: `_read_file` can still read `.env`
+(reads are ungated by a deliberate, documented choice — CLAUDE.md rule 3 —
+but the content goes to the model provider); rollback phase 2 is not
+atomic against a git failure partway through a multi-path restore. **The
+module and CodingAgent are safe to leave as they are while
+`coding_agent_enabled` is `False`; closing these gaps did not turn it
+on, and turning it on remains gated on real usage evidence.** Full
+findings: vault note
 `JarvisVault/Knowledge/Decisions/Phase10-Checkpoint-Git-Vs-Byte-Level.md`
-(gitignored — local to this Mac); probe scripts and raw transcripts are in
-`.relay/audit-b6/`; the deterministic findings are pinned by 16
-characterization tests in `tests/test_coding_checkpoint_git_health.py`
-(`test_KNOWN_GAP_*` pin real defects — flip them, don't delete them, when
-fixed). No change was made to `agent/coding_checkpoint.py` or
-`agent/agents/coding.py`.
+(gitignored — local to this Mac); probe scripts and transcripts in
+`.relay/audit-b6/`; tests in `tests/test_coding_checkpoint_git_health.py`
+(flipped tests carry their old `KNOWN_GAP` names in comments).
 
 - **What it does**: `CodingAgent` (`agent/agents/coding.py`) is real for
   the first time — previously a pure stub. Gated by `config.settings.
@@ -1880,8 +1907,8 @@ counts, superseded in order: S1-era `3514/7421/172` against `e46f5bd`;
 S1.1-era `3532/7452/163` against `d38e794`.
 
 **Working tree**: as of 2026-09-20 `main` is clean and everything
-described in this file is committed — the last code commit is `5a93a2d`,
-32 commits past `2bed0b2`. M10.0 (`f8c638a`) and Phase 10 increment 1
+described in this file is committed — the last code commit is `4ebf446`,
+37 commits past `2bed0b2`. M10.0 (`f8c638a`) and Phase 10 increment 1
 (`df26bc0`) are committed and CI-verified; `coding_agent_enabled` is
 still `False`. (An earlier version of this paragraph said HEAD was
 `2bed0b2` and that Phase 10 increment 1 was "genuinely uncommitted" —
@@ -1891,7 +1918,7 @@ trusting this file. **1790 tests pass, 0 failures** under the canonical
 `python -m unittest discover -s tests -t . -v` (test count over time:
 1492 at M4.4, 1583 after Phase 10 increment 1, 1753 after the MemoryAgent
 audit, 1774 after the low-disk warning, 1790 after the checkpoint
-characterization tests). **The canonical test suite itself makes no live/paid API
+characterization tests, 1807 after the plan-b7 hardening). **The canonical test suite itself makes no live/paid API
 calls and never created a real `refs/jarvis/` checkpoint ref in this
 repo** — that guarantee held throughout. Separately, this same pass
 included a deliberate, user-authorized real dogfooding round (turning
@@ -1909,10 +1936,12 @@ installation persists on this machine.
 **Phase 10 increment 1 is complete and committed** (`df26bc0`, on top of
 M10.0 `f8c638a`) — see the dedicated section above for full detail. Do
 not start increment 2 (turning `coding_agent_enabled` on by default)
-without real usage evidence **and not before the gaps found by the
-2026-09-20 checkpoint audit are closed** (the gitignored-file gap above
-all — see that section's audit paragraph). The design doc's
-concurrent-run locking question is resolved (see the Phase 10 section).
+without real usage evidence. The gaps the 2026-09-20 checkpoint audit
+found are closed except fix (c) (see the Phase 10 section's audit
+paragraph); closing them was a prerequisite for enabling CodingAgent, not
+authorization to — `coding_agent_enabled` is still `False`. The design
+doc's concurrent-run locking question is resolved (see the Phase 10
+section).
 
 Everything from before this pass remains complete and committed on
 `main`: Phase 9 / M4 (M4.1-M4.4), Reliability S1/S1.1, OpenClaw
@@ -2179,8 +2208,8 @@ section above.
 complete, fully tested, and committed (`df26bc0`; M10.0 `f8c638a`) — see
 the dedicated section above. The only thing not done is deciding whether
 to flip `coding_agent_enabled` on by default, which is gated on real
-usage evidence and on closing the gaps the 2026-09-20 checkpoint audit
-found.
+usage evidence (the checkpoint audit's gaps are closed except deferred
+fix (c) — see the Phase 10 section).
 
 **Phase 9 / M4.3 (read-only conversation-history ToolSpecs)** is
 merged to `main` (`b19f042`) — the "feature branch, merge pending"
@@ -2230,9 +2259,9 @@ primary source.
 None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and all of
 Phase 9 / M4 (M4.1 through M4.4) plus S1/S1.1 are committed, pushed, and
 CI-verified on `main`, and so are M10.0 and Phase 10 increment 1
-(`f8c638a`, `df26bc0`; `coding_agent_enabled` still `False`, with real
-gaps to close before it is ever turned on — see the 2026-09-20
-checkpoint audit). Open decisions (none urgent): which real
+(`f8c638a`, `df26bc0`; `coding_agent_enabled` still `False`; the
+2026-09-20 checkpoint audit's gaps are closed except deferred fix (c)).
+Open decisions (none urgent): which real
 messaging channel (if any) to configure for OpenClaw next, whether/when
 to pursue a further Graphify milestone (MCP/hooks/auto-rebuild — none
 implemented or assumed so far), the `last_accessed` design question
@@ -2697,21 +2726,19 @@ For the next session, in order of what's most likely to matter:
   up M4.4-on-by-default *and* the low-disk warning; M4.4's evidence
   cannot accumulate until then); optionally a cheap live "say hi" retest of
   the single-completion greeting (small real API spend, not yet run).
-- **plan-b5's four items are now all resolved** (via `.relay/plan-b6.md`,
-  2026-09-20): item 1 (checkpoint audit) — done, conclusion "real gaps",
-  see the Phase 10 section; item 2 (this file's internal contradictions) —
-  done; item 3 (MemoryAgent bypass audit) — done earlier, ResearchAgent's
+- **plan-b5's four items are all resolved** (via `.relay/plan-b6.md`,
+  2026-09-20): checkpoint audit — done; this file's contradictions —
+  done; MemoryAgent bypass audit — done earlier (ResearchAgent's
   read-only exception is the accepted, documented one in `CLAUDE.md`
-  rule 3; item 4 (relay bookkeeping) — see `.relay/report-b6.md`.
+  rule 3); relay bookkeeping — see `.relay/report-b6.md`. **plan-b7**
+  then closed four of the five audit fixes (see the Phase 10 section).
   `runner-state` is left at its cap deliberately: resuming unattended
   automation is the user's call.
-- **Biggest open item now**: the checkpoint audit's fix list (refuse writes
-  to gitignored paths + denylist `.env*`/`JarvisVault/`/`logs/`/
-  `graphify-out/`; make `restore_paths` refuse rather than delete a path
-  absent from the snapshot; record the agent's own write to detect a later
-  human edit; `GIT_OPTIONAL_LOCKS=0`; catch `CheckpointError` in
-  `_attempt_rollback`). Not started — a separate decision, and the
-  prerequisite for ever enabling CodingAgent.
+- **Biggest open item now**: fix (c) of the checkpoint audit (record the
+  agent's own write + post-write hash so a later human edit is detected
+  and rollback refuses instead of clobbering it), then a decision about
+  `_read_file` and `.env`. Both are prerequisites to *considering*
+  enabling CodingAgent, which also needs real usage evidence. Not started.
 - If nothing above is picked, the honest next step is to ask the user what
   Jarvis should do for them that it doesn't yet — the backlog no longer
   answers that on its own.

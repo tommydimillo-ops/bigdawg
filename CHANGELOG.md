@@ -7,6 +7,76 @@ needed.
 
 ---
 
+## 2026-09-20 — Checkpoint audit (plan-b6) and the fixes it drove (plan-b7)
+
+Phase 10's design docs argued against a git-write-based checkpoint
+(index contention, gitignored files, rollback when git is unhealthy,
+concurrent human edits); what shipped, `agent/coding_checkpoint.py`, was
+git-ref-based and nobody had tested whether those concerns applied. **plan-b6
+audited it** against real git in throwaway repos and found real gaps
+(conclusion "(b) — real gaps"; commit `5a93a2d` added 16 characterization
+tests, HANDOFF records the finding). **plan-b7 closed four of the five
+proposed fixes** — (a), (b), (d), (e); fix (c) is deferred. Nothing here
+flipped `coding_agent_enabled`, which is still `False`.
+
+**The severe finding — gitignored files.** The snapshot is `git add -A`
+into a scratch index, which honors `.gitignore`, so an ignored path is in no
+snapshot, invisible to `changed_paths_since`, and reads as "did not exist".
+`.env` (the real API keys), `JarvisVault/`, `logs/` and `graphify-out/` are
+all ignored *and* were not on CodingAgent's write denylist, so a write to any
+of them was permanent, unreported and unrollbackable; and
+`restore_paths(['key.secret'])` deleted a never-touched, pre-existing ignored
+file and returned success.
+
+**Fixes, one commit each, each CI-green on the first attempt:**
+
+- `cd1c38c` — *(a)* `_write_file` refuses any write no checkpoint can
+  protect: an expanded denylist on the resolved, case-insensitive path
+  (`.env`/`.env.*` at any depth, `JarvisVault/`, `logs/`, `graphify-out/`,
+  `.relay/`, `.git/`, `.venv/`, any `.gitignore`), and any other gitignored
+  path via new `is_gitignored()` (`git check-ignore --no-index`; fails
+  closed). Every refusal is a hard, audited error
+  (`coding_agent_write_refused`). Checked first against every tracked file:
+  none matches an ignore pattern, so no legitimately tracked path is
+  refused. `.gitignore` is on the denylist so the agent cannot un-ignore a
+  file and then overwrite it.
+- `ce57c76` — *(b)* `restore_paths` refuses, naming the path and changing
+  nothing, a path that exists but is absent from the snapshot *and*
+  gitignored; a non-ignored absent path is still removed (the agent created
+  it). No manifest change was needed — ignore status distinguishes the two.
+  Also: snapshot membership now comes from `git ls-tree`, not from `git
+  cat-file` failing (a corrupt object used to read as "did not exist" and get
+  the file deleted), and rollback is two-phase (validate all, then change
+  any) so a refusal never leaves a half-rolled-back tree.
+- `4ebf446` — *(d)* `GIT_OPTIONAL_LOCKS=0` on every git call (the `git
+  status` baseline was rewriting the real `.git/index`; a concurrent `git
+  add` failed 7 of 148 times, 0 of 132 after), and *(e)* CodingAgent's
+  `_attempt_rollback` catches `CheckpointError`, not only the
+  `CheckpointRestoreFailed` subclass, so a git-level rollback failure no
+  longer drops `verification_status`/`rolled_back`.
+
+**Not fixed — fix (c), deferred on purpose**: recording the agent's own write
+so a later human edit to the same file is detectable. A human edit made after
+the agent's write is still silently discarded by rollback; two
+`test_KNOWN_GAP_*` tests pin it. It has real design in it and gets its own
+round.
+
+**Also corrected**: `coding_checkpoint.py`'s docstring and `ARCHITECTURE.md`
+§12e claimed the real index and `HEAD` are "never touched"; the audit
+disproved that. Both now say precisely what is true after the fixes
+(creation writes neither and takes no lock; rollback's `git restore` still
+takes the index lock, so a held/stale one blocks rollback).
+
+**Also**: `.relay/runner.sh` picked the newest plan with a plain string sort
+(`plan-b10.md` would sort before `plan-b2.md`); now `sort -V`.
+
+**Verified**: each fix's tests were mutation-checked — reverted, they fail.
+Of the seven `test_KNOWN_GAP_*` tests, five were flipped to assert the fixed
+behavior and renamed (none deleted); two survive, both for fix (c). Full
+suite 1790 → 1807.
+
+---
+
 ## 2026-09-20 — Low-disk warning (system status, dashboard, greeting)
 
 Resolved `ROADMAP.md`'s "Low-disk health monitoring/alert" Future item.

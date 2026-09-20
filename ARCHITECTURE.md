@@ -1030,7 +1030,10 @@ repository the edits happen in.
 **Mechanism**: `create_checkpoint(request_id)` snapshots the working tree
 into `refs/jarvis/checkpoints/<request_id>` via a scratch
 `GIT_INDEX_FILE` (`git add -A` / `write-tree` / `commit-tree -p HEAD` /
-`update-ref`) — the real index and `HEAD` are never touched. A ref
+`update-ref`) — creating a checkpoint writes neither the real index nor
+`HEAD` (true only once every git call runs with `GIT_OPTIONAL_LOCKS=0`;
+as originally shipped the `git status` baseline rewrote the real index —
+see "Hardening from the plan-b6 audit" below). A ref
 outside `refs/heads/` never appears in `git log`, `git branch`, or a
 push. Two alternatives were rejected during design specifically because
 this repo can have a second, concurrent Claude Code session with its own
@@ -1042,7 +1045,9 @@ path-scoped `git restore --source=<ref>` — never `git reset --hard` —
 that also handles the one thing a plain `git restore` cannot express
 (verified empirically, not assumed): a path absent from the checkpoint
 tree means the agent created it since, so restoring it means deleting it,
-not erroring.
+not erroring — **for a non-ignored path**. For a gitignored one absence
+is ambiguous, and `restore_paths` refuses instead (see the hardening
+section below).
 
 **The one rule the whole design rests on**: `dirty_at_checkpoint` and
 `dirty_paths_at_checkpoint` are recorded via `git status --porcelain` at
@@ -1092,7 +1097,8 @@ threads — the same real-process convention `tests/test_history_store.py`
 already established for a filesystem/git-level race, since it isn't a
 GIL artifact): 8 processes calling `create_checkpoint` concurrently
 against the same repo, 5+ rounds, zero errors, `git fsck` clean every
-time — its scratch `GIT_INDEX_FILE` never touches the real index, so
+time — its scratch `GIT_INDEX_FILE` never touches the real index (the
+separate `git status` baseline call did; see the hardening section), so
 **checkpoint creation needs no lock at all**. The identical experiment
 against `restore_paths` failed with a real `fatal: Unable to create
 '.git/index.lock': File exists` in every round tested, before a fix —
@@ -1104,6 +1110,63 @@ queued rollback must still happen rather than be silently dropped.
 Verified fixed (8/8 across 8 rounds, versus 2-5 failures per round
 before) and covered by `tests/test_coding_checkpoint.py::TestConcurrency`
 (real multiprocess, never mocked).
+
+**Hardening from the plan-b6 audit (closed by plan-b7, 2026-09-20).**
+The git-ref design had never been tested against the concerns raised
+about git-based checkpointing; the audit did that (real git, throwaway
+repos; `tests/test_coding_checkpoint_git_health.py`, full write-up in the
+vault note `Phase10-Checkpoint-Git-Vs-Byte-Level.md`) and found real
+gaps, now closed:
+
+- **Gitignored files (the severe one).** `create_checkpoint`'s `git add
+  -A` honors `.gitignore`, so an ignored path is in no snapshot, is
+  invisible to `changed_paths_since`, and reads as "did not exist".
+  `.env` (the real API keys), `JarvisVault/`, `logs/` and `graphify-out/`
+  are all ignored yet were writable by CodingAgent, so a write to any of
+  them was permanent, unreported and unrollbackable, and `restore_paths`
+  deleted a pre-existing ignored file it was handed and reported success.
+  Fixed on both sides: `_write_file` refuses any gitignored path (new
+  `coding_checkpoint.is_gitignored`, `git check-ignore --no-index`, fails
+  closed if git cannot answer) and an expanded denylist on the *resolved*,
+  case-insensitive path (`.env`/`.env.*` at any depth, `JarvisVault/`,
+  `logs/`, `graphify-out/`, `.relay/`, `.git/`, `.venv/`, and any
+  `.gitignore` — the last so the agent cannot un-ignore a file and then
+  overwrite it); every refusal is a hard error and is audited
+  (`coding_agent_write_refused`). `restore_paths` now refuses, naming the
+  path and changing nothing, a path that exists but is absent from the
+  snapshot *and* gitignored; a non-ignored absent path is still removed
+  (the agent created it). Ignore status is a sound discriminator only
+  while the ignore rules are unchanged since the checkpoint, which the
+  `.gitignore` denylist entry guarantees for CodingAgent's own writes; a
+  caller that cannot promise that must not rely on it. Rollback is now
+  two-phase (validate every path, then change any), and whether a path is
+  in the snapshot comes from `git ls-tree`, not from `git cat-file`
+  failing — a corrupt object used to read as "did not exist" and get the
+  file deleted.
+- **Index contention.** The dirty-path baseline (`git status
+  --porcelain`) opportunistically rewrote the real `.git/index` under
+  `index.lock`; a concurrent `git add` failed 7 of 148 times in a stress
+  run. `_run_git` now sets `GIT_OPTIONAL_LOCKS=0` on every call (0 of 132
+  after). Creation now leaves the index bytes and `HEAD` unchanged and
+  takes no index lock. Rollback's `git restore` still takes the index
+  lock because it needs it, so a held or stale `.git/index.lock`, or a
+  corrupt index, blocks rollback — it fails cleanly and the ref survives
+  for manual recovery (`git show <ref>:<path>`), but rollback does depend
+  on git being healthy. Detached HEAD and a conflicted merge are handled.
+- **Lost rollback result.** A git-level rollback failure reaches
+  CodingAgent's `_attempt_rollback` as plain `CheckpointError`; it caught
+  only the `CheckpointRestoreFailed` subclass, so the failure escaped to
+  `execute()`'s outer handler and dropped `verification_status`/
+  `rolled_back`. It now catches the base class.
+
+**Still open — fix (c), deliberately deferred.** Nothing records what the
+agent itself wrote, so a human edit made to the same file after the
+agent's write is indistinguishable from the agent's and is silently
+discarded by rollback (CodingAgent's `files_written ∩ changed_paths` scope
+protects *other* files, not this case). Two `test_KNOWN_GAP_*` tests still
+pin it. **None of this flipped `coding_agent_enabled`**, which remains
+`False`; closing these gaps is a prerequisite for turning it on, not
+authorization to.
 
 ### CodingAgent's real execution (Phase 10 increment 1)
 
@@ -1160,8 +1223,12 @@ an existing mechanism, not a second dispatch path).
 `agent/coding_checkpoint.py`, `agent/agents/coding.py`,
 `agent/agents/manager.py`, `agent/agents/worker.py`,
 `tools/registry.py`, `tests/_safety.py`, `config/settings.py`, and
-anything under `.github/workflows/` — unconditionally, regardless of task
-or confirmation. A tool that could edit the files implementing its own
+anything under `.github/workflows/` — plus, since plan-b7, `.env`/`.env.*`
+and any `.gitignore` at any depth and everything under `JarvisVault/`,
+`logs/`, `graphify-out/`, `.relay/`, `.git/` and `.venv/`, matched on the
+resolved path, and *any other gitignored path* (no checkpoint can cover
+one) — unconditionally, regardless of task or confirmation, each refusal
+audited. A tool that could edit the files implementing its own
 gating logic would break "the actual gate is always code," CLAUDE.md's
 own stated security invariant; deliberately not exhaustive (a
 comprehensive security boundary is a separate, larger effort), narrow

@@ -9,7 +9,8 @@ never trades away.
 
 Checkpoint mechanism, and why: a private git ref
 (refs/jarvis/checkpoints/<request_id>), written via a scratch
-GIT_INDEX_FILE so the real index and HEAD are never touched --
+GIT_INDEX_FILE, so creating a checkpoint writes neither the real index
+nor HEAD --
 
     GIT_INDEX_FILE=<tmp> git add -A
     GIT_INDEX_FILE=<tmp> git write-tree      -> <tree>
@@ -25,9 +26,36 @@ races with a concurrent editor/session and has no natural diff). This
 also specifically survives the scenario that sank a plain file-snapshot
 design: this repo can have a second, concurrent Claude Code session with
 its own uncommitted edits in the same working tree (relay mode's whole
-premise) -- a scratch index and a non-heads ref never touch anything a
-concurrent `git status`/`git add`/`git commit` in that same tree would
-see or race with.
+premise) -- a scratch index and a non-heads ref mean creation writes
+nothing a concurrent `git status`/`git add`/`git commit` in that same
+tree would see, and takes no lock it would race with.
+
+That last claim was NOT true as originally shipped, and the earlier
+wording of this docstring ("the real index and HEAD are never touched")
+was wrong with it. The plan-b6 audit found the dirty-path baseline,
+a plain `git status --porcelain`, opportunistically REWRITES the real
+.git/index under index.lock whenever a tracked file's stat data is stale
+-- so a concurrent `git add` landing in that window failed (7 of 148 in
+a stress run). Every git call here now runs with GIT_OPTIONAL_LOCKS=0
+(see _run_git), which is what makes the claim true: with it, creation
+was measured to leave the index bytes and HEAD unchanged and to take no
+index lock. Rollback is different and stays different: `git restore`
+takes the real index lock because it needs it (in testing it did not
+rewrite the index's contents), so a held OR stale .git/index.lock blocks
+rollback. That fails cleanly -- nothing is corrupted and the checkpoint
+ref survives for manual recovery -- but rollback does depend on the
+real index being usable.
+
+What a snapshot cannot cover: gitignored files. `git add -A` honors
+.gitignore, so an ignored path is in no snapshot, is invisible to
+changed_paths_since, and cannot be told apart from "did not exist".
+Three guards follow from that, none of them a substitute for the others:
+agent/agents/coding.py refuses to write any gitignored path (so an edit
+no checkpoint could recover is never made), restore_paths refuses --
+never deletes -- an ignored path absent from the snapshot, and that
+same write path never lets the agent edit a .gitignore (so ignore status
+is stable for the length of a run, which is what makes it a sound way to
+tell "the agent created this" from "this predates the checkpoint").
 
 The one rule the whole design rests on: `dirty_at_checkpoint` is recorded
 at checkpoint time, and `restore_paths` refuses to touch any path that

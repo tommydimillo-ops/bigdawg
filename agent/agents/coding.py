@@ -42,6 +42,9 @@ Scope deliberately narrowed for increment 1, beyond what
     just an instruction in a system prompt. Deliberately not exhaustive
     (a real, comprehensive security boundary is a larger, separate
     effort) -- narrow and explicit, matching increment 1's own scope.
+    Since plan-b7 the write path also refuses any gitignored path (the
+    checkpoint cannot snapshot, report, or roll back an ignored file --
+    found by the plan-b6 audit) and audits every refusal.
 """
 import os
 import re

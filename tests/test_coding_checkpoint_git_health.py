@@ -1,17 +1,20 @@
-"""Characterization tests for agent/coding_checkpoint.py against the four
-concerns Phase 10's design docs raised about git-based checkpointing
-(plan-b6 item 1; findings in JarvisVault/Knowledge/Decisions/
-Phase10-Checkpoint-Git-Vs-Byte-Level.md).
+"""Tests for agent/coding_checkpoint.py against the four concerns Phase 10's
+design docs raised about git-based checkpointing (plan-b6 audit; findings
+in JarvisVault/Knowledge/Decisions/Phase10-Checkpoint-Git-Vs-Byte-Level.md),
+and -- since plan-b7 -- proof that the gaps that audit found are closed.
 
-These pin what the shipped module ACTUALLY does today, real `git`
-against a throwaway repo per test, never mocked. Tests named
-`test_KNOWN_GAP_*` pin behavior that is a real defect or a real hole in
-a guarantee the module's docstring implies -- they are here so the
-finding stays re-checkable on every run, not because the behavior is
-desired. When one of these gaps is fixed, its test SHOULD start failing;
-flip its assertion (and update the decision note) rather than deleting it.
-
-Deliberately no fix and no change to the module in this round.
+Real `git` against a throwaway repo per test, never mocked. Tests were
+first written to pin what the module ACTUALLY did (named
+`test_KNOWN_GAP_*` when the behavior was a real defect). Plan-b7 fixed
+five of the seven and each was flipped to assert the fixed behavior and
+renamed off the prefix, not deleted; the flipped test's comment records
+its old name. Two `test_KNOWN_GAP_*` tests still stand, both belonging to
+fix (c) (recording the agent's own write so a later human edit is
+detectable), deliberately deferred: a human edit made after the agent's
+write is still silently discarded by rollback, and restore_paths itself
+still does not guard a path the caller passes that the agent never
+touched (CodingAgent's files_written intersection is what protects that
+today). When (c) lands those two should start failing; flip them.
 
 Run with: python -m unittest tests.test_coding_checkpoint_git_health -v
 """
