@@ -5,6 +5,28 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-20 — Read-side chokepoint (plan-b8)
+
+Executed plan-b8: b7 made CodingAgent unable to overwrite `.env`, but it could
+still read it. Enumerated every read path first (whole-repo `ast` sweep) and
+found four model-reachable readers in three implementations, so built **one**
+shared chokepoint (`agent/secret_paths.py`) instead of patching `_read_file`
+and calling it closed; three separate commits (chokepoint + wiring, write-side
+carve-out, structural test), each green on the suite and CI before the next.
+Demonstrated the structural test failing on a deliberately added ungated
+reader and passing once removed. **The important finding was not on the plan's
+list**: `run_python` — a live main-loop tool — can read `.env` and the whole
+inherited environment (proved with a fake `.env`), so the read side is
+**not** closed; the plan's first STOP condition applied, so I reported it
+instead of changing that tool's semantics, and verified in a throwaway probe
+that a narrow Seatbelt read-deny would work. Mistakes caught along the way: my
+first exploratory scan omitted the `documents/` package (where `read_document`
+lives) until a second pass by primitive rather than by name; `sed -i` failed on
+macOS and I fixed a test-name typo with Python instead. Suite 1807 -> 1865.
+`coding_agent_enabled` untouched.
+
+---
+
 ### 2026-09-20 — Checkpoint audit (plan-b6) and hardening (plan-b7)
 
 Two relay plans executed interactively (`runner.sh` had started an unattended

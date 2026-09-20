@@ -783,6 +783,24 @@ not in-progress work.
 
 ## Next
 
+**TOP OF THE LIST (found by plan-b8, 2026-09-20) — `run_python` and the test
+runners can read secrets, and it is live today.** plan-b8 closed the file-
+reader paths (`agent/secret_paths.py`), but `tools/sandbox_python.py`'s
+`run_python` — a registered main-loop tool, independent of
+`coding_agent_enabled` — runs model-written code under a Seatbelt profile
+that is `(allow default)` with the whole environment inherited (where
+`load_dotenv` puts the real API keys); CodingAgent's `run_tests` and
+QAAgent's suite run also execute agent-written test files and return their
+output to the model. Demonstrated with a fake `.env`/env var. A verified-
+feasible fix (a narrow `(deny file-read* (regex ...))` Seatbelt rule plus a
+scrubbed subprocess environment) was NOT applied because it changes
+`run_python`'s semantics — needs the user's decision. Tracked in code in
+`tests/test_read_paths_structural.py`'s
+`ACKNOWLEDGED_UNGUARDED_CODE_EXECUTION`. Then fix (c) of the checkpoint audit
+(detect a human edit made after the agent's write) and multi-path rollback
+atomicity. Both remain gated behind real usage evidence before
+`coding_agent_enabled` is ever turned on.
+
 **Phase 9 / M4A — Conversation & History Intelligence Architecture
 Audit is complete** (an audit-and-design-only pass, delivered as an
 in-conversation report — no committable artifact of its own beyond the

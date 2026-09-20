@@ -171,6 +171,12 @@ integration).
 - **Never log secrets or full user content** in
   `agent/observability.py` — preview/truncate, as the existing pattern
   does.
+- **Never read a secret file into a prompt.** Every file-content reader
+  goes through `agent.secret_paths.refuse_secret_read` (see "Rules for
+  modifying existing architecture" #3) — reads leave the machine
+  irreversibly, so unlike a write there is no checkpoint to fall back on.
+  A new reader that skips the chokepoint fails
+  `tests/test_read_paths_structural.py`.
 - **A coworker agent's subprocess (`agent/agents/worker.py`) writes only
   one JSON line to stdout** — don't add a `print()` anywhere on that
   path; it would corrupt the parent's parse of the result.
@@ -213,7 +219,7 @@ into six real files under the live
 safety-guaranteed invocation either. Always use one of the two commands
 above.
 
-1774 tests as of this writing, all passing. `tests/__init__.py` +
+1865 tests as of this writing, all passing. `tests/__init__.py` +
 `tests/_safety.py` install a package-level safety bootstrap before any
 test module is imported: a disposable per-process temp directory that
 every production persistent-store path constant is redirected into, an
@@ -262,7 +268,8 @@ CI, uses its own service namespace and synthetic credentials only).
    every such call site, re-derived from real source on every test run,
    not a comment that can drift:
    - `agent/research_agent.py`'s own tiny internal loop (`open_browser`/
-     `read_document`, both read-only) — documented, deliberate, narrow,
+     `read_document`, both read-only — and `read_document` is behind the
+     secret-read chokepoint, see below) — documented, deliberate, narrow,
      audited.
    - `agent/agents/memory.py`'s `execute()`, `recall()` call only (read-
      only) — shaped identically to ResearchAgent's exception above.
@@ -283,8 +290,40 @@ CI, uses its own service namespace and synthetic credentials only).
    callable registered tool. Reads and test-suite spawns inside the same
    coworker agents (CodingAgent's `_read_file`/`_run_test_suite`,
    QAAgent's `_run_test_suite`, MemoryAgent's `recall()`) remain ungated
-   by deliberate, documented choice — writes were, and remain, the
-   stated blast radius, not reads.
+   **by the autonomy gate** — by deliberate, documented choice: for
+   ordinary files, writes are the blast radius, not reads.
+
+   **Reads are ungated EXCEPT for secrets** (plan-b8). This replaces the
+   earlier rule that reads are simply ungated, which was wrong in the one
+   case that mattered: a bad write is recoverable (that is the whole
+   point of `agent/coding_checkpoint.py`), but a file read into a prompt
+   has left the machine — it went to the model provider — and the only
+   remedy is rotating every key it touched. So every function that reads
+   file contents must call `agent.secret_paths.refuse_secret_read`
+   (or `secret_path_reason`), which refuses `.env`/`.env.*` at any depth,
+   `*.pem`, `*.key`, `id_rsa*` and the other private-key names, `*.p12`,
+   `*.keychain*`, `credentials*`, `*_token*`, `*.secret` and anything
+   under `Library/Keychains`, matched on the resolved path, as a hard,
+   audited error — with `.env.example`/`.env.sample`/`.env.template`
+   carved out (tracked, so no secret; the same list is used by
+   CodingAgent's write denylist). One shared function, not a guard per
+   reader: the four model-reachable readers (`coding.py`'s `_read_file`,
+   `documents/reader.py`'s `read_document` — shared by the registered tool
+   and ResearchAgent — and the Obsidian vault's `read_note`/`search_notes`)
+   are three separate implementations, which is exactly the shape that
+   produced the M10.0 bypasses. `tests/test_read_paths_structural.py`
+   re-derives every file-reading function from source on every run and
+   fails on any that neither calls the chokepoint nor is in its explicit,
+   reasoned accepted table. Do NOT extend the refusal to "everything
+   gitignored" on the read side — reading `logs/` to debug is legitimate.
+
+   **Not closed by this, and tracked openly: code execution.**
+   `tools/sandbox_python.py`'s `run_python` (a registered main-loop tool)
+   and the test-suite runners execute model-written code with real read
+   access; that code can `open('.env')` or read the inherited environment
+   without touching any guarded reader. A file-path check cannot cover
+   arbitrary code. See HANDOFF.md and the acknowledged table in the
+   structural test.
 4. **New coworker-agent capability**: real execution must go through
    `agent/agents/manager.py`'s `execute_agent()` (subprocess-isolated),
    not by calling an agent's `.execute()` directly from a tool handler —

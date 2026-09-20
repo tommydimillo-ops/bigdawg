@@ -7,6 +7,69 @@ needed.
 
 ---
 
+## 2026-09-20 — Read-side chokepoint: secrets must not reach the model provider (plan-b8)
+
+plan-b7 closed the write side (CodingAgent cannot overwrite `.env`); the
+agent could still **read** it, which sends the keys to the model provider.
+Those failures are not equivalent: a bad write is recoverable (that is the
+point of the checkpoint), a secret that has left the machine is gone and the
+remedy is rotating every key it touched.
+
+**Enumerated first.** A whole-repo `ast` sweep found 39 read-capable functions
+— 35 fixed-path internal stores/locks and 4 model-reachable: CodingAgent's
+`_read_file`; `documents/reader.py`'s `read_document` (shared by the registered
+`read_document` tool and ResearchAgent; unconfined; `.env` itself was kept out
+only by its `.pdf`/`.txt`/`.md` extension whitelist, **by accident** —
+`.env.txt`, `credentials.txt`, `github_token.md` were readable); and the
+Obsidian vault's `read_note`/`search_notes`. `open_and_read` cannot reach files
+(`URL_LIKE` accepts only `http(s)`/hostnames), `analyze_image` only sees
+screenshots, `search_files`/`open_file` return paths or launch an app.
+
+**Three commits, each green on the suite and CI first time:**
+
+- `bd120eb` — new `agent/secret_paths.py`, `refuse_secret_read()`: **one shared
+  chokepoint** called by all four readers (the M10.0 lesson: three
+  implementations each remembering its own guard is the bypass shape). Refuses
+  `.env`/`.env.*` at any depth, `*.pem`, `*.key`, `id_rsa*` (+ dsa/ecdsa/
+  ed25519), `*.p12`, `*.keychain*`, `credentials*`, `*_token*`, `*.secret`,
+  `Library/Keychains/**`; matched on the resolved path *and* the path as given;
+  a hard, audited error (`secret_read_refused`) before the existence check,
+  never including content. `.env.example`/`.sample`/`.template` carved out
+  (exact basename, per candidate — a symlink named `.env.example` -> `.env` is
+  still refused). Does **not** refuse all gitignored files (`logs/` stays
+  readable). 33 tests, fake secrets only; the end-to-end test asserts the
+  secret string is absent from every payload sent to the model.
+- `48fce0b` — b7's write denylist refused `.env.example`; it now uses the same
+  shared carve-out list. Only basename rules relax; the resolved path and the
+  directory prefixes still apply. 7 tests.
+- `5e16b10` — `tests/test_read_paths_structural.py`, the read-side twin of the
+  gating structural test: default-deny over every file-reading function,
+  re-derived from source each run; a new reader must guard or be written down;
+  stale entries fail; `read_pdf` must have exactly one, guarded, caller. 18
+  tests including scanner self-tests. Demonstrated failing on a temporary
+  ungated `tools/files.py::read_text_file`, passing once removed.
+
+**Not closed — found by the enumeration, reported not fixed: code execution.**
+`run_python` (a registered main-loop tool) runs model-written code under a
+Seatbelt profile that is `(allow default)` (its own comment: reads are not
+restricted) with the whole environment inherited. Demonstrated with a **fake**
+`.env` and fake env var under the safety harness: both were read and returned.
+CodingAgent's `run_tests` / QAAgent's suite run execute agent-written test files
+and return the output tail. A path check cannot cover arbitrary code. A narrow
+Seatbelt read-deny was verified feasible in a throwaway probe (blocks a direct
+read, a symlink read and `cat`; ordinary files unaffected) but not applied —
+it changes `run_python`'s semantics. Tracked in the structural test's
+`ACKNOWLEDGED_UNGUARDED_CODE_EXECUTION`. **This is live today, independent of
+`coding_agent_enabled`.**
+
+**Still open (unchanged, recorded not built):** fix (c) — a human edit after the
+agent's write is silently discarded by rollback (two `KNOWN_GAP` tests); and
+multi-path rollback is not atomic if git fails partway through.
+
+`coding_agent_enabled` stays `False`. Suite 1807 -> 1865.
+
+---
+
 ## 2026-09-20 — Checkpoint audit (plan-b6) and the fixes it drove (plan-b7)
 
 Phase 10's design docs argued against a git-write-based checkpoint

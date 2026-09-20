@@ -55,7 +55,12 @@ _read_file), test-suite spawns (CodingAgent's _run_test_suite/
 _collected_test_count, QAAgent's _run_test_suite), and ResearchAgent's
 own pre-existing, CLAUDE.md-documented exception are all still ungated,
 by explicit choice, not by oversight -- this file is that explicit
-choice, in writing. See CLAUDE.md's "Important coding conventions"
+choice, in writing. ("Ungated" here means not routed through agent.
+autonomy's decision engine. Since plan-b8 every one of those READS is
+separately behind agent.secret_paths.refuse_secret_read, enforced by
+tests/test_read_paths_structural.py; the test-suite spawns are NOT covered
+by that -- they execute agent-written code, tracked in that file's
+ACKNOWLEDGED_UNGUARDED_CODE_EXECUTION.) See CLAUDE.md's "Important coding conventions"
 section (the ResearchAgent-exception rule) and ROADMAP.md's "MemoryAgent
 bypass audit" entry (now resolved -- gated as of this pass) for the full
 history.
@@ -129,7 +134,8 @@ class AcceptedException:
 ACCEPTED_UNGATED_CALL_SITES = frozenset({
     AcceptedException(
         file="agent/agents/coding.py", function="_read_file",
-        reason="Read-only. Writes are this round's blast radius, not reads.",
+        reason="Not autonomy-gated: read-only, and writes are this round's blast radius. Secret "
+               "files are refused separately by agent.secret_paths (plan-b8).",
     ),
     AcceptedException(
         file="agent/agents/coding.py", function="_run_test_suite",

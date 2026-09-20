@@ -1226,8 +1226,9 @@ an existing mechanism, not a second dispatch path).
 anything under `.github/workflows/` — plus, since plan-b7, `.env`/`.env.*`
 and any `.gitignore` at any depth and everything under `JarvisVault/`,
 `logs/`, `graphify-out/`, `.relay/`, `.git/` and `.venv/`, matched on the
-resolved path, and *any other gitignored path* (no checkpoint can cover
-one) — unconditionally, regardless of task or confirmation, each refusal
+resolved path (`.env.example`/`.env.sample`/`.env.template` excepted since
+plan-b8 — tracked, so no secret; see §13), and *any other gitignored
+path* (no checkpoint can cover one) — unconditionally, regardless of task or confirmation, each refusal
 audited. A tool that could edit the files implementing its own
 gating logic would break "the actual gate is always code," CLAUDE.md's
 own stated security invariant; deliberately not exhaustive (a
@@ -1356,6 +1357,77 @@ on a low reading. Three consumers, all read-only:
 - **Voice-specific safety**: `agent/quiet_mode.py` (indefinite "quiet", or
   timed "sleep"/"off" — 10/30 minutes, auto-expiring, cancellable early by
   a wake phrase) plus the voice-confirmation rule above.
+
+### Secret-read chokepoint (plan-b8)
+
+`agent/secret_paths.py` — the one function every model-steerable
+file-content reader calls before it opens anything. **Why it exists**:
+reads leave the machine irreversibly. A bad write is recoverable (the
+checkpoint, §12e); file content read into a prompt has been sent to the
+model provider, and the only remedy is rotating every key it touched.
+plan-b7 closed the write side (CodingAgent cannot overwrite `.env`);
+this is the read side.
+
+**The enumeration that shaped it.** Every path by which a model can reach
+file contents, found by a whole-repo `ast` sweep (39 read-capable
+functions; 35 fixed-path internal stores/locks, 4 model-reachable):
+
+| Reader | Where | Caller | Could reach `.env` before |
+|---|---|---|---|
+| `_read_file` | `agent/agents/coding.py` | CodingAgent's loop | **yes** — repo-confined, ungated |
+| `read_document` | `documents/reader.py` | the registered `read_document` tool (main loop, level 0) **and** ResearchAgent's tool loop | not `.env` itself (its `.pdf`/`.txt`/`.md` extension whitelist kept it out — by accident), but **yes** for `.env.txt`, `credentials.txt`, `github_token.md`, any `.txt`/`.md`/`.pdf` on the whole Mac; unconfined |
+| `read_note` / `search_notes` | `agent/obsidian_vault.py` | `read_obsidian_note` / `search_obsidian_vault` | only a secret-named `.md` inside the vault (confined + forced `.md`) |
+| `read_pdf` | `documents/pdf_reader.py` | only `read_document` | via `read_document` |
+| `open_and_read` | `tools/browser.py` | `open_browser`, ResearchAgent | **no** — `URL_LIKE` only accepts `http(s)`/bare hostnames; `file://` is never navigated |
+| `analyze_image` | `tools/vision.py` | screenshot tools | no — only screenshots this process just wrote |
+| `search_files` / `open_file` | `tools/files.py` | registered tools | no — return paths / launch an app, never contents |
+
+Three separate implementations across four readers is exactly the shape
+that produced the M10.0 bypasses (each must remember its own guard), so
+they all call `refuse_secret_read` rather than each growing a check.
+
+**What it refuses**: `.env` and `.env.*` at any depth, `*.pem`, `*.key`,
+`id_rsa*` (plus the `id_dsa`/`id_ecdsa`/`id_ed25519` family), `*.p12`,
+`*.keychain`/`*.keychain-db`, `credentials*`, `*_token*`, `*.secret`, and
+anything under `Library/Keychains`. Matched case-insensitively on the
+basename, against **both** the resolved path (symlinks followed) and the
+path as given — either matching refuses, so a symlink named `notes.txt`
+pointing at `.env` is caught, and a file literally named `.env` is refused
+even if it links to something harmless. **Carve-out**:
+`.env.example`, `.env.sample`, `.env.template` (exact basenames, applied
+per candidate path so a symlink named `.env.example` that resolves to
+`.env` is still refused) — tracked, so they hold no secret; CodingAgent's
+*write* denylist uses the same shared list. A refusal is a hard, audited
+error (`secret_read_refused`) that fires **before** any existence check
+(so it cannot probe for secrets), names the path, and never includes
+content; it is never a partial read. It deliberately does **not** refuse
+all gitignored files — reading `logs/` to debug is legitimate.
+
+**Enforcement**: `tests/test_read_paths_structural.py` is default-deny.
+It re-derives every file-reading function from real source on every run
+(`open()` in a read-capable mode, `os.open`, `read_text`/`read_bytes`,
+`PdfReader`, subprocess `cat`-style commands) and requires each to call
+the chokepoint or appear in an explicit, reasoned accepted table; stale
+entries fail; `read_pdf` is asserted to have exactly one, guarded, caller.
+A fifth reader added later cannot ship ungated by accident.
+
+**NOT closed — code execution.** `tools/sandbox_python.py`'s `run_python`
+(a registered main-loop tool, level 2) runs model-written Python under a
+Seatbelt profile that is `(allow default)`: its own comment says reads are
+not restricted, and the subprocess inherits the whole environment, where
+`load_dotenv` puts the real API keys. plan-b8 demonstrated both with a
+**fake** `.env` and a fake inherited variable under the safety harness.
+CodingAgent's `run_tests` (and QAAgent's suite run) execute test files the
+agent wrote and return the output tail to the model. No path check can
+cover arbitrary code; these need a different fix — a narrow
+`(deny file-read* (regex ...))` Seatbelt rule (verified in a throwaway
+probe to block a direct read, a symlink read and a `cat` subprocess while
+leaving ordinary files readable) plus a scrubbed subprocess environment.
+Not applied: it changes `run_python`'s semantics. They are tracked in code
+in the structural test's `ACKNOWLEDGED_UNGUARDED_CODE_EXECUTION` table, and
+any new code-executing function must be added there or to `FIXED_WORKERS`.
+This exposure exists **today, independent of `coding_agent_enabled`**,
+because `run_python` is part of the main agent's toolset.
 
 ## 14. External APIs
 

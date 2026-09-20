@@ -12,8 +12,8 @@ against `git log`; sections describing past work are unchanged).
 **Phase 9 / M4 (Conversation & History
 Intelligence) is fully complete — all four sub-milestones (M4.1
 through M4.4) are committed, on `main`, CI-verified.** `main` has taken
-37 commits since `2bed0b2` (the HEAD an older status block below used to
-claim), the last *code* commit being `4ebf446`; docs commits follow it,
+41 commits since `2bed0b2` (the HEAD an older status block below used to
+claim), the last *code* commit being `5e16b10`; docs commits follow it,
 so run `git log -1` for the true HEAD rather than trusting a hash here.
 In order: `37fb078` (QAAgent's missing `-t .`, a live production safety
 fix), `f8c638a` (M10.0 — the general permission chokepoint), `df26bc0`
@@ -23,8 +23,9 @@ voice false-triggering fix, the "say hi" fixes, M4.4 on by default, M4.5,
 AUTHORITY.md §2's memory sidecar, OpenClaw M2.1, the Telegram and Alexa
 bridges, the MemoryAgent bypass audit, the low-disk warning, the
 checkpoint audit (plan-b6), and its four-fix hardening (plan-b7:
-`cd1c38c`, `ce57c76`, `4ebf446`) — see the dedicated section for each
-below. Suite: **1807 tests, 0 failures**. This is a correction of every earlier version of
+`cd1c38c`, `ce57c76`, `4ebf446`), and the plan-b8 read-side chokepoint
+(`bd120eb`, `48fce0b`, `5e16b10`) — see the dedicated section for each
+below. Suite: **1865 tests, 0 failures**. This is a correction of every earlier version of
 this paragraph, which described M4.3 as stuck on a feature branch and
 M4.4 as not started — both are done (see CLAUDE.md's NEW SESSION
 PROTOCOL — trust `git log` over this file when they disagree; that
@@ -894,6 +895,84 @@ at session start, verified against `git log` first), `b04d84d` (code +
 first attempt** — GitHub Actions run `35524084934`, `run_attempt: 1`,
 conclusion `success` (checked via the public GitHub API; no `gh` CLI here).
 
+## Read-side chokepoint — secrets must not reach the model provider (plan-b8, 2026-09-20) ⚠️ PARTLY CLOSED
+
+**The point.** b7 closed the write side, but CodingAgent could still *read*
+`.env`, which sends the keys to the model provider. A bad write is
+recoverable (the checkpoint); a secret that has left the machine is not —
+the remedy is rotating every key it touched. plan-b8 closes the **file
+reader** paths. **It does not close code execution, and that is a live
+exposure** — see "Not closed" below, first.
+
+**Enumeration first, as the plan required** (whole-repo `ast` sweep; 39
+read-capable functions, 35 fixed-path internal stores/locks, 4
+model-reachable): `coding.py`'s `_read_file`; `documents/reader.py`'s
+`read_document` (shared by the registered `read_document` tool **and**
+ResearchAgent — unconfined, any `.pdf`/`.txt`/`.md` on the Mac; until now
+`.env` itself was kept out only by its extension whitelist, *by accident*,
+while `.env.txt`, `credentials.txt`, `github_token.md` were readable); the
+Obsidian vault's `read_note`/`search_notes`. `open_and_read` cannot reach
+files (`URL_LIKE` accepts only `http(s)`/hostnames); `analyze_image` only
+sees screenshots; `search_files`/`open_file` return paths/launch an app.
+Full table: `ARCHITECTURE.md` §13, "Secret-read chokepoint".
+
+**Fix shape: one shared chokepoint, not a guard per site** (the M10.0
+lesson). New `agent/secret_paths.py`, `refuse_secret_read(path, reader)`,
+called first by all four readers: refuses `.env`/`.env.*` at any depth,
+`*.pem`, `*.key`, `id_rsa*` (+ dsa/ecdsa/ed25519), `*.p12`, `*.keychain*`,
+`credentials*`, `*_token*`, `*.secret`, anything under `Library/Keychains`;
+matched on the resolved path *and* the path as given; a hard, audited error
+(`secret_read_refused`) that fires before the existence check and never
+includes content. `.env.example`/`.env.sample`/`.env.template` carved out
+(exact basename, per candidate — a symlink named `.env.example` -> `.env` is
+still refused) and the **same list** now relaxes b7's write denylist. It
+does **not** refuse all gitignored files (logs stay readable). Beyond the
+plan's list I added `id_dsa*`/`id_ecdsa*`/`id_ed25519*` and `*.keychain-db`
+(same class as `id_rsa*`/`*.keychain`); I did **not** add `token*`/
+`token.json`-style names (`*_token*` was the plan's pattern) — worth a look.
+
+**Enforcement.** `tests/test_read_paths_structural.py` — default-deny over
+every file-reading function; a new reader must guard or be written down.
+Demonstrated: a temporary ungated `tools/files.py::read_text_file` failed
+it, naming file/function/line; removed, it passed.
+
+**Commits** (each green on the suite and on CI first time): `bd120eb`
+chokepoint + wiring (33 tests), `48fce0b` write-side carve-out (7 tests),
+`5e16b10` structural test (18 tests). Suite 1807 -> **1865**.
+
+**One thing to know about the carve-out.** This repo's `.gitignore`
+un-ignores only `.env.example`. `.env.sample`/`.env.template`, if created,
+would be ignored, and an ignored file can't be checkpointed, so the generic
+write refusal still stops them — correctly. Add `!.env.sample` /
+`!.env.template` to `.gitignore` if you want those writable.
+
+**⚠️ NOT closed — code execution, and it is live today, independent of
+`coding_agent_enabled`.** `tools/sandbox_python.py`'s `run_python` is a
+registered main-loop tool (level 2, allowed at the default autonomy 4). Its
+Seatbelt profile is `(allow default)` — its own comment says reads are not
+restricted — and the subprocess inherits the full environment, where
+`load_dotenv` puts the real API keys. plan-b8 **demonstrated** both, with a
+**fake** `.env` and a fake env var under the safety harness: the code read
+the file and printed the variable, and the output goes straight back to the
+model. A prompt-injected web page could try to steer the model into
+`run_python(open('.env').read())`. CodingAgent's `run_tests` and QAAgent's
+suite run also execute agent-written test files and return the output tail
+to the model. No path check can cover arbitrary code. **A fix is
+verified feasible but NOT applied** (it changes `run_python`'s semantics,
+which the plan told me to stop and report rather than decide): a narrow
+`(deny file-read* (regex #"/\.env(\.[^/]*)?$"))`-style Seatbelt rule blocked a
+direct read, a symlink read and a `cat` subprocess in a throwaway probe
+while ordinary files stayed readable (the profile's comment says a broad
+deny-by-default attempt failed; this is a different, targeted rule), plus
+scrubbing the subprocess environment. Tracked in the structural test's
+`ACKNOWLEDGED_UNGUARDED_CODE_EXECUTION`. Screen capture (`computer_see`)
+is also a way a secret shown in an open editor reaches a vision model —
+not a file-read path, not addressed here.
+
+**Still open, recorded not built:** fix (c) (a human edit after the agent's
+write is silently discarded by rollback; two `KNOWN_GAP` tests pin it) and
+multi-path rollback is not atomic if git fails partway through.
+
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
 - **Commit**: `7b4d0b6b2fecdd3264d8a5f48b3babcc1c5ee295` ("Document local
@@ -1096,10 +1175,10 @@ time (`cd1c38c`, `ce57c76`, `4ebf446`):**
 edit to the same file is detectable — is **deliberately deferred** (real
 design in it, its own round); two `test_KNOWN_GAP_*` tests still pin it.
 Rollback still depends on the real index being usable (by design; fails
-cleanly). Residuals worth knowing: `_read_file` can still read `.env`
-(reads are ungated by a deliberate, documented choice — CLAUDE.md rule 3 —
-but the content goes to the model provider); rollback phase 2 is not
-atomic against a git failure partway through a multi-path restore. **The
+cleanly). Residuals worth knowing: rollback phase 2 is not atomic against
+a git failure partway through a multi-path restore. (The `_read_file` /
+`.env` residual recorded here after plan-b7 is closed by plan-b8 — but see
+that section: code execution can still read secrets.) **The
 module and CodingAgent are safe to leave as they are while
 `coding_agent_enabled` is `False`; closing these gaps did not turn it
 on, and turning it on remains gated on real usage evidence.** Full
@@ -1907,8 +1986,8 @@ counts, superseded in order: S1-era `3514/7421/172` against `e46f5bd`;
 S1.1-era `3532/7452/163` against `d38e794`.
 
 **Working tree**: as of 2026-09-20 `main` is clean and everything
-described in this file is committed — the last code commit is `4ebf446`,
-37 commits past `2bed0b2`. M10.0 (`f8c638a`) and Phase 10 increment 1
+described in this file is committed — the last code commit is `5e16b10`,
+41 commits past `2bed0b2`. M10.0 (`f8c638a`) and Phase 10 increment 1
 (`df26bc0`) are committed and CI-verified; `coding_agent_enabled` is
 still `False`. (An earlier version of this paragraph said HEAD was
 `2bed0b2` and that Phase 10 increment 1 was "genuinely uncommitted" —
@@ -1918,7 +1997,8 @@ trusting this file. **1790 tests pass, 0 failures** under the canonical
 `python -m unittest discover -s tests -t . -v` (test count over time:
 1492 at M4.4, 1583 after Phase 10 increment 1, 1753 after the MemoryAgent
 audit, 1774 after the low-disk warning, 1790 after the checkpoint
-characterization tests, 1807 after the plan-b7 hardening). **The canonical test suite itself makes no live/paid API
+characterization tests, 1807 after the plan-b7 hardening, 1865 after the
+plan-b8 read-side chokepoint). **The canonical test suite itself makes no live/paid API
 calls and never created a real `refs/jarvis/` checkpoint ref in this
 repo** — that guarantee held throughout. Separately, this same pass
 included a deliberate, user-authorized real dogfooding round (turning
@@ -1938,7 +2018,8 @@ M10.0 `f8c638a`) — see the dedicated section above for full detail. Do
 not start increment 2 (turning `coding_agent_enabled` on by default)
 without real usage evidence. The gaps the 2026-09-20 checkpoint audit
 found are closed except fix (c) (see the Phase 10 section's audit
-paragraph); closing them was a prerequisite for enabling CodingAgent, not
+paragraph), and the file-read side is closed by plan-b8 except for code
+execution (`run_python`, the test runners — see the plan-b8 section); closing them was a prerequisite for enabling CodingAgent, not
 authorization to — `coding_agent_enabled` is still `False`. The design
 doc's concurrent-run locking question is resolved (see the Phase 10
 section).
@@ -2209,7 +2290,8 @@ complete, fully tested, and committed (`df26bc0`; M10.0 `f8c638a`) — see
 the dedicated section above. The only thing not done is deciding whether
 to flip `coding_agent_enabled` on by default, which is gated on real
 usage evidence (the checkpoint audit's gaps are closed except deferred
-fix (c) — see the Phase 10 section).
+fix (c), and the read side except code execution — see the Phase 10 and
+plan-b8 sections).
 
 **Phase 9 / M4.3 (read-only conversation-history ToolSpecs)** is
 merged to `main` (`b19f042`) — the "feature branch, merge pending"
@@ -2260,7 +2342,8 @@ None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and all of
 Phase 9 / M4 (M4.1 through M4.4) plus S1/S1.1 are committed, pushed, and
 CI-verified on `main`, and so are M10.0 and Phase 10 increment 1
 (`f8c638a`, `df26bc0`; `coding_agent_enabled` still `False`; the
-2026-09-20 checkpoint audit's gaps are closed except deferred fix (c)).
+2026-09-20 checkpoint audit's gaps are closed except deferred fix (c);
+file reads are behind the secret chokepoint, code execution is not).
 Open decisions (none urgent): which real
 messaging channel (if any) to configure for OpenClaw next, whether/when
 to pursue a further Graphify milestone (MCP/hooks/auto-rebuild — none
@@ -2734,11 +2817,16 @@ For the next session, in order of what's most likely to matter:
   then closed four of the five audit fixes (see the Phase 10 section).
   `runner-state` is left at its cap deliberately: resuming unattended
   automation is the user's call.
-- **Biggest open item now**: fix (c) of the checkpoint audit (record the
+- **Biggest open item now — needs your decision, and it is LIVE, not
+  gated on `coding_agent_enabled`**: `run_python` (and the test runners)
+  can read `.env` and the inherited environment and return it to the model
+  (plan-b8 section). Apply the narrow Seatbelt read-deny + a scrubbed
+  subprocess environment? It changes `run_python`'s semantics, so it was
+  reported, not done. **Then** fix (c) of the checkpoint audit (record the
   agent's own write + post-write hash so a later human edit is detected
-  and rollback refuses instead of clobbering it), then a decision about
-  `_read_file` and `.env`. Both are prerequisites to *considering*
-  enabling CodingAgent, which also needs real usage evidence. Not started.
+  and rollback refuses instead of clobbering it). Both are prerequisites
+  to *considering* enabling CodingAgent, which also needs real usage
+  evidence. Neither is started.
 - If nothing above is picked, the honest next step is to ask the user what
   Jarvis should do for them that it doesn't yet — the backlog no longer
   answers that on its own.
