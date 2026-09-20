@@ -103,7 +103,10 @@ def format_greeting_context(status_result: str, weather_result: str) -> str:
         "data — no lead-in sentence, no \"let me check\", no second "
         "message. Do not call get_system_status again. Do not call "
         "get_weather again unless you have a stored location for the user "
-        "that differs from the one it resolved to below.\n\n"
+        "that differs from the one it resolved to below. If the status "
+        "contains a line starting with \"WARNING:\", add one short sentence "
+        "relaying it after the weather, inside that same single reply; "
+        "otherwise mention nothing about it.\n\n"
         f"get_system_status:\n{status_result.strip()}\n\n"
         f"get_weather:\n{weather_result.strip()}"
     )

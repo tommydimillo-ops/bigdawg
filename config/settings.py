@@ -480,6 +480,15 @@ class Settings:
     # no production data yet" reasoning M4.4's four settings used.
     coding_checkpoint_retention_count: int = 20
 
+    # --- Low-disk warning (agent/disk_health.py) ---
+    # Free-space thresholds, in GB, for the volume Jarvis's stores live on.
+    # 5 matches .relay/runner.sh's own refusal floor; 1 is well above the
+    # ~130-200Mi range where real SQLite `disk I/O error` failures were
+    # first observed (Phase 9 Reliability S1). Starting values from one
+    # Mac's incident history, not tuned -- settings for that reason.
+    low_disk_warning_gb: float = 5.0
+    low_disk_critical_gb: float = 1.0
+
     # --- Debug / development mode ---
     # Wired to agent/observability.py's log level (DEBUG vs INFO).
     debug: bool = False
@@ -579,6 +588,8 @@ class Settings:
                 "CODING_CHECKPOINT_RETENTION_COUNT", cls.coding_checkpoint_retention_count,
             ),
             coding_agent_enabled=_env_bool("CODING_AGENT_ENABLED", cls.coding_agent_enabled),
+            low_disk_warning_gb=_env_float("LOW_DISK_WARNING_GB", cls.low_disk_warning_gb),
+            low_disk_critical_gb=_env_float("LOW_DISK_CRITICAL_GB", cls.low_disk_critical_gb),
             debug=_env_bool("DEBUG", cls.debug),
         )
 

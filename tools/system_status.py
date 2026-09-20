@@ -1,6 +1,8 @@
 import subprocess
 from datetime import datetime
 
+from agent.disk_health import check_disk_health, format_disk_warning
+
 
 def get_system_status():
 
@@ -19,6 +21,10 @@ def get_system_status():
     if len(disk) > 1:
         parts = disk[1].split()
         lines.append(f"Disk: {parts[3]} free of {parts[1]} ({parts[4]} used)")
+
+    disk_warning = format_disk_warning(check_disk_health())
+    if disk_warning:
+        lines.append(disk_warning)
 
     uptime = subprocess.run(["uptime"], capture_output=True, text=True).stdout.strip()
     if uptime:

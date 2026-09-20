@@ -9,6 +9,7 @@ from agent.brain import TOOLS
 from agent.cancellation import request_cancel
 from agent.cowork_gateway import describe_status as describe_cowork_status
 from agent.cowork_gateway import status as cowork_status
+from agent.disk_health import LEVEL_CRITICAL, check_disk_health, format_disk_warning
 from agent.execution_history import get_by_id, get_recent
 from agent.execution_state import list_active
 from agent.jarvis_state import get_state, is_busy
@@ -23,6 +24,15 @@ st.set_page_config(page_title="Jarvis Dashboard", page_icon="📊", layout="wide
 
 st.title("📊 Jarvis Dashboard")
 st.caption(f"Live status — {datetime.now().strftime('%A, %B %d, %Y — %I:%M %p')}")
+
+# --- Disk health --------------------------------------------------------
+# Top of the page, and silent when healthy: a full disk breaks every
+# store's writes at once, so it is the one condition worth interrupting
+# the reader for (see agent/disk_health.py).
+_disk = check_disk_health()
+_disk_warning = format_disk_warning(_disk)
+if _disk_warning:
+    (st.error if _disk.level == LEVEL_CRITICAL else st.warning)(f"💾 {_disk_warning}")
 
 # --- Live execution -----------------------------------------------------
 # JarvisState is filesystem-backed, so this view also sees work owned by

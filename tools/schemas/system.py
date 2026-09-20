@@ -41,8 +41,8 @@ register(ToolSpec(
 register(ToolSpec(
     name="get_system_status",
     description=(
-        "Check the Mac's battery level, free disk space, Wi-Fi "
-        "network, and uptime."
+        "Check the Mac's battery level, free disk space (with a "
+        "WARNING line when it is running low), Wi-Fi network, and uptime."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
     permission_level=0,
