@@ -150,27 +150,87 @@ class TestGitignoredFiles(CheckpointTestCase):
         self.assertEqual(files_written, [])
         self.assertEqual(self._read("ignored/pre.txt"), "PRE-EXISTING ignored file\n")
 
-    def test_KNOWN_GAP_restore_paths_deletes_a_preexisting_ignored_file_it_was_never_asked_to_change(self):
-        # Data loss, silently reported as a successful rollback: an
-        # ignored file is absent from the snapshot tree, so the module
-        # concludes "did not exist at checkpoint" and os.remove()s it --
-        # even though it existed then and the agent never touched it.
+    def test_restore_paths_refuses_to_delete_a_preexisting_ignored_file(self):
+        # Was test_KNOWN_GAP_restore_paths_deletes_a_preexisting_ignored_
+        # file_it_was_never_asked_to_change: data loss, silently reported
+        # as a successful rollback. An ignored file is absent from the
+        # snapshot, so "absent" was read as "did not exist at checkpoint"
+        # and the file was os.remove()d. Now refused, by name, and the
+        # file is left exactly as it was.
         checkpoint = ckpt.create_checkpoint("ignored-delete", repo_root=self.repo)
-        changed = ckpt.restore_paths(checkpoint, ["key.secret"])
-        self.assertEqual(changed, ["key.secret"])
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "key.secret")))
+        with self.assertRaises(ckpt.CheckpointRestoreFailed) as caught:
+            ckpt.restore_paths(checkpoint, ["key.secret"])
+        self.assertIn("'key.secret'", str(caught.exception))
+        self.assertIn("gitignored", str(caught.exception))
+        self.assertEqual(self._read("key.secret"), "PRE-EXISTING ignored secret\n")
 
-    def test_KNOWN_GAP_restore_paths_cannot_bring_back_an_overwritten_ignored_file(self):
+    def test_restore_paths_leaves_an_overwritten_ignored_file_in_place_rather_than_deleting_it(self):
+        # Was test_KNOWN_GAP_restore_paths_cannot_bring_back_an_overwritten_
+        # ignored_file. It still cannot bring the original back (it was
+        # never snapshotted -- that is inherent, and why CodingAgent no
+        # longer writes ignored paths at all), but it no longer destroys
+        # what is there either: the overwritten file survives, refusal named.
         checkpoint = ckpt.create_checkpoint("ignored-overwrite", repo_root=self.repo)
         self._write("ignored/pre.txt", "AGENT OVERWROTE\n")
-        ckpt.restore_paths(checkpoint, ["ignored/pre.txt"])
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "ignored", "pre.txt")))
+        with self.assertRaises(ckpt.CheckpointRestoreFailed) as caught:
+            ckpt.restore_paths(checkpoint, ["ignored/pre.txt"])
+        self.assertIn("'ignored/pre.txt'", str(caught.exception))
+        self.assertEqual(self._read("ignored/pre.txt"), "AGENT OVERWROTE\n")
 
-    def test_ignored_file_the_agent_created_is_removed_by_restore_only_by_accident_of_the_same_bug(self):
+    def test_an_ignored_file_created_after_the_checkpoint_is_also_refused_because_it_cannot_be_told_apart(self):
+        # Was test_ignored_file_the_agent_created_is_removed_by_restore_only_
+        # by_accident_of_the_same_bug. Removing it worked only because the
+        # deletion bug fired; for an ignored path "created by the agent"
+        # and "pre-existing, never snapshotted" are the same evidence, so
+        # the honest answer is refusal.
         checkpoint = ckpt.create_checkpoint("ignored-created", repo_root=self.repo)
-        self._write("ignored/new.txt", "agent created\n")
-        self.assertEqual(ckpt.restore_paths(checkpoint, ["ignored/new.txt"]), ["ignored/new.txt"])
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "ignored", "new.txt")))
+        self._write("ignored/new.txt", "created after the checkpoint\n")
+        with self.assertRaises(ckpt.CheckpointRestoreFailed):
+            ckpt.restore_paths(checkpoint, ["ignored/new.txt"])
+        self.assertEqual(self._read("ignored/new.txt"), "created after the checkpoint\n")
+
+    def test_a_file_the_agent_created_that_is_not_ignored_is_still_removed_on_rollback(self):
+        # The distinction the refusal depends on, in the same repo that has
+        # ignore rules: not-ignored + absent-from-snapshot means the agent
+        # created it, and removing it is the correct rollback.
+        checkpoint = ckpt.create_checkpoint("created-not-ignored", repo_root=self.repo)
+        self._write("new_by_agent.txt", "agent created\n")
+        self.assertEqual(ckpt.restore_paths(checkpoint, ["new_by_agent.txt"]), ["new_by_agent.txt"])
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "new_by_agent.txt")))
+
+    def test_a_refusal_changes_nothing_not_even_the_paths_listed_before_the_refused_one(self):
+        checkpoint = ckpt.create_checkpoint("all-or-nothing", repo_root=self.repo)
+        self._write("tracked.txt", "AGENT EDIT\n")
+        self._write("new_by_agent.txt", "agent created\n")
+        with self.assertRaises(ckpt.CheckpointRestoreFailed):
+            ckpt.restore_paths(checkpoint, ["tracked.txt", "new_by_agent.txt", "key.secret"])
+        self.assertEqual(self._read("tracked.txt"), "AGENT EDIT\n")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "new_by_agent.txt")))
+        self.assertEqual(self._read("key.secret"), "PRE-EXISTING ignored secret\n")
+
+
+class TestRestoreNeverReadsAGitFailureAsAbsence(CheckpointTestCase):
+
+    def test_unreadable_snapshot_content_refuses_instead_of_deleting(self):
+        # restore_paths used to ask `git cat-file`, whose failure (a
+        # corrupt or missing object, a transient error) was
+        # indistinguishable from "path not in the snapshot" -- and absence
+        # is acted on by deleting the file. Simulate the failure for real:
+        # remove the loose blob for tracked.txt. `git ls-tree` still lists
+        # the path; `git cat-file` cannot read it.
+        checkpoint = ckpt.create_checkpoint("unreadable-blob", repo_root=self.repo)
+        blob = _git(self.repo, "rev-parse", f"{checkpoint.ref}:tracked.txt").strip()
+        blob_file = os.path.join(self.repo, ".git", "objects", blob[:2], blob[2:])
+        self.assertTrue(os.path.exists(blob_file), "test assumes a loose object")
+        os.chmod(blob_file, 0o644)
+        os.remove(blob_file)
+        self._write("tracked.txt", "AGENT EDIT\n")
+
+        with self.assertRaises(ckpt.CheckpointRestoreFailed) as caught:
+            ckpt.restore_paths(checkpoint, ["tracked.txt"])
+        self.assertIn("'tracked.txt'", str(caught.exception))
+        self.assertIn("could not be read back", str(caught.exception))
+        self.assertEqual(self._read("tracked.txt"), "AGENT EDIT\n")
 
 
 class TestGitignoredSecretsAreNotWritableByCodingAgent(unittest.TestCase):

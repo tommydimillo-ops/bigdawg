@@ -268,6 +268,18 @@ def existed_at_checkpoint(checkpoint: Checkpoint, path: str) -> bool:
     return _checkpointed_content(checkpoint, rel) is not None
 
 
+def _in_snapshot(checkpoint: Checkpoint, path: str) -> bool:
+    """Whether `path` is in the checkpoint's tree, asked of `git ls-tree`
+    rather than inferred from _checkpointed_content failing. That
+    function returns None for ANY `git cat-file` failure, so a transient
+    or corrupt-object error was indistinguishable from "did not exist
+    then" -- and restore_paths acts on "did not exist" by deleting the
+    file. Here a genuine git failure raises CheckpointError instead of
+    reading as absence."""
+    result = _run_git(["ls-tree", "--name-only", checkpoint.ref, "--", path], cwd=checkpoint.repo_root)
+    return bool(result.stdout.strip())
+
+
 @contextmanager
 def _restore_lock(repo_root: str):
     """Blocking -- deliberately NOT the skip-if-busy pattern
@@ -300,17 +312,41 @@ def restore_paths(checkpoint: Checkpoint, paths: List[str]) -> List[str]:
     or deletes them if they did not exist at checkpoint time (a plain
     `git restore` cannot express that -- verified empirically: it errors
     on a path absent from the source tree rather than deleting it, so
-    that case is handled explicitly here). Refuses to touch any path
-    that was already dirty at checkpoint time -- see this module's
-    docstring for why that is non-negotiable. Returns the list of paths
+    that case is handled explicitly here). Returns the list of paths
     actually changed -- a path already identical to its checkpoint
     content (or one that never existed either way) is not "changed" and
     is left untouched, not just silently re-written to the same bytes.
+
+    Refuses (CheckpointRestoreFailed, naming the path), and changes
+    NOTHING, when it cannot prove a change is safe:
+
+    - a path that was already dirty at checkpoint time -- restoring over
+      it would discard the user's work, not the agent's; see this
+      module's docstring for why this is non-negotiable;
+    - a path in the snapshot whose content cannot be read back;
+    - a path that exists now but is absent from the snapshot AND is
+      gitignored. Found by the plan-b6 audit: an ignored file is never
+      snapshotted (the scratch-index `git add -A` honors .gitignore), so
+      "absent from the snapshot" is ambiguous for it -- it may have
+      existed before the checkpoint and simply been unrecordable, and
+      this function used to delete such a file and report success. For a
+      path that is NOT ignored the ambiguity does not exist: anything
+      present at checkpoint time and not ignored is in the snapshot, so
+      absence means the agent created it, and removing it is the correct
+      rollback. Ignore status is only a sound discriminator while the
+      ignore rules are unchanged since the checkpoint; CodingAgent's
+      write path guarantees that by never letting the agent write a
+      .gitignore (agent/agents/coding.py's denylist). A caller that
+      cannot promise the same must not rely on this for ignored paths.
+
+    Two-phase: every path is validated before any is changed, so a
+    refusal never leaves the tree half-rolled-back.
 
     Serialized across concurrent callers via _restore_lock -- see that
     function's docstring for the real, reproduced race this closes."""
     changed = []
     with _restore_lock(checkpoint.repo_root):
+        plan = []
         for path in paths:
             rel = confine_to_repo(checkpoint.repo_root, path)
             if rel in checkpoint.dirty_paths_at_checkpoint:
@@ -319,7 +355,13 @@ def restore_paths(checkpoint: Checkpoint, paths: List[str]) -> List[str]:
                     "before the agent made any change"
                 )
             abs_path = os.path.join(checkpoint.repo_root, rel)
-            checkpointed = _checkpointed_content(checkpoint, rel)
+            in_snapshot = _in_snapshot(checkpoint, rel)
+            checkpointed = _checkpointed_content(checkpoint, rel) if in_snapshot else None
+            if in_snapshot and checkpointed is None:
+                raise CheckpointRestoreFailed(
+                    f"refusing to restore '{rel}': it is in the checkpoint but its content "
+                    "could not be read back"
+                )
             current = None
             if os.path.exists(abs_path):
                 try:
@@ -327,7 +369,15 @@ def restore_paths(checkpoint: Checkpoint, paths: List[str]) -> List[str]:
                         current = file.read()
                 except OSError:
                     current = None  # unreadable -- fall through and restore/delete rather than skip
+            if not in_snapshot and current is not None and is_gitignored(checkpoint.repo_root, rel):
+                raise CheckpointRestoreFailed(
+                    f"refusing to delete '{rel}': it is absent from the checkpoint snapshot and "
+                    "gitignored, so it may have existed before the checkpoint (ignored files are "
+                    "never snapshotted) -- rollback cannot tell it apart from a file the agent created"
+                )
+            plan.append((rel, abs_path, checkpointed, current))
 
+        for rel, abs_path, checkpointed, current in plan:
             if checkpointed is not None:
                 if current == checkpointed:
                     continue
