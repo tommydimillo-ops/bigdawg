@@ -67,6 +67,7 @@ from agent.coding_checkpoint import (
     confine_to_repo,
     create_checkpoint,
     existed_at_checkpoint,
+    is_gitignored,
     prune_checkpoints,
     restore_paths,
 )
@@ -123,8 +124,35 @@ _NEVER_WRITABLE_PATHS = frozenset({
     "tests/_safety.py",
     "tests/__init__.py",
     "config/settings.py",
+    ".env",
 })
-_NEVER_WRITABLE_PREFIXES = (".github/workflows/",)
+# Directories no checkpoint can protect, plus the two that hold the
+# safety machinery's own state. Found by the plan-b6 checkpoint audit:
+# create_checkpoint's `git add -A` honors .gitignore, so anything ignored
+# is absent from every snapshot, invisible to changed_paths_since, and
+# unrecoverable -- and .env (the real API keys), JarvisVault/, logs/ and
+# graphify-out/ are all ignored yet were not on this list, so a write to
+# any of them was permanent, unreported and unrollbackable. The generic
+# gitignored-path refusal in _write_file covers everything else ignored;
+# this explicit list is belt-and-braces for the paths that matter most,
+# and does not depend on git being able to answer.
+_NEVER_WRITABLE_PREFIXES = (
+    ".github/workflows/",
+    "jarvisvault/",
+    "logs/",
+    "graphify-out/",
+    ".relay/",
+    ".git/",
+    ".venv/",
+)
+# Matched on the file's own name at any depth, because an ignore rule
+# like `.env` applies at any depth (`config/.env` is as real a secret
+# file as `./.env`). `.gitignore` is here for a specific reason: the
+# ignore-status the write refusal and restore_paths' deletion refusal
+# both rely on is only stable if the agent cannot change the rules --
+# otherwise one write un-ignores a file and a second overwrites it.
+_NEVER_WRITABLE_BASENAMES = frozenset({".env", ".gitignore"})
+_NEVER_WRITABLE_BASENAME_PREFIXES = (".env.",)
 # Every entry above, pre-lowercased once -- see _is_never_writable's own
 # docstring for why the comparison itself must be case-insensitive.
 _NEVER_WRITABLE_PATHS_LOWER = frozenset(path.lower() for path in _NEVER_WRITABLE_PATHS)
@@ -144,8 +172,15 @@ def _is_never_writable(rel: str) -> bool:
     filesystem really does resolve both to the same inode) before this
     existed. Found by review, not a live incident."""
     lowered = rel.lower()
-    return lowered in _NEVER_WRITABLE_PATHS_LOWER or any(
-        lowered.startswith(prefix) for prefix in _NEVER_WRITABLE_PREFIXES_LOWER
+    basename = os.path.basename(lowered)
+    return (
+        lowered in _NEVER_WRITABLE_PATHS_LOWER
+        or basename in _NEVER_WRITABLE_BASENAMES
+        or basename.startswith(_NEVER_WRITABLE_BASENAME_PREFIXES)
+        or any(
+            lowered.startswith(prefix) or lowered == prefix.rstrip("/")
+            for prefix in _NEVER_WRITABLE_PREFIXES_LOWER
+        )
     )
 
 SYSTEM_PROMPT = (
@@ -335,16 +370,45 @@ def _read_file(repo_root: str, path: str) -> str:
 _WRITE_FILE_PERMISSION_LEVEL = 2
 
 
+def _refuse_write(context: RequestContext, rel: str, reason: str, message: str) -> str:
+    """A refused write is a hard, audited error -- the file is never
+    touched, and the refusal lands in the audit log (mirroring how
+    agent/executor.py's _run_tool and the MemoryAgent gate audit a DENY)
+    rather than being a silent skip only the model ever sees."""
+    log_action(
+        "coding_agent_write_refused", {"request_id": context.request_id, "path": rel},
+        f"refused ({reason})",
+    )
+    return message
+
+
 def _write_file(repo_root: str, path: str, content: str, files_written: List[str], context: RequestContext) -> str:
     try:
         rel = confine_to_repo(repo_root, path)
     except PathOutsideRepository as error:
         return f"Error: {error}"
     if _is_never_writable(rel):
-        return (
+        return _refuse_write(
+            context, rel, "denylisted",
             f"Error: refusing to write to '{rel}' -- this path is part of Jarvis's own "
-            "safety/permission/CI machinery and is never writable by CodingAgent, "
-            "regardless of the task."
+            "safety/permission/CI machinery, or holds secrets or state no checkpoint can "
+            "protect, and is never writable by CodingAgent, regardless of the task.",
+        )
+    try:
+        ignored = is_gitignored(repo_root, rel)
+    except CheckpointError as error:
+        # Fail closed: not being able to tell whether a checkpoint could
+        # cover this path is not the same as it being safe to write.
+        return _refuse_write(
+            context, rel, "ignore_check_failed",
+            f"Error: refusing to write to '{rel}' -- could not verify it is covered by the "
+            f"checkpoint ({error}).",
+        )
+    if ignored:
+        return _refuse_write(
+            context, rel, "gitignored",
+            f"Error: refusing to write to '{rel}' -- it is gitignored, so no checkpoint can "
+            "snapshot it, report a change to it, or roll it back.",
         )
 
     # M10.0: the same permission-level-vs-autonomy decision agent/

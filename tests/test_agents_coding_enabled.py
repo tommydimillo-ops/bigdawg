@@ -138,6 +138,11 @@ class TestRunTestSuite(unittest.TestCase):
 class TestWriteFileDirectly(unittest.TestCase):
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="jarvis-write-file-test-")
+        # A real repo, not a bare temp dir: in production _write_file only
+        # ever runs after create_checkpoint succeeded (so root is always a
+        # git repo), and _write_file now asks git whether the target is
+        # gitignored and fails closed if git cannot answer.
+        _git(self.repo, "init", "-q")
         # source="agent_worker" matches real usage (agent/agents/
         # worker.py); default autonomy_level (settings.autonomy_level,
         # 4) means these tests exercise the real "default config allows
@@ -218,6 +223,7 @@ class TestWriteFilePermissionGate(unittest.TestCase):
 
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="jarvis-write-gate-test-")
+        _git(self.repo, "init", "-q")  # see TestWriteFileDirectly.setUp
 
     def tearDown(self):
         shutil.rmtree(self.repo, ignore_errors=True)
@@ -250,6 +256,143 @@ class TestWriteFilePermissionGate(unittest.TestCase):
         files_written = []
         result = coding._write_file(self.repo, "new.txt", "hi", files_written, context)
         self.assertIn("Error: refusing to write", result)
+
+
+class TestWriteFileRefusesPathsNoCheckpointCanProtect(unittest.TestCase):
+    """Plan-b7 item 1, closing the plan-b6 checkpoint audit's severe
+    finding: create_checkpoint's `git add -A` honors .gitignore, so a
+    write to an ignored path (the real .env above all) was permanent,
+    unreported and unrollbackable. Every refusal is a hard, audited
+    error, and the file is never touched."""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="jarvis-write-refuse-test-")
+        _git(self.repo, "init", "-q")
+        self.context = RequestContext.create("test task", source="agent_worker")
+
+    def tearDown(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def _assert_refused(self, rel, expect="Error: refusing to write"):
+        files_written = []
+        result = coding._write_file(self.repo, rel, "STOLEN", files_written, self.context)
+        self.assertIn(expect, result, f"expected {rel} to be refused, got: {result}")
+        self.assertEqual(files_written, [], f"{rel} must not be recorded as written")
+        return result
+
+    def test_refuses_every_explicit_never_writable_location(self):
+        for rel in (
+            ".env", ".env.local", ".env.production", ".env.example", "config/.env",
+            "JarvisVault/Knowledge/Decisions/note.md", "logs/menubar.err.log",
+            "graphify-out/graph.json", ".relay/plan-b8.md", ".venv/lib/python3/site.py",
+            ".gitignore", "sub/dir/.gitignore",
+        ):
+            with self.subTest(rel=rel):
+                self._assert_refused(rel)
+                self.assertFalse(os.path.exists(os.path.join(self.repo, rel)), f"{rel} was created")
+
+    def test_matching_is_case_insensitive(self):
+        # Same reasoning as test_refuses_a_denylisted_path_regardless_of_case:
+        # macOS's default volume is case-insensitive-but-case-preserving.
+        for rel in (".ENV", ".Env.Local", "LOGS/x.log", "jarvisvault/x.md", "Graphify-Out/g.json", ".RELAY/p.md"):
+            with self.subTest(rel=rel):
+                self._assert_refused(rel)
+
+    def test_a_refused_write_never_modifies_an_existing_secret(self):
+        env_path = os.path.join(self.repo, ".env")
+        with open(env_path, "w") as file:
+            file.write("ANTHROPIC_API_KEY=real-looking-secret\n")
+        self._assert_refused(".env")
+        with open(env_path) as file:
+            self.assertEqual(file.read(), "ANTHROPIC_API_KEY=real-looking-secret\n")
+
+    def test_matching_is_on_the_resolved_path_so_a_symlink_cannot_launder_a_write(self):
+        env_path = os.path.join(self.repo, ".env")
+        with open(env_path, "w") as file:
+            file.write("SECRET=1\n")
+        os.makedirs(os.path.join(self.repo, "logs"))
+        os.symlink(".env", os.path.join(self.repo, "notes.txt"))
+        os.symlink("logs", os.path.join(self.repo, "innocent_dir"))
+
+        self._assert_refused("notes.txt")
+        self._assert_refused("innocent_dir/x.txt")
+        with open(env_path) as file:
+            self.assertEqual(file.read(), "SECRET=1\n")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "logs", "x.txt")))
+
+    def test_refuses_any_other_gitignored_path_not_on_the_explicit_list(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write("*.secret\nscratch/\nnested_ignored.txt\n")
+        for rel in ("key.secret", "scratch/a.txt", "pkg/nested_ignored.txt"):
+            with self.subTest(rel=rel):
+                result = self._assert_refused(rel)
+                self.assertIn("gitignored", result)
+                self.assertFalse(os.path.exists(os.path.join(self.repo, rel)))
+
+    def test_gitignored_preexisting_file_is_left_exactly_as_it_was(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write("*.secret\n")
+        with open(os.path.join(self.repo, "key.secret"), "w") as file:
+            file.write("original\n")
+        self._assert_refused("key.secret")
+        with open(os.path.join(self.repo, "key.secret")) as file:
+            self.assertEqual(file.read(), "original\n")
+
+    def test_refuses_a_force_tracked_file_that_still_matches_an_ignore_rule(self):
+        # The scratch index starts empty, so a tracked-but-ignored file is
+        # still excluded from every snapshot -- "tracked" is not "covered".
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write("forced.txt\n")
+        with open(os.path.join(self.repo, "forced.txt"), "w") as file:
+            file.write("x\n")
+        _git(self.repo, "add", "-f", "forced.txt")
+        self.assertIn("forced.txt", _git(self.repo, "ls-files"))
+        self._assert_refused("forced.txt")
+
+    def test_an_ordinary_non_ignored_path_is_still_writable(self):
+        # The refusal must not have widened into refusing legitimate work.
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write("*.secret\n")
+        for rel in ("src/module.py", "tests/test_x.py", "docs/notes.md", "environment.md", "my.env.py"):
+            with self.subTest(rel=rel):
+                files_written = []
+                result = coding._write_file(self.repo, rel, "ok", files_written, self.context)
+                self.assertIn("Wrote", result)
+                self.assertEqual(files_written, [rel])
+
+    def test_fails_closed_when_git_cannot_answer(self):
+        not_a_repo = tempfile.mkdtemp(prefix="jarvis-not-a-repo-")
+        self.addCleanup(shutil.rmtree, not_a_repo, ignore_errors=True)
+        files_written = []
+        result = coding._write_file(not_a_repo, "ordinary.txt", "x", files_written, self.context)
+        self.assertIn("Error: refusing to write", result)
+        self.assertIn("could not verify", result)
+        self.assertEqual(files_written, [])
+        self.assertFalse(os.path.exists(os.path.join(not_a_repo, "ordinary.txt")))
+
+    def test_every_refusal_is_audited_with_its_reason(self):
+        from agent.audit import recent_actions
+
+        with open(os.path.join(self.repo, ".gitignore"), "w") as file:
+            file.write("*.secret\n")
+        self._assert_refused(".env")
+        self._assert_refused("key.secret")
+        self._assert_refused("agent/autonomy.py")  # pre-existing denylist refusals are audited too
+
+        # agent.audit stores each entry's input as a truncated string, not a dict.
+        mine = [
+            a for a in recent_actions(limit=100)
+            if a["tool"] == "coding_agent_write_refused" and self.context.request_id in str(a["input"])
+        ]
+
+        def result_for(path):
+            matches = [a["result"] for a in mine if f"'{path}'" in str(a["input"]) or f'"{path}"' in str(a["input"])]
+            self.assertEqual(len(matches), 1, f"expected exactly one audit entry for {path}, got {mine}")
+            return matches[0]
+
+        self.assertIn("denylisted", result_for(".env"))
+        self.assertIn("gitignored", result_for("key.secret"))
+        self.assertIn("denylisted", result_for("agent/autonomy.py"))
 
 
 class TestReadFileDirectly(unittest.TestCase):
@@ -418,6 +561,36 @@ class TestFailingEditRollsBack(CodingAgentEnabledTestCase):
         ]
         self.agent.execute("write 42 to value.txt", self.context)
         self.assertEqual(_git(self.repo, "log", "--oneline"), before_log)
+
+
+class TestAgentCannotOverwriteAGitignoredSecret(CodingAgentEnabledTestCase):
+    @patch("agent.agents.coding.anthropic_client")
+    def test_write_to_env_is_refused_end_to_end_and_the_secret_is_untouched(self, mock_client):
+        # .env is the case the plan-b6 audit found: gitignored, so the
+        # checkpoint never covered it, and not on the denylist, so a
+        # write succeeded silently and changed_paths_since reported
+        # nothing changed. Ignored + already present => tree stays clean.
+        with open(os.path.join(self.repo, ".gitignore"), "a") as file:
+            file.write(".env\n")
+        _git(self.repo, "commit", "-qam", "ignore .env")
+        with open(os.path.join(self.repo, ".env"), "w") as file:
+            file.write("ANTHROPIC_API_KEY=real-looking-secret\n")
+
+        mock_client.messages.create.side_effect = [
+            _response([
+                _tool_use_block("write_file", {"path": ".env", "content": "OVERWRITTEN"}, "t1"),
+                _tool_use_block("write_file", {"path": "value.txt", "content": "42"}, "t2"),
+            ], "tool_use"),
+            _response([_text_block("Done.")], "end_turn"),
+        ]
+        result = self.agent.execute("write 42 to value.txt", self.context)
+
+        with open(os.path.join(self.repo, ".env")) as file:
+            self.assertEqual(file.read(), "ANTHROPIC_API_KEY=real-looking-secret\n")
+        self.assertEqual(result.metadata["files_written"], ["value.txt"])
+        self.assertTrue(result.success)
+        tool_results = mock_client.messages.create.call_args_list[1].kwargs["messages"][-1]["content"]
+        self.assertTrue(any("Error: refusing to write" in str(item) for item in tool_results))
 
 
 class TestConcurrentWriterProtection(CodingAgentEnabledTestCase):

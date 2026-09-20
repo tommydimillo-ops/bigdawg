@@ -20,8 +20,10 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+import agent.agents.coding as coding
 import agent.coding_checkpoint as ckpt
 from agent.agents.coding import _is_never_writable
+from agent.request_context import RequestContext
 from tests.test_coding_checkpoint import CheckpointTestCase, _git
 
 _REAL_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -126,11 +128,27 @@ class TestGitignoredFiles(CheckpointTestCase):
         self.assertFalse(ckpt.existed_at_checkpoint(checkpoint, "ignored/pre.txt"))
         self.assertFalse(checkpoint.dirty_at_checkpoint)
 
-    def test_KNOWN_GAP_an_agent_edit_to_an_ignored_file_is_invisible_to_changed_paths_since(self):
+    def test_changed_paths_since_cannot_see_ignored_files_so_codingagent_refuses_to_write_them(self):
+        # Was test_KNOWN_GAP_an_agent_edit_to_an_ignored_file_is_invisible_
+        # to_changed_paths_since. The module-level limit is unchanged and
+        # inherent (the snapshot is a `git add -A` tree, which honors
+        # .gitignore) -- what closed the gap is that CodingAgent's write
+        # path (plan-b7 item 1) now refuses any gitignored target, so an
+        # invisible edit can no longer be produced through it. The first
+        # half proves the limit still holds; the second proves the write
+        # that would have exploited it is refused and leaves the file alone.
         checkpoint = ckpt.create_checkpoint("ignored-invisible", repo_root=self.repo)
-        self._write("ignored/pre.txt", "AGENT OVERWROTE\n")
-        self._write("ignored/new.txt", "agent created\n")
+        self._write("ignored/pre.txt", "edited outside CodingAgent's write path\n")
         self.assertEqual(ckpt.changed_paths_since(checkpoint), [])
+
+        self._write("ignored/pre.txt", "PRE-EXISTING ignored file\n")
+        context = RequestContext.create("t", source="agent_worker")
+        files_written = []
+        result = coding._write_file(self.repo, "ignored/pre.txt", "AGENT OVERWROTE\n", files_written, context)
+        self.assertIn("Error: refusing to write", result)
+        self.assertIn("gitignored", result)
+        self.assertEqual(files_written, [])
+        self.assertEqual(self._read("ignored/pre.txt"), "PRE-EXISTING ignored file\n")
 
     def test_KNOWN_GAP_restore_paths_deletes_a_preexisting_ignored_file_it_was_never_asked_to_change(self):
         # Data loss, silently reported as a successful rollback: an
@@ -155,21 +173,23 @@ class TestGitignoredFiles(CheckpointTestCase):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "ignored", "new.txt")))
 
 
-class TestGitignoredSecretsAreWritableByCodingAgent(unittest.TestCase):
+class TestGitignoredSecretsAreNotWritableByCodingAgent(unittest.TestCase):
     """Reachability of the gitignored-file gap above: the write denylist
     in agent/agents/coding.py is what stands between CodingAgent's
-    write_file and these paths, and it does not cover them. Runs
+    write_file and these paths. It used to not cover them (the
+    plan-b6 audit's severe finding); plan-b7 item 1 added them. Runs
     `git check-ignore` against the real repo's own .gitignore (pattern
     matching only -- no file need exist, nothing is read or written)."""
 
-    def test_KNOWN_GAP_gitignored_sensitive_paths_are_not_on_the_write_denylist(self):
+    def test_gitignored_sensitive_paths_are_on_the_write_denylist(self):
+        # Was test_KNOWN_GAP_gitignored_sensitive_paths_are_not_on_the_write_denylist.
         for path in (".env", ".env.local", "JarvisVault/Knowledge/x.md", "logs/menubar.err.log", "graphify-out/graph.json"):
             with self.subTest(path=path):
                 ignored = subprocess.run(
                     ["git", "check-ignore", "-q", path], cwd=_REAL_REPO, timeout=15,
                 ).returncode == 0
                 self.assertTrue(ignored, f"{path} is expected to be gitignored in this repo")
-                self.assertFalse(_is_never_writable(path))
+                self.assertTrue(_is_never_writable(path))
 
 
 class TestGitUnhealthy(CheckpointTestCase):

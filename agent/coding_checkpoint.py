@@ -151,6 +151,34 @@ def confine_to_repo(repo_root: str, path: str) -> str:
     return rel
 
 
+def is_gitignored(repo_root: str, rel_path: str) -> bool:
+    """Whether `rel_path` (repo-relative, already through confine_to_repo)
+    is matched by an ignore rule. This is the one question the checkpoint
+    snapshot itself cannot answer: `git add -A` into the scratch index
+    skips ignored files, so an ignored path is absent from every snapshot
+    -- but so is a brand-new, legitimate file, so "absent from the
+    snapshot" cannot stand in for "ignored". Found by the plan-b6 audit:
+    a gitignored file is invisible to create_checkpoint and
+    changed_paths_since, and restore_paths used to delete one outright.
+
+    `--no-index` on purpose: a file that is force-tracked but also matches
+    an ignore rule is still excluded from the scratch-index snapshot
+    (that index starts empty, so every path is judged as untracked), and
+    "no checkpoint can cover it" is exactly the property being asked.
+    Pattern-only, so it works for a path that does not exist yet.
+
+    Fails closed: if git cannot answer (not a repository, timeout, any
+    exit code other than 0/1) this raises CheckpointError rather than
+    guessing "not ignored" -- a caller deciding whether a write is safe
+    must never read a git failure as permission."""
+    result = _run_git(["check-ignore", "-q", "--no-index", "--", rel_path], cwd=repo_root, check=False)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise CheckpointError(f"git check-ignore failed for '{rel_path}': {result.stderr.strip()}")
+
+
 def _dirty_paths(repo_root: str) -> List[str]:
     """Every path `git status --porcelain` reports as modified, staged,
     deleted, or untracked. Known limitation, acceptable for increment 1's
