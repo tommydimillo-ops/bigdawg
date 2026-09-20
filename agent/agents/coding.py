@@ -61,7 +61,6 @@ from agent.chat import anthropic_client
 from agent.coding_checkpoint import (
     Checkpoint,
     CheckpointError,
-    CheckpointRestoreFailed,
     PathOutsideRepository,
     changed_paths_since,
     confine_to_repo,
@@ -702,7 +701,16 @@ class CodingAgent(Agent):
                     metadata["rolled_back"] = True
                     metadata["restored_paths"] = restored
                     return f" Rolled back {len(restored)} changed file(s)."
-                except CheckpointRestoreFailed as error:
+                except CheckpointError as error:
+                    # The base class, not just CheckpointRestoreFailed: a
+                    # git-level failure (a held or stale .git/index.lock, a
+                    # corrupt index) surfaces from restore_paths as plain
+                    # CheckpointError via _run_git. Catching only the
+                    # subclass let it escape to execute()'s outer handler,
+                    # which reports a generic failure and drops
+                    # verification_status/rolled_back -- found by the
+                    # plan-b6 audit. CheckpointRestoreFailed is a subclass,
+                    # so refusals are still covered here.
                     metadata["rolled_back"] = False
                     metadata["rollback_error"] = str(error)
                     return f" Could NOT roll back automatically: {error}"

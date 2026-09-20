@@ -563,6 +563,48 @@ class TestFailingEditRollsBack(CodingAgentEnabledTestCase):
         self.assertEqual(_git(self.repo, "log", "--oneline"), before_log)
 
 
+class TestRollbackFailureIsReportedNotLost(CodingAgentEnabledTestCase):
+    @patch("agent.agents.coding.anthropic_client")
+    def test_a_git_level_rollback_failure_keeps_the_verification_result_and_says_so(self, mock_client):
+        # A stale/held .git/index.lock blocks `git restore`, which surfaces
+        # as plain CheckpointError, not the CheckpointRestoreFailed
+        # subclass. _attempt_rollback used to catch only the subclass, so
+        # this escaped to execute()'s outer handler: a generic
+        # "CheckpointError: ..." with verification_status and rolled_back
+        # both gone. Real git failure, produced for real: the lock appears
+        # between the test run and the rollback.
+        # The agent must modify an already-TRACKED file: a brand-new file is
+        # rolled back by os.remove and never reaches `git restore`, so it
+        # would not exercise the failing path at all.
+        self._write_fixture("notes.txt", "original\n")
+        _git(self.repo, "add", "notes.txt")
+        _git(self.repo, "commit", "-qm", "add notes")
+        lock = os.path.join(self.repo, ".git", "index.lock")
+        self.addCleanup(lambda: os.path.exists(lock) and os.remove(lock))
+        real_suite = coding._run_test_suite
+
+        def suite_then_hold_the_lock(repo_root):
+            result = real_suite(repo_root)
+            open(lock, "w").close()
+            return result
+
+        mock_client.messages.create.side_effect = [
+            _response([_tool_use_block("write_file", {"path": "notes.txt", "content": "changed"})], "tool_use"),
+            _response([_text_block("Done.")], "end_turn"),
+        ]
+        with patch("agent.agents.coding._run_test_suite", side_effect=suite_then_hold_the_lock):
+            result = self.agent.execute("write 42 to value.txt", self.context)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.verification_status, "failed")
+        self.assertIs(result.metadata["rolled_back"], False)
+        self.assertIn("index.lock", result.metadata["rollback_error"])
+        self.assertIn("Could NOT roll back automatically", result.result)
+        self.assertEqual(result.metadata["files_written"], ["notes.txt"])
+        with open(os.path.join(self.repo, "notes.txt")) as file:
+            self.assertEqual(file.read(), "changed")  # left as written, not silently lost or half-restored
+
+
 class TestAgentCannotOverwriteAGitignoredSecret(CodingAgentEnabledTestCase):
     @patch("agent.agents.coding.anthropic_client")
     def test_write_to_env_is_refused_end_to_end_and_the_secret_is_untouched(self, mock_client):

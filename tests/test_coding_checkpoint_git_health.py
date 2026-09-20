@@ -72,10 +72,11 @@ class TestIndexContention(CheckpointTestCase):
         with self.assertRaises(ckpt.CheckpointError) as caught:
             ckpt.restore_paths(checkpoint, ["tracked.txt"])
         self.assertIn("index.lock", str(caught.exception))
-        # Not CheckpointRestoreFailed: agent/agents/coding.py's
-        # _attempt_rollback only catches that subclass, so this escapes to
-        # execute()'s outer `except Exception` instead (see the decision
-        # note) -- pinned so a change to either side is noticed.
+        # A plain CheckpointError, not the CheckpointRestoreFailed
+        # subclass (a git-level failure, not a refusal). _attempt_rollback
+        # used to catch only the subclass, so this escaped to execute()'s
+        # outer handler; it now catches the base class -- proven end to end
+        # by test_agents_coding_enabled.TestRollbackFailureIsReportedNotLost.
         self.assertNotIsInstance(caught.exception, ckpt.CheckpointRestoreFailed)
         self.assertEqual(self._read("tracked.txt"), "AGENT EDIT\n")
         self.assertTrue(_fsck_clean(self.repo))
@@ -84,29 +85,41 @@ class TestIndexContention(CheckpointTestCase):
         self.assertEqual(ckpt.restore_paths(checkpoint, ["tracked.txt"]), ["tracked.txt"])
         self.assertEqual(self._read("tracked.txt"), "original content\n")
 
-    def test_KNOWN_GAP_create_checkpoint_rewrites_the_real_index_via_git_status(self):
-        # The module docstring says the real index is "never touched".
-        # `_dirty_paths` runs a plain `git status --porcelain`, which
-        # opportunistically refreshes and REWRITES .git/index (taking
-        # index.lock briefly) when any tracked file's stat data is stale.
-        # A concurrent `git add` that lands in that window fails with
-        # "Unable to create '.git/index.lock'" (reproduced: 7 of 148 in an
-        # 8s stress run; see the decision note). GIT_OPTIONAL_LOCKS=0
-        # avoids it -- not applied by _run_git today.
+    def test_create_checkpoint_no_longer_rewrites_the_real_index_via_git_status(self):
+        # Was test_KNOWN_GAP_create_checkpoint_rewrites_the_real_index_via_
+        # git_status. `_dirty_paths`' plain `git status --porcelain`
+        # used to opportunistically refresh and REWRITE .git/index
+        # whenever a tracked file's stat data was stale, so a concurrent
+        # `git add` landing in that window failed with "Unable to create
+        # '.git/index.lock'" (7 of 148 in the audit's stress run, 0 of 132
+        # with GIT_OPTIONAL_LOCKS=0). _run_git now sets it on every call.
         tracked = os.path.join(self.repo, "tracked.txt")
-
-        os.utime(tracked, (1, 1))
         env_without = {k: v for k, v in os.environ.items() if k != "GIT_OPTIONAL_LOCKS"}
-        with patch.dict(os.environ, env_without, clear=True):
-            before = _index_bytes(self.repo)
-            ckpt.create_checkpoint("status-refresh", repo_root=self.repo)
-            self.assertNotEqual(_index_bytes(self.repo), before)
 
-        os.utime(tracked, (2, 2))
-        with patch.dict(os.environ, {**env_without, "GIT_OPTIONAL_LOCKS": "0"}, clear=True):
+        os.utime(tracked, (1, 1))  # stale stat data: exactly what makes plain `git status` rewrite the index
+        with patch.dict(os.environ, env_without, clear=True):
             before = _index_bytes(self.repo)
             ckpt.create_checkpoint("status-no-refresh", repo_root=self.repo)
             self.assertEqual(_index_bytes(self.repo), before)
+
+    def test_the_module_forces_optional_locks_off_even_if_the_environment_says_otherwise(self):
+        tracked = os.path.join(self.repo, "tracked.txt")
+        os.utime(tracked, (3, 3))
+        with patch.dict(os.environ, {**os.environ, "GIT_OPTIONAL_LOCKS": "1"}):
+            before = _index_bytes(self.repo)
+            ckpt.create_checkpoint("status-forced-off", repo_root=self.repo)
+            self.assertEqual(_index_bytes(self.repo), before)
+
+    def test_the_control_plain_git_status_does_rewrite_the_index_when_stat_data_is_stale(self):
+        # Keeps the two tests above honest: proves this environment really
+        # exhibits the behavior they guard against, so they cannot pass
+        # vacuously on a git/filesystem where a stale stat never rewrites.
+        tracked = os.path.join(self.repo, "tracked.txt")
+        os.utime(tracked, (2, 2))
+        env_without = {k: v for k, v in os.environ.items() if k != "GIT_OPTIONAL_LOCKS"}
+        before = _index_bytes(self.repo)
+        subprocess.run(["git", "status", "--porcelain"], cwd=self.repo, env=env_without, capture_output=True, timeout=15)
+        self.assertNotEqual(_index_bytes(self.repo), before)
 
 
 class TestGitignoredFiles(CheckpointTestCase):

@@ -86,9 +86,20 @@ class Checkpoint:
 
 
 def _run_git(args: List[str], cwd: str, env: Optional[dict] = None, check: bool = True):
+    # GIT_OPTIONAL_LOCKS=0 on every call, not just `status`: git otherwise
+    # opportunistically refreshes and REWRITES the real .git/index (under
+    # index.lock) during a plain read-only `git status --porcelain`, which
+    # _dirty_paths runs on every create_checkpoint. A human's concurrent
+    # `git add`/VS Code stage that lands in that window fails with "Unable
+    # to create '.git/index.lock'" -- reproduced by the plan-b6 audit: 7 of
+    # 148 concurrent `git add` calls failed without this, 0 of 132 with it.
+    # It only suppresses *optional* locks; a command that genuinely needs
+    # the index (`git restore`) still takes it.
+    full_env = dict(os.environ if env is None else env)
+    full_env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run(
-            ["git"] + args, cwd=cwd, env=env, capture_output=True, text=True,
+            ["git"] + args, cwd=cwd, env=full_env, capture_output=True, text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
