@@ -6,19 +6,24 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-09-20 (see the Alexa bridge, MemoryAgent bypass audit, and
-Low-disk warning sections below for everything since the paragraph that
-follows; that paragraph itself is from 2026-08-28 and was not rewritten).
+Last updated: 2026-09-20 (plan-b6 reconciliation pass — every claim about
+current commit status, HEAD, and test count in this file was re-checked
+against `git log`; sections describing past work are unchanged).
 **Phase 9 / M4 (Conversation & History
 Intelligence) is fully complete — all four sub-milestones (M4.1
-through M4.4) are committed, on `main`, CI-verified.** `main` HEAD has
-since moved well past `2bed0b2`: `37fb078` (QAAgent's missing `-t .`,
-a live production safety fix), `f8c638a` (M10.0 — the general
-permission chokepoint), `df26bc0` (Phase 10 increment 1 — real
-CodingAgent + checkpoint/rollback, `coding_agent_enabled` still
-`False`), `923f8f5` (docs for both), then this session's voice
-false-triggering fix (see the dedicated section below) — all CI-green
-on the first attempt. This is a correction of every earlier version of
+through M4.4) are committed, on `main`, CI-verified.** `main` has taken
+32 commits since `2bed0b2` (the HEAD an older status block below used to
+claim), the last *code* commit being `5a93a2d`; docs commits follow it,
+so run `git log -1` for the true HEAD rather than trusting a hash here.
+In order: `37fb078` (QAAgent's missing `-t .`, a live production safety
+fix), `f8c638a` (M10.0 — the general permission chokepoint), `df26bc0`
+(Phase 10 increment 1 — real CodingAgent + checkpoint/rollback,
+`coding_agent_enabled` still `False`), `923f8f5` (docs for both), then the
+voice false-triggering fix, the "say hi" fixes, M4.4 on by default, M4.5,
+AUTHORITY.md §2's memory sidecar, OpenClaw M2.1, the Telegram and Alexa
+bridges, the MemoryAgent bypass audit, the low-disk warning, and the
+checkpoint git-health characterization tests — see the dedicated section
+for each below. Suite: **1790 tests, 0 failures**. This is a correction of every earlier version of
 this paragraph, which described M4.3 as stuck on a feature branch and
 M4.4 as not started — both are done (see CLAUDE.md's NEW SESSION
 PROTOCOL — trust `git log` over this file when they disagree; that
@@ -1132,9 +1137,10 @@ this changed nothing about what runs by default.
   `config/settings.py` (three new settings), `tests/test_agents_coding.py`
   (docstring only, behavior unchanged), `tests/test_agents_manager.py`
   (one new test), `tests/test_verification.py` (three new tests).
-  `ARCHITECTURE.md` updated (§4, §12e). **None of this is committed** —
-  `git status` shows it all as modified/untracked working-tree state as
-  of this update.
+  `ARCHITECTURE.md` updated (§4, §12e). *(At the time of writing this
+  bullet, none of this was committed; it has since landed — M10.0 as
+  `f8c638a`, Phase 10 increment 1 as `df26bc0`, both CI-green on the
+  first attempt, per this section's own header.)*
 - **Follow-up, same session: the design doc's concurrency question is
   now RESOLVED, by direct reproduction, not left as a guess.**
   Barrier-synchronized real processes (`multiprocessing`, matching
@@ -1844,17 +1850,19 @@ before code-graph analysis, not reflexively after every commit). Prior
 counts, superseded in order: S1-era `3514/7421/172` against `e46f5bd`;
 S1.1-era `3532/7452/163` against `d38e794`.
 
-**Working tree**: `main` HEAD is `2bed0b2` ("Document relay mode and
-record Walmart as a roadmap candidate") — all of S1.1/M4.3/M4.4 are on
-`main`. **On top of that, Phase 10 increment 1 (checkpoint/rollback +
-real CodingAgent, see the dedicated section above) is built and fully
-tested but genuinely uncommitted** — `git status` on this working tree
-shows real modified/untracked files right now; this is not describing a
-clean state. Confirm with a live `git status`/`git log` rather than
-trusting this file. **1583 tests pass, 0 failures** under the canonical
-`python -m unittest discover -s tests -t . -v` (1492 on `main` at
-`2bed0b2`, +66 from Phase 10 increment 1's uncommitted work), reproduced
-multiple times. **The canonical test suite itself makes no live/paid API
+**Working tree**: as of 2026-09-20 `main` is clean and everything
+described in this file is committed — the last code commit is `5a93a2d`,
+32 commits past `2bed0b2`. M10.0 (`f8c638a`) and Phase 10 increment 1
+(`df26bc0`) are committed and CI-verified; `coding_agent_enabled` is
+still `False`. (An earlier version of this paragraph said HEAD was
+`2bed0b2` and that Phase 10 increment 1 was "genuinely uncommitted" —
+both went stale the moment `f8c638a`/`df26bc0` landed; corrected by
+plan-b6 item 2.) Confirm with a live `git status`/`git log` rather than
+trusting this file. **1790 tests pass, 0 failures** under the canonical
+`python -m unittest discover -s tests -t . -v` (test count over time:
+1492 at M4.4, 1583 after Phase 10 increment 1, 1753 after the MemoryAgent
+audit, 1774 after the low-disk warning, 1790 after the checkpoint
+characterization tests). **The canonical test suite itself makes no live/paid API
 calls and never created a real `refs/jarvis/` checkpoint ref in this
 repo** — that guarantee held throughout. Separately, this same pass
 included a deliberate, user-authorized real dogfooding round (turning
@@ -1869,11 +1877,13 @@ installation persists on this machine.
 
 ## What we are currently building
 
-**Phase 10 increment 1 is built, tested, and awaiting a review/commit
-decision** — see the dedicated section above for full detail; do not
-start increment 2 (turning `coding_agent_enabled` on by default) without
-real usage evidence, and do not attempt the design doc's own
-genuinely-open concurrency question by guessing.
+**Phase 10 increment 1 is complete and committed** (`df26bc0`, on top of
+M10.0 `f8c638a`) — see the dedicated section above for full detail. Do
+not start increment 2 (turning `coding_agent_enabled` on by default)
+without real usage evidence **and not before the gaps found by the
+2026-09-20 checkpoint audit are closed** (the gitignored-file gap above
+all — see that section's audit paragraph). The design doc's
+concurrent-run locking question is resolved (see the Phase 10 section).
 
 Everything from before this pass remains complete and committed on
 `main`: Phase 9 / M4 (M4.1-M4.4), Reliability S1/S1.1, OpenClaw
@@ -1934,7 +1944,8 @@ section above.
     semantics are asymmetric); narrowed `account_id`/`thread_id` out of
     the public tool surface. Committed as `d270dc4`, pushed, CI-verified.
 0. **OpenClaw M2 — outbound text messaging bridge** (new session,
-   implementation + tests only, uncommitted): the real Gateway `send`
+   implementation + tests only, uncommitted at the time — since committed
+   as `d270dc4`, see item -1): the real Gateway `send`
    RPC, never `chat.send` (`ChatSendParamsSchema` requires a
    `sessionKey` and is part of OpenClaw's own agent/session execution
    surface — confirmed via real `openclaw@2026.7.1-2` server source,
@@ -2136,10 +2147,11 @@ section above.
 ## What is partially completed
 
 **Phase 10 increment 1 (checkpoint/rollback + real CodingAgent)** is
-complete and fully tested, uncommitted — see the dedicated section
-above. The only thing not done is the review/commit decision, plus
-(much later, gated on real usage evidence) deciding whether to flip
-`coding_agent_enabled` on by default.
+complete, fully tested, and committed (`df26bc0`; M10.0 `f8c638a`) — see
+the dedicated section above. The only thing not done is deciding whether
+to flip `coding_agent_enabled` on by default, which is gated on real
+usage evidence and on closing the gaps the 2026-09-20 checkpoint audit
+found.
 
 **Phase 9 / M4.3 (read-only conversation-history ToolSpecs)** is
 merged to `main` (`b19f042`) — the "feature branch, merge pending"
@@ -2147,9 +2159,10 @@ framing this paragraph used to have is stale; nothing about M4.3 is
 partial anymore. (S1, S1.1, M4.1, and M4.2 are likewise no longer
 partial — all committed on `main`.)
 
-OpenClaw M2 is complete and fully tested; the only thing not done is
-the user's review/commit decision, plus choosing and configuring a
-first real messaging channel afterward.
+OpenClaw M2 is complete, committed (`d270dc4`), and CI-verified; the
+only thing not done is choosing and configuring a first real OpenClaw
+messaging channel (the direct Telegram bridge, built separately, does not
+go through it).
 
 ## Current bugs / known issues
 
@@ -2187,10 +2200,10 @@ primary source.
 
 None technical. OpenClaw M1/M1.5/M2, Graphify G0/G1/G1.1, and all of
 Phase 9 / M4 (M4.1 through M4.4) plus S1/S1.1 are committed, pushed, and
-CI-verified on `main`. Phase 10 increment 1 is built and tested but
-awaits a human review/commit decision before it joins them — that
-decision is the only thing standing between the current working tree and
-a real commit. Open decisions (none urgent): which real
+CI-verified on `main`, and so are M10.0 and Phase 10 increment 1
+(`f8c638a`, `df26bc0`; `coding_agent_enabled` still `False`, with real
+gaps to close before it is ever turned on — see the 2026-09-20
+checkpoint audit). Open decisions (none urgent): which real
 messaging channel (if any) to configure for OpenClaw next, whether/when
 to pursue a further Graphify milestone (MCP/hooks/auto-rebuild — none
 implemented or assumed so far), the `last_accessed` design question
@@ -2560,8 +2573,8 @@ multiple times clean locally and CI-verified on the first attempt
 **Most current items first, ahead of the numbered list below (kept as-is
 as this project's historical record of that earlier thread):**
 
-- **Phase 10 increment 1 needs a review/commit decision** — built,
-  tested (1583/1583), uncommitted, now including a real, user-authorized
+- **Phase 10 increment 1 — reviewed and committed (`f8c638a`,
+  `df26bc0`)**; built, tested (1583/1583 at the time), including a real, user-authorized
   dogfooding round that found and fixed five more real bugs (see
   HANDOFF's "Real dogfooding pass" subsection), a structured
   `/code-review high` pass that found and fixed six more (the
@@ -2655,17 +2668,21 @@ For the next session, in order of what's most likely to matter:
   up M4.4-on-by-default *and* the low-disk warning; M4.4's evidence
   cannot accumulate until then); optionally a cheap live "say hi" retest of
   the single-completion greeting (small real API spend, not yet run).
-- **Unactioned, still-open housekeeping** from `.relay/plan-b5.md`
-  (2026-09-06, no report exists): item 1 (audit `agent/coding_checkpoint.py`
-  git-ref approach against the Phase 10 design docs' concerns — parked as
-  meta work), item 2 (this file still contradicts itself: older sections
-  below claim HEAD is `2bed0b2` / Phase 10 increment 1 "uncommitted"; the
-  2026-09-20 pass fixed only the "Last updated" line and did not do the
-  full audit), item 4 (`.relay/last-executed-plan` reads `b1`;
-  `runner-state` is at its cap — deliberately left alone, resuming
-  unattended automation is the user's call). Item 3 is done (MemoryAgent
-  bypass audit above; ResearchAgent's read-only exception is the accepted,
-  documented one in `CLAUDE.md` rule 3).
+- **plan-b5's four items are now all resolved** (via `.relay/plan-b6.md`,
+  2026-09-20): item 1 (checkpoint audit) — done, conclusion "real gaps",
+  see the Phase 10 section; item 2 (this file's internal contradictions) —
+  done; item 3 (MemoryAgent bypass audit) — done earlier, ResearchAgent's
+  read-only exception is the accepted, documented one in `CLAUDE.md`
+  rule 3; item 4 (relay bookkeeping) — see `.relay/report-b6.md`.
+  `runner-state` is left at its cap deliberately: resuming unattended
+  automation is the user's call.
+- **Biggest open item now**: the checkpoint audit's fix list (refuse writes
+  to gitignored paths + denylist `.env*`/`JarvisVault/`/`logs/`/
+  `graphify-out/`; make `restore_paths` refuse rather than delete a path
+  absent from the snapshot; record the agent's own write to detect a later
+  human edit; `GIT_OPTIONAL_LOCKS=0`; catch `CheckpointError` in
+  `_attempt_rollback`). Not started — a separate decision, and the
+  prerequisite for ever enabling CodingAgent.
 - If nothing above is picked, the honest next step is to ask the user what
   Jarvis should do for them that it doesn't yet — the backlog no longer
   answers that on its own.
