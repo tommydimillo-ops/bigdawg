@@ -1053,6 +1053,35 @@ directly on top of M10.0 (`f8c638a`, see below) — both CI-verified green
 on the first attempt. `coding_agent_enabled` remains `False`; committing
 this changed nothing about what runs by default.
 
+**2026-09-20 checkpoint audit (plan-b6 item 1) — conclusion: real gaps,
+none fixed yet.** Whether the git-ref mechanism actually withstands the
+concerns Phase 10's design docs raised against git-based checkpointing had
+never been tested. It has now, against throwaway repos with real git.
+Result: **gitignored files are a severe gap** (they are absent from the
+snapshot, so `restore_paths` *deletes* a pre-existing ignored file and
+reports success, and an agent's edit to one is invisible to
+`changed_paths_since` — and `.env`, `JarvisVault/`, `logs/`,
+`graphify-out/` are all gitignored *and not on CodingAgent's write
+denylist*); **a human edit made after the agent's write is silently
+discarded by rollback**; **`create_checkpoint`'s `git status` rewrites the
+real `.git/index`** (a concurrent `git add` failed 7 of 148 times in a
+stress run; `GIT_OPTIONAL_LOCKS=0` made it 0 of 132); and **rollback needs
+the real index to work** (a held or stale `index.lock`, or a corrupt
+index, blocks it — it fails cleanly and the checkpoint ref survives for
+manual recovery). Detached HEAD and a conflicted merge are handled
+correctly, and creation itself is safe against a held `index.lock`. The
+module is safe to leave in place while `coding_agent_enabled` is `False`
+(its only caller is gated by that flag); it must not be enabled before the
+gitignored gap is closed. Full findings, git-subcommand inventory, and the
+fix list are in the vault note
+`JarvisVault/Knowledge/Decisions/Phase10-Checkpoint-Git-Vs-Byte-Level.md`
+(gitignored — local to this Mac); probe scripts and raw transcripts are in
+`.relay/audit-b6/`; the deterministic findings are pinned by 16
+characterization tests in `tests/test_coding_checkpoint_git_health.py`
+(`test_KNOWN_GAP_*` pin real defects — flip them, don't delete them, when
+fixed). No change was made to `agent/coding_checkpoint.py` or
+`agent/agents/coding.py`.
+
 - **What it does**: `CodingAgent` (`agent/agents/coding.py`) is real for
   the first time — previously a pure stub. Gated by `config.settings.
   coding_agent_enabled` (default `False`; when off, execute() is
