@@ -74,6 +74,7 @@ from agent.coding_checkpoint import (
     restore_paths,
 )
 from agent.request_context import RequestContext
+from agent.secret_paths import refuse_secret_read
 from agent.task_classifier import TaskType
 from agent.usage import check_request_limits, record_llm_usage
 from config.settings import settings
@@ -352,6 +353,12 @@ def _read_file(repo_root: str, path: str) -> str:
     except PathOutsideRepository as error:
         return f"Error: {error}"
     abs_path = os.path.join(repo_root, rel)
+    # Reads are ungated EXCEPT for secrets (CLAUDE.md rule 3): what is read
+    # here goes into the model's prompt and off the machine, which no
+    # checkpoint can undo. `rel` is already the resolved path.
+    refusal = refuse_secret_read(abs_path, reader="coding_agent_read_file")
+    if refusal:
+        return refusal
     if not os.path.isfile(abs_path):
         return f"Error: '{rel}' does not exist or is not a regular file."
     try:

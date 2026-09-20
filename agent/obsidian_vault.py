@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from agent.memory.safety import is_safe_to_remember
+from agent.secret_paths import refuse_secret_read, secret_path_reason
 from config.settings import settings
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -111,6 +112,11 @@ def read_note(relative_path: str) -> Tuple[Optional[str], Optional[str]]:
     if resolved is None:
         return None, f"'{relative_path}' is outside the vault."
 
+    # A note named e.g. `credentials.md` is as much a secret as a `.env`.
+    refusal = refuse_secret_read(resolved, reader="obsidian_read_note")
+    if refusal:
+        return None, refusal
+
     if not os.path.isfile(resolved):
         return None, f"No note found at '{relative_path}'."
 
@@ -181,6 +187,10 @@ def search_notes(query: str, limit: int = 10) -> Tuple[List[SearchResult], Optio
             if not filename.lower().endswith(".md"):
                 continue
             full_path = os.path.join(dirpath, filename)
+            # Search returns snippets of note text, so it is a read path too:
+            # secret-named notes are skipped rather than surfaced.
+            if secret_path_reason(full_path) is not None:
+                continue
             try:
                 with open(full_path, "r", encoding="utf-8") as file:
                     text = file.read()
