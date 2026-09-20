@@ -6,6 +6,16 @@ tested — see `CHANGELOG.md` for when/why. Cross-reference: `ARCHITECTURE.md`
 marks the same implemented/not-implemented boundary from the code side;
 this file is the planning side of the same line.
 
+**A second, unrelated "Phase N" numbering exists in `.relay/gpt-handoff.md`
+§24** ("FULL 38-PHASE MASTER ROADMAP") — a frozen 2026-08-23 one-time
+takeover snapshot that explicitly ranks below this file in its own
+source-of-truth order (§"Source-of-truth order"), not a doc this project
+keeps in sync with the phases below. Its phase numbers don't line up with
+this file's: e.g. its Phase 11 ("History Retrieval Tools") is this file's
+Phase 9 / M4.3, and its Phase 12 ("Proactive Context Retrieval") is this
+file's Phase 9 / M4.4 — both already ✅ Completed below. Don't conflate
+the two "Phase N" vocabularies.
+
 ## Completed
 
 Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
@@ -634,7 +644,16 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   relay `launchd` job — confirmed that has been a no-op the whole time);
   finished rather than discarded, closing two real gaps (missing history-
   source validation, missing test-safety file redirect) before
-  committing.
+  committing. **Its first CI push (`175832b`) failed for real** (GitHub
+  Actions run `35217687149`) despite a clean local run — three new tests
+  only waited ~1s for a real background thread to finish before
+  asserting, the same CI-slower-than-local flake class this project has
+  hit before. No raw job log was available (`403`, no `gh` CLI in this
+  environment), so this was root-caused from the failure's shape and
+  precedent rather than guessed blindly; fixed by replacing the
+  sleep-polls with a thread-join helper and hardening two `tearDown`s
+  against a related lock-contamination risk (`627c560`), CI green on the
+  next attempt. See `CHANGELOG.md`'s dedicated 2026-09-17 entry.
 
 - **MemoryAgent bypass audit** ✅ (2026-09-17): resolves the "Next" item
   of the same name. `agent/agents/memory.py`'s `execute()` called
