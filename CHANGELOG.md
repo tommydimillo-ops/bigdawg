@@ -7,6 +7,43 @@ needed.
 
 ---
 
+## 2026-09-20 — Low-disk warning (system status, dashboard, greeting)
+
+Resolved `ROADMAP.md`'s "Low-disk health monitoring/alert" Future item.
+Phase 9 Reliability S1 found this Mac's disk reaching 0 bytes free, which
+produced real `sqlite3.OperationalError: disk I/O error` failures — a risk
+that applies equally to the live `history.db`. `get_system_status` already
+printed a `Disk:` line, but with no threshold, so 500Mi free looked the
+same as 500Gi free; nothing told the user before something broke.
+
+**What changed**: new `agent/disk_health.py` — `check_disk_health()`
+(pure threshold comparison via `shutil.disk_usage`, measured at Jarvis's
+data directory or its nearest existing ancestor, never raises, an
+unreadable volume is `unknown`) and `format_disk_warning()`. Two new
+settings, `low_disk_warning_gb=5.0` (matches `.relay/runner.sh`'s own
+refusal floor) and `low_disk_critical_gb=1.0` (real headroom above the
+near-zero free space at which S1's failures occurred), both
+env-overridable.
+Consumers, all read-only: a `WARNING:` line after the unchanged `Disk:`
+line in `tools/system_status.py`; a top-of-page banner in
+`pages/1_Dashboard.py` (silent when healthy); and one conditional
+sentence in `agent/greeting.py`'s prefetched-greeting block, because that
+template is otherwise rigid and would have ignored the status line. The
+`get_system_status` tool description now mentions the warning.
+
+**Deliberately not built**: any automatic cleanup or write-throttling
+(signal only, as the roadmap item specified), a menu-bar indicator, and a
+proactive push alert — each a separate decision.
+
+**Verified**: 21 new tests (`tests/test_disk_health.py`), mocking only
+`shutil.disk_usage` and `subprocess.run` — never the threshold logic —
+including strict-`<` boundaries, unreadable-volume, missing-directory
+ancestor resolution, call-time settings resolution, and one unpatched call
+against the real volume. Full suite 1774/1774 (1753 + 21). Commit
+`b04d84d`, CI-verified on the first attempt (run `35524084934`). See `ARCHITECTURE.md` §12f.
+
+---
+
 ## 2026-09-17 — MemoryAgent bypass audit: gate remember(), leave recall() ungated
 
 Resolved `ROADMAP.md`'s "MemoryAgent bypass audit" item. `agent/agents/

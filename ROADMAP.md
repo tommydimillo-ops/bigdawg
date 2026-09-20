@@ -697,6 +697,20 @@ Grouped by the phase that shipped them (see `CHANGELOG.md` for detail):
   Phase 10 truncated-response gap. Gating itself: `c7c9ee8`. Two
   commits, full suite 1753/1753 after both.
 
+- **Low-disk warning** ✅ (2026-09-20): resolves the "Future" item of the
+  same name (found by Phase 9 Reliability S1, when this Mac's disk hit 0
+  bytes free and `history.db`'s writes failed with real `disk I/O error`s).
+  New `agent/disk_health.py` — a pure threshold check, never raises, never
+  deletes or throttles anything (a signal only) — against two new settings,
+  `low_disk_warning_gb` (5.0, matching `.relay/runner.sh`'s own floor) and
+  `low_disk_critical_gb` (1.0). Surfaced as a `WARNING:` line in
+  `get_system_status` (existing `Disk:` line unchanged), a banner at the top
+  of the dashboard (silent when healthy), and one conditional sentence in
+  the prefetched-greeting prompt block so the daily greeting relays it.
+  Not built: a menu-bar indicator, a proactive push (Telegram/notification)
+  alert, and any automatic cleanup — each is a separate decision.
+  21 new tests, full suite 1774/1774. See `ARCHITECTURE.md` §12f.
+
 ## In progress
 
 **Phase 10 increment 1 — real CodingAgent + checkpoint/rollback.** Built,
@@ -1012,17 +1026,6 @@ this project is meant to grow into:
 - **A hardware client** — mentioned as a long-term possibility in earlier
   architecture notes (`agent/jarvis_state.py`'s docstring anticipates
   "voice/hardware clients"); nothing concrete planned.
-- **Low-disk health monitoring/alert** — the Phase 9 Reliability S1
-  pass (and its finalization) found this Mac's disk reaching complete
-  exhaustion (0 bytes free) during a test run, which caused real SQLite
-  `disk I/O error`/`HistoryBusy` failures — a risk that applies equally
-  to the live production `history.db`'s own writes, not just to testing.
-  No automatic handling exists today (deliberately not built as part of
-  S1 — out of scope for a test-safety pass). A future improvement would
-  be some form of low-disk-space detection/health signal surfaced to the
-  user (e.g. via `get_system_status` or the dashboard), not automatic
-  deletion or cleanup behavior. Not started, not designed in detail —
-  maintain reasonable free-space headroom operationally in the meantime.
 
 ## Experimental
 

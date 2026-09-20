@@ -776,10 +776,10 @@ real disk writes on every turn; the Phase 9 Reliability S1 pass found
 this Mac's disk reaching complete exhaustion during a test run, which
 produced real `sqlite3.OperationalError: disk I/O error` failures. The
 same failure class applies to the live production `history.db`, not
-just to testing. There is no automatic low-disk handling here
-(deliberately not built as part of a test-safety pass) — maintain
-reasonable free-space headroom operationally; a future health-check/
-alert is recorded in `ROADMAP.md`'s "Future" section, not built yet.
+just to testing. There is no automatic low-disk *handling* here (no
+cleanup, no write-throttling — deliberately) — but as of 2026-09-20 a
+low-disk *warning* exists: see §12f. Maintain reasonable free-space
+headroom operationally regardless.
 
 **What M4.1 deliberately did not do yet** (each a distinct, later,
 explicitly-gated milestone — M4.2 below implements the first of these):
@@ -1180,6 +1180,37 @@ git checkpoint/restore, genuine file reads/writes, a genuine test-suite
 subprocess run against a throwaway fixture repository (its own tiny
 `tests/` directory and `.gitignore`, never the real CampusPilot repo or
 suite).
+
+### 12f. Disk health (low-disk warning)
+
+`agent/disk_health.py` — a pure, deterministic free-space check for the
+volume Jarvis's stores live on (`~/Library/Application Support/
+CampusPilot`, or its nearest existing ancestor on a fresh install).
+`check_disk_health()` returns a frozen `DiskHealth(level, free_bytes,
+total_bytes)` with `level` one of `ok`/`low`/`critical`/`unknown`,
+compared against two settings — `low_disk_warning_gb` (5.0) and
+`low_disk_critical_gb` (1.0), both `_env_float`-overridable
+(`LOW_DISK_WARNING_GB`/`LOW_DISK_CRITICAL_GB`). Comparisons are strict
+`<`, so exactly-at-threshold is the healthier level. It never raises: an
+unreadable volume is `unknown`, because it runs inside `get_system_status`
+and the dashboard and a failed health *check* must not break either.
+`format_disk_warning()` turns `low`/`critical` into one plain-language
+line beginning `WARNING:` (and `None` for `ok`/`unknown`).
+
+It is a **signal only** — nothing deletes, cleans, or throttles anything
+on a low reading. Three consumers, all read-only:
+
+- `tools/system_status.py`'s `get_system_status` appends the `WARNING:`
+  line directly after the existing (unchanged) `Disk:` line.
+- `pages/1_Dashboard.py` shows an `st.warning`/`st.error` banner at the
+  very top, and nothing at all when healthy.
+- `agent/greeting.py`'s prefetched-greeting block tells the model to add
+  one short sentence relaying a `WARNING:` line inside the same single
+  reply, and to say nothing about it otherwise (the greeting template is
+  otherwise rigid, so without this the status line would be ignored).
+
+`free` is `shutil.disk_usage()`'s figure, which excludes macOS
+"purgeable" space — the same conservative number `df` reports.
 
 ## 13. Authentication / security
 

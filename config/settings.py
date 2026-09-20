@@ -482,10 +482,11 @@ class Settings:
 
     # --- Low-disk warning (agent/disk_health.py) ---
     # Free-space thresholds, in GB, for the volume Jarvis's stores live on.
-    # 5 matches .relay/runner.sh's own refusal floor; 1 is well above the
-    # ~130-200Mi range where real SQLite `disk I/O error` failures were
-    # first observed (Phase 9 Reliability S1). Starting values from one
-    # Mac's incident history, not tuned -- settings for that reason.
+    # 5 matches .relay/runner.sh's own refusal floor; 1 leaves real
+    # headroom above the near-zero free space at which SQLite `disk I/O
+    # error` failures occurred (Phase 9 Reliability S1). Starting values
+    # from one Mac's incident history, not tuned -- settings for that
+    # reason.
     low_disk_warning_gb: float = 5.0
     low_disk_critical_gb: float = 1.0
 

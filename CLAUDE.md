@@ -213,7 +213,7 @@ into six real files under the live
 safety-guaranteed invocation either. Always use one of the two commands
 above.
 
-1417 tests as of this writing, all passing. `tests/__init__.py` +
+1774 tests as of this writing, all passing. `tests/__init__.py` +
 `tests/_safety.py` install a package-level safety bootstrap before any
 test module is imported: a disposable per-process temp directory that
 every production persistent-store path constant is redirected into, an

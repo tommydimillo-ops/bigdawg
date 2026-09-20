@@ -5,6 +5,25 @@ Lightweight per-session record. Concise by design — for depth, see
 
 ---
 
+### 2026-09-20 — Low-disk warning
+
+New session per `CLAUDE.md`'s NEW SESSION PROTOCOL: read `HANDOFF.md`/
+`ROADMAP.md`/`.relay/AUTHORITY.md`, checked `git status` (one uncommitted,
+docs-only `ROADMAP.md` edit recording the Alexa CI-failure fix — verified
+against `git log` and committed on its own as `fb1fab0`). `.relay/
+AUTHORITY.md`'s standing instruction (keep building from `ROADMAP.md`
+without asking; prefer user-visible work over meta work; don't reopen
+Walmart, admin-key reconciliation, or CodingAgent extension) left exactly
+one unblocked, credential-free item: the "Low-disk health monitoring"
+Future entry. Built it as `agent/disk_health.py` + a `WARNING:` line in
+`get_system_status`, a dashboard banner, and one conditional greeting
+sentence (`b04d84d`, 21 new tests, suite 1774/1774). A first baseline
+`tail -8` of the suite run only captured unrelated scheduler stdout, not
+the unittest summary — discarded as evidence and re-run with the summary
+extracted explicitly rather than trusted. Docs committed separately.
+
+---
+
 ### 2026-09-17 — MemoryAgent bypass audit: gated remember(), left recall() ungated
 
 New session, per `CLAUDE.md`'s own NEW SESSION PROTOCOL: read `ROADMAP.md`'s

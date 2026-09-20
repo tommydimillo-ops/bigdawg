@@ -6,7 +6,10 @@ the other docs; if anything here contradicts the actual code or git
 state, trust the code (see `CLAUDE.md`'s NEW SESSION PROTOCOL) and fix
 this file.
 
-Last updated: 2026-08-28. **Phase 9 / M4 (Conversation & History
+Last updated: 2026-09-20 (see the Alexa bridge, MemoryAgent bypass audit, and
+Low-disk warning sections below for everything since the paragraph that
+follows; that paragraph itself is from 2026-08-28 and was not rewritten).
+**Phase 9 / M4 (Conversation & History
 Intelligence) is fully complete — all four sub-milestones (M4.1
 through M4.4) are committed, on `main`, CI-verified.** `main` HEAD has
 since moved well past `2bed0b2`: `37fb078` (QAAgent's missing `-t .`,
@@ -852,6 +855,38 @@ session's Bash tool sees, confirmed stale by identical inode/timestamp
 on a second check) before work resumed. No repo state was at risk at any
 point — `git status` was clean throughout except this session's own
 in-progress edits.
+
+## Low-disk warning ✅ (2026-09-20)
+
+Resolves `ROADMAP.md`'s "Low-disk health monitoring/alert" Future item —
+found by Phase 9 Reliability S1 when this Mac's disk hit 0 bytes free and
+`history.db`'s writes failed with real `disk I/O error`s. `get_system_status`
+already printed a `Disk:` line, but with no threshold.
+
+**What it is**: `agent/disk_health.py` — `check_disk_health()` (pure
+threshold check on `shutil.disk_usage`, measured at Jarvis's data
+directory or nearest existing ancestor; never raises; unreadable → level
+`unknown`) and `format_disk_warning()` (a `WARNING:`-prefixed line, or
+`None`). Settings: `low_disk_warning_gb=5.0`, `low_disk_critical_gb=1.0`
+(`LOW_DISK_WARNING_GB`/`LOW_DISK_CRITICAL_GB`), starting values from one
+Mac's incident history, not tuned. **A signal only — nothing cleans up or
+throttles anything.** Surfaces: a `WARNING:` line after `get_system_status`'s
+unchanged `Disk:` line; a top-of-page banner on the dashboard (silent when
+healthy); one conditional sentence in `agent/greeting.py`'s prefetched-
+greeting block (the greeting template is rigid, so the status line would
+otherwise be ignored). Full design: `ARCHITECTURE.md` §12f.
+
+**Not built**: menu-bar indicator, proactive push (Telegram/notification)
+alert, automatic cleanup — each a separate decision. Not live-tested against
+a genuinely low disk (this Mac has ~22Gi free right now); covered by tests
+that mock `shutil.disk_usage` plus one unpatched call on the real volume.
+The running menu-bar app needs a restart to pick this up (CLAUDE.md rule 6).
+
+**Commits**: `fb1fab0` (a pending docs-only ROADMAP edit found uncommitted
+at session start, verified against `git log` first), `b04d84d` (code +
+21 tests; full suite **1774/1774**), then this docs commit. **CI-verified on the
+first attempt** — GitHub Actions run `35524084934`, `run_attempt: 1`,
+conclusion `success` (checked via the public GitHub API; no `gh` CLI here).
 
 ## Graphify G0 — DEVELOPMENT CODEBASE GRAPH BASELINE ✅ COMPLETE, COMMITTED, PUSHED, CI-VERIFIED
 
@@ -2607,6 +2642,33 @@ as this project's historical record of that earlier thread):**
 ## Exact recommended next steps
 
 For the next session, in order of what's most likely to matter:
+
+**As of 2026-09-20 (supersedes the ordering below where they differ):**
+- The unblocked, credential-free items on `ROADMAP.md` are now essentially
+  exhausted. What remains is either blocked on the user or explicitly
+  parked: inbound Gmail read/draft (raised, not approved, needs a Google
+  credential), Walmart (user said no — do not build), provider admin-key
+  cost reconciliation (user deferred — don't reopen), menu-bar cost readout
+  Option A (considered, not chosen), CodingAgent/Phase 10 extension
+  (`.relay/AUTHORITY.md` says finish, then park).
+- **User actions still outstanding**: restart the real menu-bar app (picks
+  up M4.4-on-by-default *and* the low-disk warning; M4.4's evidence
+  cannot accumulate until then); optionally a cheap live "say hi" retest of
+  the single-completion greeting (small real API spend, not yet run).
+- **Unactioned, still-open housekeeping** from `.relay/plan-b5.md`
+  (2026-09-06, no report exists): item 1 (audit `agent/coding_checkpoint.py`
+  git-ref approach against the Phase 10 design docs' concerns — parked as
+  meta work), item 2 (this file still contradicts itself: older sections
+  below claim HEAD is `2bed0b2` / Phase 10 increment 1 "uncommitted"; the
+  2026-09-20 pass fixed only the "Last updated" line and did not do the
+  full audit), item 4 (`.relay/last-executed-plan` reads `b1`;
+  `runner-state` is at its cap — deliberately left alone, resuming
+  unattended automation is the user's call). Item 3 is done (MemoryAgent
+  bypass audit above; ResearchAgent's read-only exception is the accepted,
+  documented one in `CLAUDE.md` rule 3).
+- If nothing above is picked, the honest next step is to ask the user what
+  Jarvis should do for them that it doesn't yet — the backlog no longer
+  answers that on its own.
 
 0. Re-verify this file against actual git state first (per `CLAUDE.md`'s
    NEW SESSION PROTOCOL) — confirm `git log`/`git status`/test count
