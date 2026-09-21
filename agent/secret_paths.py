@@ -61,6 +61,12 @@ _SECRET_BASENAME_PATTERNS = (
     "credentials*",
     "*_token*",
     "*.secret",
+    # Added by plan-b9 (chosen by the user for run_python's sandbox, and kept in
+    # this one list so the sandbox and the read chokepoint cannot drift apart):
+    # package-manager and OAuth credential files.
+    ".netrc",
+    ".npmrc",
+    "token.json",
 )
 
 # Committed template files, safe by construction. Exact basenames only.
@@ -121,3 +127,94 @@ def refuse_secret_read(path: str, reader: str) -> Optional[str]:
         f"Error: refusing to read '{path}' -- {reason}. Files that hold secrets are never "
         "read into a prompt, because what is read here leaves the machine and cannot be taken back."
     )
+
+
+# ---------------------------------------------------------------------------
+# Seatbelt (sandbox-exec) rules for run_python, generated from the SAME list
+# ---------------------------------------------------------------------------
+#
+# run_python executes model-written code, so a path check on a reader cannot
+# cover it -- the code can open('.env') itself. The sandbox therefore denies
+# reads of the same files. The rules are generated from _SECRET_BASENAME_PATTERNS
+# so the two enforcement points cannot drift apart.
+#
+# Two of the patterns are loose enough to match ordinary Python packages:
+# `_token*` hits packaging/_tokenizer.py (imported by many libraries),
+# `credentials*` hits keyring/credentials.py, streamlit/runtime/credentials.py
+# and -- found by an import-regression run, not by reading -- the PACKAGE
+# DIRECTORY anthropic/lib/credentials/, whose path Python must list to import
+# anything from it. Denying those would break `import packaging.markers` and
+# `import anthropic` inside run_python, a legitimate use. So, for those two
+# patterns ONLY, anything inside a Python library tree (site-packages,
+# dist-packages, lib/pythonX.Y) is carved back out of the SANDBOX rule. That is
+# deliberately a carve-out by LOCATION, not by file extension: an extension
+# carve-out would have let run_python read ~/project/aws_credentials.py, a
+# hardcoded-credentials file. Library trees hold no user secrets, and a symlink
+# cannot launder a real secret into one, because Seatbelt matches the resolved
+# path. Every other pattern is denied everywhere, with no carve-out. The
+# carve-out does not apply to the Python-side chokepoint, which stays strict.
+_SEATBELT_LOOSE_PATTERNS = ("credentials*", "*_token*")
+_SEATBELT_LIBRARY_TREE = "(/site-packages/|/dist-packages/|/lib/python[0-9.]+/)"
+
+
+def _seatbelt_glob_to_regex(glob: str) -> str:
+    """fnmatch-style basename glob -> a case-insensitive POSIX regex fragment.
+    Case-insensitive because the default macOS volume is: `.ENV` is the same
+    file as `.env`, and Seatbelt regexes have no flag for it, so each letter
+    becomes a two-character class."""
+    out = []
+    for char in glob:
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char.isalpha():
+            out.append(f"[{char.lower()}{char.upper()}]")
+        elif char in ".+()[]{}^$|\\":
+            out.append("\\" + char)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _seatbelt_regex_literal(body: str) -> str:
+    return '#"' + body + '"'
+
+
+def seatbelt_read_rules(home: Optional[str] = None) -> str:
+    """The SBPL text that denies reads of secret files (and carves back out
+    the tracked examples and, for the two loose patterns, Python library trees). Meant
+    to be appended to run_python's profile AFTER `(allow default)`: in SBPL
+    the last matching rule wins, which is what makes the carve-outs work.
+
+    `home` defaults to the real home, read here rather than at import time."""
+    home = os.path.realpath(os.path.expanduser("~")) if home is None else os.path.realpath(home)
+    deny = [
+        _seatbelt_regex_literal("/" + _seatbelt_glob_to_regex(pattern) + "$")
+        for pattern in _SECRET_BASENAME_PATTERNS
+    ]
+    library_carve_out = [
+        _seatbelt_regex_literal(_SEATBELT_LIBRARY_TREE + ".*/" + _seatbelt_glob_to_regex(pattern) + "$")
+        for pattern in _SEATBELT_LOOSE_PATTERNS
+    ]
+    example_carve_out = [
+        _seatbelt_regex_literal("/" + _seatbelt_glob_to_regex(name) + "$") for name in sorted(EXAMPLE_BASENAMES)
+    ]
+    keychains = [
+        f'(subpath "{os.path.join(home, "Library", "Keychains")}")',
+        '(subpath "/Library/Keychains")',
+    ]
+    lines = [
+        "(deny file-read*",
+        "    (regex",
+        *("        " + rule for rule in deny),
+        "    ))",
+        "(allow file-read*",
+        "    (regex",
+        *("        " + rule for rule in example_carve_out + library_carve_out),
+        "    ))",
+        "(deny file-read*",
+        *("    " + rule for rule in keychains),
+        ")",
+    ]
+    return "\n".join(lines) + "\n"

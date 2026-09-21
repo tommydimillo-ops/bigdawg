@@ -65,7 +65,7 @@ class TestSecretPathReason(unittest.TestCase):
             "server.pem", "tls/private.key", "id_rsa", "id_rsa.pub", "id_ed25519", "id_ecdsa",
             "id_dsa", "cert.p12", "login.keychain", "login.keychain-db", "credentials",
             "credentials.json", "aws/credentials", "github_token.txt", "my_token", "api_token.md",
-            "notes.secret",
+            "notes.secret", ".netrc", ".npmrc", "token.json", "deploy/.npmrc",
         ):
             with self.subTest(path=path):
                 self.assertIsNotNone(secret_path_reason(path))
