@@ -24,7 +24,10 @@ register(ToolSpec(
         "that to the user if they haven't set it up. IMPORTANT: a "
         "scheduled task runs unattended with nobody watching, so "
         "confirm_login will never fire from one even if requested — "
-        "don't schedule anything that depends on it."
+        "don't schedule anything that depends on it. This ALWAYS needs "
+        "the user's explicit OK first, at every autonomy level, because "
+        "it creates a persistent trigger: say exactly what will run and "
+        "when, then wait for a yes."
     ),
     input_schema={
         "type": "object",

@@ -27,6 +27,10 @@ register(ToolSpec(
     },
     permission_level=2,
     handler=lambda ti: run_python(ti["code"]),
+    # Model-written code must never run with nobody watching. Found by plan-
+    # b9's scoping: with the ToolSpec default (True) a scheduled task could
+    # run arbitrary code, and at autonomy >= 3 nothing else stood in the way.
+    unattended_allowed=False,
 ))
 
 register(ToolSpec(

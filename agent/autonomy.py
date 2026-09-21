@@ -60,7 +60,27 @@ CONFIRMATION_WINDOW_SECONDS = 120
 # future CodingAgent). All three need a deterministic confirmation from
 # voice specifically, regardless of autonomy level, because voice input
 # didn't come from deliberate keystrokes the way typed chat did.
-_VOICE_ALWAYS_CONFIRMS = frozenset({"add_reminder", "open_browser", "consult_coworker_agent"})
+#
+# plan-b9 added three more, found by scoping the live run_python exposure:
+# run_python (model-written code, and at the default autonomy of 4 it ran
+# with NO confirmation from voice or Alexa -- a misheard TV line could have
+# run code), delegate_parallel_tasks (dispatches to the very same coworker
+# agents consult_coworker_agent guards, but was missing from this set, so
+# voice/Alexa reached them unconfirmed), and schedule_task (see below).
+_VOICE_ALWAYS_CONFIRMS = frozenset({
+    "add_reminder", "open_browser", "consult_coworker_agent",
+    "run_python", "delegate_parallel_tasks", "schedule_task",
+})
+
+# Confirmed from EVERY source, at EVERY autonomy level -- a stronger rule than
+# _VOICE_ALWAYS_CONFIRMS, which only covers ambient voice. A scheduled task is
+# a persistent trigger that later runs with nobody watching (and, until plan-
+# b9, with code execution allowed), so the model must never be able to create
+# one on its own initiative -- from a prompt-injected web page, a misheard
+# line, a scheduled run, or a coworker agent. For a non-interactive source
+# there is no one to confirm with, so _confirm_or_deny turns it into a hard
+# DENY: a scheduled task can never schedule another task.
+_ALWAYS_CONFIRMS_FROM_EVERY_SOURCE = frozenset({"schedule_task"})
 
 # Sources that are ambient transcribed speech rather than deliberate
 # keystrokes, and so carry the misfire risk _VOICE_ALWAYS_CONFIRMS
@@ -153,6 +173,9 @@ def should_request_confirmation(
             return _confirm_or_deny(execution_context.source)
 
     if execution_context.source in _AMBIENT_VOICE_SOURCES and tool_name in _VOICE_ALWAYS_CONFIRMS:
+        return _confirm_or_deny(execution_context.source)
+
+    if tool_name in _ALWAYS_CONFIRMS_FROM_EVERY_SOURCE:
         return _confirm_or_deny(execution_context.source)
 
     threshold = _AUTONOMY_THRESHOLDS.get(
