@@ -2,6 +2,8 @@ import os
 import subprocess
 import sys
 
+from config.dotenv_loader import NO_DOTENV_ENV_VAR
+
 # A disposable directory the sandboxed code is allowed to write to. Nothing
 # outside it can be written to, and network access is blocked entirely, so
 # a failure or a bad instruction (including one smuggled in via a web page
@@ -53,6 +55,29 @@ def _clean_stderr(stderr):
     return "\n".join(lines).strip()
 
 
+# The child's environment is built from this explicit allowlist, never from
+# os.environ. Found by plan-b8/plan-b9: the child used to inherit everything,
+# including ANTHROPIC_API_KEY, OPENAI_API_KEY and whatever the host process
+# carried, and print(os.environ) sent it straight back to the model. Locale
+# variables (LANG, LC_*) are copied only if the parent actually has them --
+# never invented.
+_ENV_ALLOWLIST = ("PATH", "HOME", "TMPDIR", "USER", "SHELL", "VIRTUAL_ENV")
+
+
+def _child_environment(parent=None):
+    # Defaults to None and reads os.environ here, not at definition time, so a
+    # test's or a later change to the environment is honored.
+    parent = os.environ if parent is None else parent
+    child = {name: parent[name] for name in _ENV_ALLOWLIST if name in parent}
+    for name, value in parent.items():
+        if name == "LANG" or name.startswith("LC_"):
+            child[name] = value
+    # Tells config.dotenv_loader not to re-read .env into this child -- any
+    # code that imports the project would otherwise put the keys straight back.
+    child[NO_DOTENV_ENV_VAR] = "1"
+    return child
+
+
 def run_python(code):
     _ensure_profile()
 
@@ -60,6 +85,7 @@ def run_python(code):
         result = subprocess.run(
             ["sandbox-exec", "-f", PROFILE_PATH, sys.executable, "-c", code],
             cwd=SANDBOX_DIR,
+            env=_child_environment(),
             capture_output=True,
             text=True,
             timeout=TIMEOUT,

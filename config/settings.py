@@ -25,14 +25,16 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from dotenv import load_dotenv
+from config.dotenv_loader import load_project_dotenv
 
 # Self-sufficient regardless of import order -- agent/chat.py also calls
 # this, but if something imports config.settings first (plausible now
 # that voice/scheduler/etc. can depend on it directly), .env overrides
 # for these settings shouldn't silently not apply just because chat.py
-# hadn't been imported yet. Idempotent/safe to call more than once.
-load_dotenv()
+# hadn't been imported yet. Idempotent/safe to call more than once. Goes
+# through config.dotenv_loader so a child started with JARVIS_NO_DOTENV=1
+# (run_python's sandboxed subprocess) does not re-read .env from disk.
+load_project_dotenv()
 
 
 def _env_str(name: str, default: str) -> str:

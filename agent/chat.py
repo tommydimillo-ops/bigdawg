@@ -1,5 +1,5 @@
-from dotenv import load_dotenv
-load_dotenv()
+from config.dotenv_loader import load_project_dotenv
+load_project_dotenv()
 
 import httpx
 from anthropic import Anthropic

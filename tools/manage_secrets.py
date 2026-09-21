@@ -9,8 +9,8 @@ Usage:
 import argparse
 import os
 
-from dotenv import load_dotenv
-load_dotenv()
+from config.dotenv_loader import load_project_dotenv
+load_project_dotenv()
 
 from agent.secrets import has_secret_in_keychain, set_secret
 
